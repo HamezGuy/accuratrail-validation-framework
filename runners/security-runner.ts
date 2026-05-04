@@ -52,6 +52,10 @@ function saveSecurityEvidence(outputDir: string, results: EvidenceResult[]): str
   return evidenceDir;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function testSqlInjection(baseUrl: string): Promise<EvidenceResult> {
   return captureWithValidator(
     {
