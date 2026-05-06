@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveLibreclinicaApiRoot } from './workspace-paths';
 
 export interface ColumnDef {
   name: string;
@@ -40,13 +41,12 @@ const CLASSIFICATION_RULES: { match: RegExp; classification: TableClassification
 export function collectMigrations(workspaceRoot: string): TableEntry[] {
   const entries: TableEntry[] = [];
   const seen = new Set<string>();
+  const apiRoot = resolveLibreclinicaApiRoot(workspaceRoot);
 
-  const migrationTs = path.join(
-    workspaceRoot, 'libreclinicaapi', 'src', 'config', 'migrations.ts',
-  );
+  const migrationTs = path.join(apiRoot, 'src', 'config', 'migrations.ts');
   collectFromFile(migrationTs, 'config/migrations.ts', entries, seen);
 
-  const sqlDir = path.join(workspaceRoot, 'libreclinicaapi', 'migrations');
+  const sqlDir = path.join(apiRoot, 'migrations');
   const sqlPattern = path.join(sqlDir, '*.sql').replace(/\\/g, '/');
 
   let sqlFiles: string[];
@@ -57,10 +57,7 @@ export function collectMigrations(workspaceRoot: string): TableEntry[] {
   }
 
   for (const sqlFile of sqlFiles) {
-    const relFile = path.relative(
-      path.join(workspaceRoot, 'libreclinicaapi'),
-      sqlFile,
-    ).replace(/\\/g, '/');
+    const relFile = path.relative(apiRoot, sqlFile).replace(/\\/g, '/');
     collectFromFile(sqlFile, relFile, entries, seen);
   }
 

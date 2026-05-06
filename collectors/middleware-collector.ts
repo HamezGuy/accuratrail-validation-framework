@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveLibreclinicaApiRoot } from './workspace-paths';
 
 export interface MiddlewareEntry {
   file: string;
@@ -24,7 +25,8 @@ const PART11_KEYWORDS = ['part11', 'part 11', '21 cfr', 'cfr part', '§11', 'sig
  * exported names, descriptions, and regulatory relevance flags.
  */
 export function collectMiddleware(workspaceRoot: string): MiddlewareEntry[] {
-  const middlewareDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'middleware');
+  const apiRoot = resolveLibreclinicaApiRoot(workspaceRoot);
+  const middlewareDir = path.join(apiRoot, 'src', 'middleware');
   const pattern = path.join(middlewareDir, '*.ts').replace(/\\/g, '/');
   let files: string[];
 

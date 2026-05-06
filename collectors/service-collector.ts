@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveLibreclinicaApiRoot } from './workspace-paths';
 
 export interface ServiceExport {
   name: string;
@@ -47,7 +48,8 @@ const CATEGORY_DIRS: Record<string, ServiceCategory> = {
  * and extracts service metadata, categories, and exported function signatures.
  */
 export function collectServices(workspaceRoot: string): ServiceEntry[] {
-  const servicesDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'services');
+  const apiRoot = resolveLibreclinicaApiRoot(workspaceRoot);
+  const servicesDir = path.join(apiRoot, 'src', 'services');
   const pattern = path.join(servicesDir, '**', '*.ts').replace(/\\/g, '/');
   let files: string[];
 

@@ -55,11 +55,13 @@ export const SYSTEM_INFO = {
   },
 
   projectPaths: {
-    root: 'c:\\EDC Project',
+    root: 'D:\\EDC-Projects',
     frontend: 'ElectronicDataCaptureReal',
-    backend: 'libreclinicaapi',
+    backend: 'libreclinica-api',
     sharedTypes: 'shared-types',
-    interopMiddleware: 'interop-middleware',
+    interopMiddleware: 'accuratrial-interop-middleware',
+    trainingModule: 'accura-training-module',
+    validationFramework: 'accuratrail-validation-framework',
     aiPipeline: 'protocol-ai-pipeline',
     testsLive: 'tests-live',
     sopsOperational: 'ElectronicDataCaptureReal/SOPs_For_Email',

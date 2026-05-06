@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveLibreclinicaApiRoot } from './workspace-paths';
 
 export interface RouteEntry {
   file: string;
@@ -15,7 +16,8 @@ export interface RouteEntry {
  * router method calls, paths, middleware chains, and controller references.
  */
 export function collectRoutes(workspaceRoot: string): RouteEntry[] {
-  const routesDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'routes');
+  const apiRoot = resolveLibreclinicaApiRoot(workspaceRoot);
+  const routesDir = path.join(apiRoot, 'src', 'routes');
   const pattern = path.join(routesDir, '*.ts').replace(/\\/g, '/');
   let files: string[];
 
@@ -38,10 +40,7 @@ export function collectRoutes(workspaceRoot: string): RouteEntry[] {
       continue;
     }
 
-    const relFile = path.relative(
-      path.join(workspaceRoot, 'libreclinicaapi', 'src', 'routes'),
-      filePath,
-    );
+    const relFile = path.relative(routesDir, filePath);
 
     let match: RegExpExecArray | null;
     while ((match = routerCallRe.exec(content)) !== null) {

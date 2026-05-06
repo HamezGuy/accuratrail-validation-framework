@@ -121,6 +121,7 @@ const COLLECTORS: CollectorEntry[] = [
   { name: 'routes', file: './collectors/route-collector' },
   { name: 'middleware', file: './collectors/middleware-collector' },
   { name: 'services', file: './collectors/service-collector' },
+  { name: 'interop', file: './collectors/interop-collector' },
   { name: 'frontend', file: './collectors/frontend-collector' },
   { name: 'tests', file: './collectors/test-collector' },
   { name: 'migrations', file: './collectors/migration-collector' },
