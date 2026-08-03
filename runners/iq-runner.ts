@@ -215,22 +215,35 @@ function checkDatabaseSchema(workspaceRoot: string): EvidenceResult[] {
   }
 
   // IQ-011 through IQ-016: Table definitions in migrations.ts
-  const tableChecks: Array<{ id: string; label: string; pattern: RegExp }> = [
+  const tableChecks: Array<{ id: string; label: string; pattern: RegExp; alsoRequires?: RegExp[] }> = [
     { id: 'IQ-011', label: 'Audit log table defined', pattern: /audit_log_event|acc_audit_log|audit_log/i },
     { id: 'IQ-012', label: 'E-signatures infrastructure defined', pattern: /signature|esign|e_sign/i },
     { id: 'IQ-013', label: 'Users table defined', pattern: /acc_users|CREATE\s+TABLE[^;]*users|user_account/i },
     { id: 'IQ-014', label: 'Query infrastructure defined', pattern: /query|queries|acc_queries/i },
     { id: 'IQ-015', label: 'Data locks infrastructure defined', pattern: /lock|freeze|unlock_request|data_lock/i },
-    { id: 'IQ-016', label: 'Tasks table defined', pattern: /workflow_task|acc_task|task_status/i },
+    // IQ-016 requires ALL THREE real task tables, not any one of them. The previous
+    // pattern (/workflow_task|acc_task|task_status/) passed on a single loose match
+    // while the IQ document it evidenced claimed a nonexistent `acc_tasks` table —
+    // so the check passed for the wrong reason. There is no acc_tasks table.
+    {
+      id: 'IQ-016',
+      label: 'Task tables defined (acc_workflow_tasks, acc_study_tasks, acc_task_status)',
+      pattern: /acc_workflow_tasks/i,
+      alsoRequires: [/acc_study_tasks/i, /acc_task_status/i],
+    },
   ];
 
   for (const check of tableChecks) {
     if (!migrationsContent) {
       results.push(fileResult(check.id, check.label, false, 'migrations.ts not found', migrationsPath));
     } else {
-      const found = check.pattern.test(migrationsContent);
+      const missing = [check.pattern, ...(check.alsoRequires ?? [])]
+        .filter((p) => !p.test(migrationsContent))
+        .map((p) => p.source);
+      const found = missing.length === 0;
       results.push(fileResult(check.id, check.label, found,
-        found ? 'table definition found in migrations.ts' : 'table definition NOT found in migrations.ts',
+        found ? 'table definition found in migrations.ts'
+              : `table definition NOT found in migrations.ts (missing: ${missing.join(', ')})`,
         migrationsPath));
     }
   }

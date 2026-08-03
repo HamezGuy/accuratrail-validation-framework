@@ -229,7 +229,7 @@ function installationRows(): TraceRow[] {
     ['User tables exist', '§11.10(d)', riskBadge('Critical'), 'migrations.ts table creation', 'IQ-013', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['acc_queries table exists', '§11.10(e)', riskBadge('Critical'), 'migrations.ts table creation', 'IQ-014', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['acc_data_locks table exists', '§11.10(a)', riskBadge('Critical'), 'migrations.ts table creation', 'IQ-015', 'Pending', 'evidence/iq/', 'None', 'Pending'],
-    ['acc_tasks table exists', '§11.10(a)', riskBadge('High'), 'migrations.ts table creation', 'IQ-016', 'Pending', 'evidence/iq/', 'None', 'Pending'],
+    ['Task tables exist (acc_workflow_tasks, acc_study_tasks, acc_task_status)', '§11.10(a)', riskBadge('High'), 'migrations.ts table creation', 'IQ-016', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Foreign key constraints', '§11.10(a)', riskBadge('High'), 'Database referential integrity', 'IQ-017', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Required indexes present', '§11.10(a)', riskBadge('High'), 'Database performance', 'IQ-018', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['TLS/HTTPS configured', '§164.312(e)(1)', riskBadge('Critical'), 'HTTPS enforcement', 'IQ-019', 'Pending', 'evidence/iq/', 'None', 'Pending'],

@@ -239,15 +239,26 @@ function databaseInstallationCases(): IqTestCase[] {
     },
     {
       id: 'IQ-016',
-      title: 'acc_tasks table exists',
-      requirement: 'Workflow task management table is present',
+      title: 'Task management tables exist (acc_workflow_tasks, acc_study_tasks, acc_task_status)',
+      requirement: 'Workflow task management tables are present',
       cfr: 'N/A',
       steps: [
-        'Query information_schema.tables for acc_tasks.',
-        'Verify required columns: id, study_id, task_type, assigned_to, status, created_at, completed_at.',
-        'Verify foreign key relationships.',
+        // NOTE: there is deliberately no `acc_tasks` table. Task management is three
+        // tables, verified individually below. An earlier revision of this test case
+        // asserted `acc_tasks` exists, which made every generated IQ document
+        // factually wrong on this line.
+        'Query information_schema.tables for acc_workflow_tasks (persisted work items).',
+        'Verify acc_workflow_tasks columns: task_id, task_type, title, status, priority, study_id, '
+          + 'assigned_to_user_ids, created_by, due_date, metadata.',
+        'Query information_schema.tables for acc_study_tasks (trigger/timer definitions).',
+        'Verify acc_study_tasks columns: study_task_id, study_id, title, trigger_type, trigger_config, '
+          + 'assigned_to_user_ids, due_days, notify_audience, email_enabled.',
+        'Query information_schema.tables for acc_task_status (synthetic-board completion receipts).',
+        'Verify acc_task_status columns: task_status_id, task_id, status, completed_by, completed_at, reason.',
+        'Verify acc_study_task_schedule references acc_study_tasks ON DELETE CASCADE.',
       ],
-      expectedResult: 'acc_tasks table exists with workflow management columns.',
+      expectedResult: 'acc_workflow_tasks, acc_study_tasks and acc_task_status all exist with the '
+        + 'columns above. No table named acc_tasks exists, and none is expected.',
       evidence: 'See evidence/iq/IQ-016.json',
     },
     {

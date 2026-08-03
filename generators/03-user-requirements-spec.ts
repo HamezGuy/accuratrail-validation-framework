@@ -98,7 +98,8 @@ function buildDetailedDescriptions(): DetailedDescription[] {
         'and a monitor should not modify subject data.',
       acceptanceMethod: 'Verified through OQ-011 (role assignment enforcement), OQ-012 (cross-role access denial), ' +
         'OQ-013 (permission matrix verification for all 6 roles), PQ-004 (end-to-end role-based workflow test), ' +
-        'and IQ-016 (acc_roles and acc_permissions table schema verification).',
+        'and IQ-013 (acc_role_permission table schema verification — roles are stored per-organization '
+        + 'as role_name/permission_key pairs; there are no acc_roles or acc_permissions tables).',
     },
     {
       id: 'URS-006',
