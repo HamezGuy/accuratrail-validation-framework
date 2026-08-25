@@ -1,3 +1,6 @@
+# Local validation credentials and overrides
+.env
+.env.*
 output/
 node_modules/
 dist/
