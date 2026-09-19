@@ -1,0 +1,2 @@
+# Preserve the exact synthetic source bytes checked by qualification-fixture.ts.
+fixtures/synthetic-usdm4-core/** -text

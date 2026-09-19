@@ -9,6 +9,8 @@ import {
   captureWithValidator,
   saveEvidence,
 } from './evidence-capture';
+import { pendingStudy, readStudySummaryPage } from './study-definition-client';
+import { captureStudyOperation } from './study-qualification';
 
 function manual(
   id: string, note: string,
@@ -30,6 +32,15 @@ function authHeaders(token: string): Record<string, string> {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function validateStudyPage(status: number, body: unknown): { passed: boolean; notes: string } {
+  try {
+    const page = readStudySummaryPage({ status, body });
+    return { passed: true, notes: `Canonical study page ${page.page}: ${page.studies.length} of ${page.total} studies` };
+  } catch (error) {
+    return { passed: false, notes: error instanceof Error ? error.message : 'Invalid study summary page' };
+  }
 }
 
 function getEntries(body: unknown): Record<string, unknown>[] | null {
@@ -1348,7 +1359,7 @@ async function runComprehensiveAuthTests(
 
 // ── Suite 9: Comprehensive RBAC Tests (OQ-096 → OQ-120) ──
 
-async function runComprehensiveRbacTests(
+export async function runComprehensiveRbacTests(
   baseUrl: string, token: string,
 ): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
@@ -1356,22 +1367,24 @@ async function runComprehensiveRbacTests(
 
   // OQ-096: GET /api/studies returns data
   {
-    const r = await captureApiCall({ testCaseId: 'OQ-096', method: 'GET', url: '/api/studies', baseUrl, headers: h });
+    const r = await captureWithValidator(
+      { testCaseId: 'OQ-096', method: 'GET', url: '/api/studies', baseUrl, headers: h },
+      validateStudyPage,
+    );
     r.regulatoryRef = '§11.10(d)';
     r.testDescription = 'Verify that GET /api/studies returns study data for authenticated user';
-    r.acceptanceCriteria = 'HTTP 200 with studies array';
+    r.acceptanceCriteria = 'HTTP 200 success=true with canonical StudySummaryPage';
     results.push(r);
   }
 
   // OQ-097: POST /api/studies creates a study (if admin)
   {
-    const r = await captureWithValidator(
-      { testCaseId: 'OQ-097', method: 'POST', url: '/api/studies', baseUrl, headers: h, body: { name: `OQ_Test_${Date.now()}`, identifier: `OQ${Date.now()}` } },
-      (status) => ({ passed: status !== 404, notes: `Study creation endpoint responds (${status})` }),
-    );
+    const content = pendingStudy(`OQ_Test_${Date.now()}`, `OQ${Date.now()}`, 'Synthetic OQ authorization fixture');
+    const { evidence: r } = await captureStudyOperation('OQ-097', baseUrl, token, 'Create and read back an authorized canonical draft',
+      client => client.create(content, 'Qualify study creation authorization'));
     r.regulatoryRef = '§11.10(d)';
-    r.testDescription = 'Verify that study creation endpoint exists and is accessible to admin role';
-    r.acceptanceCriteria = 'POST /api/studies returns non-404 status';
+    r.testDescription = 'Verify that the admin role can create and retrieve an exact canonical study draft';
+    r.acceptanceCriteria = 'HTTP 201 success=true workspace, numeric native study ID and exact HTTP 200 revision readback';
     results.push(r);
   }
 
@@ -1477,15 +1490,18 @@ async function runComprehensiveRbacTests(
     results.push(r);
   }
 
-  // OQ-108: PUT endpoint with invalid ID returns 404/400
+  // OQ-108: Historical flat writes are intentionally rejected before mutation.
   {
     const r = await captureWithValidator(
       { testCaseId: 'OQ-108', method: 'PUT', url: '/api/studies/999999', baseUrl, headers: h, body: { name: 'test' } },
-      (status) => ({ passed: status === 400 || status === 404 || status === 422, notes: `Invalid ID PUT handled (${status})` }),
+      (status, body) => ({
+        passed: status === 400 && isRecord(body) && body.success === false && body.code === 'STUDY_COMMAND_FIELD_UNKNOWN',
+        notes: `Legacy flat study write must be rejected as STUDY_COMMAND_FIELD_UNKNOWN (${status})`,
+      }),
     );
     r.regulatoryRef = '§11.10(a)';
-    r.testDescription = 'Verify that PUT with non-existent ID returns proper error';
-    r.acceptanceCriteria = 'HTTP 400/404/422 for PUT to non-existent resource';
+    r.testDescription = 'Verify that a legacy flat study PUT is explicitly rejected';
+    r.acceptanceCriteria = 'HTTP 400 success=false and STUDY_COMMAND_FIELD_UNKNOWN';
     results.push(r);
   }
 
@@ -1608,15 +1624,28 @@ async function runComprehensiveAuditTests(baseUrl: string, token: string): Promi
 
 // ── Suite 11: Data Operations Deep Tests (OQ-146 → OQ-170) ──
 
-async function runDeepDataOperationTests(baseUrl: string, token: string): Promise<EvidenceResult[]> {
+export async function runDeepDataOperationTests(baseUrl: string, token: string): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
   const h = authHeaders(token);
 
   // OQ-146
-  { const r = await captureWithValidator({ testCaseId: 'OQ-146', method: 'GET', url: '/api/studies', baseUrl, headers: h }, (status, body) => { const isArr = Array.isArray(body) || (isRecord(body) && Array.isArray(body.data)); return { passed: status === 200 && isArr, notes: `Studies returns array (${status})` }; }); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/studies returns array of studies'; r.acceptanceCriteria = 'HTTP 200 with array response'; results.push(r); }
+  { const r = await captureWithValidator({ testCaseId: 'OQ-146', method: 'GET', url: '/api/studies', baseUrl, headers: h }, validateStudyPage); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/studies returns canonical study summary pages'; r.acceptanceCriteria = 'HTTP 200 success=true with StudySummaryPage'; results.push(r); }
+
+  // OQ-153 owns the fixture used by the readback tests. Never select study 1 or
+  // the first user study to make a mutation test appear to pass.
+  const content = pendingStudy(`DeepTest_${Date.now()}`, `DT${Date.now()}`, 'OQ deep test study');
+  const created = await captureStudyOperation('OQ-153', baseUrl, token, 'Create and read back the complete canonical draft',
+    client => client.create(content, 'Create synthetic OQ data-operation fixture'));
+  created.evidence.regulatoryRef = '§11.10(a)';
+  created.evidence.testDescription = 'Verify canonical study creation preserves the complete submitted draft';
+  created.evidence.acceptanceCriteria = 'HTTP 201 success=true and exact HTTP 200 revision readback; validation errors fail';
+  results.push(created.evidence);
 
   // OQ-147
-  { const r = await captureWithValidator({ testCaseId: 'OQ-147', method: 'GET', url: '/api/studies/1', baseUrl, headers: h }, (status) => ({ passed: status === 200 || status === 404, notes: `Study detail: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/studies/:id returns study detail'; r.acceptanceCriteria = 'HTTP 200 with study data or 404 if not found'; results.push(r); }
+  { const r = created.value
+    ? (await captureStudyOperation('OQ-147', baseUrl, token, 'Retrieve created native study', client => client.verify(created.value!))).evidence
+    : manual('OQ-147', 'Blocked: OQ-153 did not produce a verified canonical study');
+    r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Retrieve the fixture created by OQ-153'; r.acceptanceCriteria = 'HTTP 200 with exact native ID, revision and content'; results.push(r); }
 
   // OQ-148
   { const r = await captureWithValidator({ testCaseId: 'OQ-148', method: 'GET', url: '/api/forms', baseUrl, headers: h }, (status, body) => { const isArr = Array.isArray(body) || (isRecord(body) && Array.isArray(body.data)); return { passed: status === 200 && isArr, notes: `Forms returns array (${status})` }; }); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/forms returns array of forms'; r.acceptanceCriteria = 'HTTP 200 with array response'; results.push(r); }
@@ -1633,14 +1662,14 @@ async function runDeepDataOperationTests(baseUrl: string, token: string): Promis
   // OQ-152
   { const r = await captureWithValidator({ testCaseId: 'OQ-152', method: 'GET', url: '/api/queries?status=open', baseUrl, headers: h }, (status) => ({ passed: status === 200 || status === 400, notes: `Queries with status filter: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/queries with status filter'; r.acceptanceCriteria = 'HTTP 200/400 for status-filtered queries'; results.push(r); }
 
-  // OQ-153
-  { const r = await captureWithValidator({ testCaseId: 'OQ-153', method: 'POST', url: '/api/studies', baseUrl, headers: h, body: { name: `DeepTest_${Date.now()}`, identifier: `DT${Date.now()}`, description: 'OQ deep test study' } }, (status) => ({ passed: status === 200 || status === 201 || status === 400, notes: `Study creation: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify POST /api/studies with valid data creates study'; r.acceptanceCriteria = 'HTTP 200/201 for valid study creation or 400 for validation'; results.push(r); }
-
   // OQ-154
-  { const r = await captureWithValidator({ testCaseId: 'OQ-154', method: 'POST', url: '/api/subjects', baseUrl, headers: h, body: { studyId: 1, label: `OQ_SUB_${Date.now()}`, enrollmentDate: new Date().toISOString().split('T')[0] } }, (status) => ({ passed: status !== 404, notes: `Subject creation: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify POST /api/subjects with valid data creates subject'; r.acceptanceCriteria = 'Subject creation endpoint returns non-404'; results.push(r); }
+  results.push(manual('OQ-154', 'Blocked: enrollment requires a conformant fixture, signed release/application and reviewed lifecycle readiness. OQ-153 creates only a pending draft.'));
 
   // OQ-155
-  { const r = await captureWithValidator({ testCaseId: 'OQ-155', method: 'GET', url: '/api/studies/1', baseUrl, headers: h }, (status, body) => { const hasId = isRecord(body) && ('id' in body || 'studyId' in body || (isRecord(body.data) && 'id' in body.data)); return { passed: status === 200, notes: `Study retrieval: ${status}, hasId=${hasId}` }; }); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/studies/:id returns study with ID field'; r.acceptanceCriteria = 'HTTP 200 with study containing id field'; results.push(r); }
+  { const r = created.value
+    ? (await captureStudyOperation('OQ-155', baseUrl, token, 'Verify exact canonical graph roundtrip', client => client.verify(created.value!))).evidence
+    : manual('OQ-155', 'Blocked: OQ-153 did not produce a verified canonical study');
+    r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify persisted canonical graph and native identity from the fixture created by this runner'; r.acceptanceCriteria = 'HTTP 200 success=true, matching native study ID, revision token and complete content'; results.push(r); }
 
   // OQ-156
   { const r = await captureWithValidator({ testCaseId: 'OQ-156', method: 'GET', url: '/api/data-locks?studyId=1', baseUrl, headers: h }, (status) => ({ passed: status === 200 || status === 400, notes: `Data-locks with studyId: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify data-locks endpoint accepts studyId parameter'; r.acceptanceCriteria = 'HTTP 200/400 for studyId-filtered data-locks'; results.push(r); }
@@ -1650,7 +1679,7 @@ async function runDeepDataOperationTests(baseUrl: string, token: string): Promis
     { id: 'OQ-157', method: 'GET', url: '/api/forms/999999', desc: 'Non-existent form by ID' },
     { id: 'OQ-158', method: 'GET', url: '/api/subjects/999999', desc: 'Non-existent subject by ID' },
     { id: 'OQ-159', method: 'GET', url: '/api/queries?limit=1&offset=0', desc: 'Query pagination' },
-    { id: 'OQ-160', method: 'GET', url: '/api/studies?limit=1&offset=0', desc: 'Study pagination' },
+    { id: 'OQ-160', method: 'GET', url: '/api/studies?limit=1&page=1', desc: 'Study pagination' },
     { id: 'OQ-161', method: 'POST', url: '/api/queries', body: { studyId: 1, subjectId: 999999, fieldName: 'test', message: 'OQ test' }, desc: 'Create query with invalid subject' },
     { id: 'OQ-162', method: 'GET', url: '/api/dashboard/enrollment', desc: 'Dashboard enrollment data' },
     { id: 'OQ-163', method: 'GET', url: '/api/dashboard/completion', desc: 'Dashboard completion data' },
@@ -1664,10 +1693,12 @@ async function runDeepDataOperationTests(baseUrl: string, token: string): Promis
   ];
   for (const t of crudTests) {
     const opts = { testCaseId: t.id, method: t.method, url: t.url, baseUrl, headers: h, body: t.body as Record<string, unknown> | undefined };
-    const r = await captureWithValidator(opts, (status) => ({ passed: status !== 404, notes: `${t.desc}: ${status}` }));
+    const r = await captureWithValidator(opts, t.id === 'OQ-160' ? validateStudyPage
+      : (status) => ({ passed: status !== 404, notes: `${t.desc}: ${status}` }));
     r.regulatoryRef = '§11.10(a)';
     r.testDescription = `Verify ${t.desc} endpoint responds correctly`;
-    r.acceptanceCriteria = `${t.desc} endpoint returns non-404`;
+    r.acceptanceCriteria = t.id === 'OQ-160' ? 'HTTP 200 success=true with canonical StudySummaryPage'
+      : `${t.desc} endpoint returns non-404`;
     results.push(r);
   }
 

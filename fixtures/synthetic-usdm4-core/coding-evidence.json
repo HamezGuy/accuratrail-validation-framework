@@ -1,0 +1,156 @@
+[
+  {
+    "id": "synthetic-code-1",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C99077",
+    "code": "C16084",
+    "decode": "OBSERVATIONAL"
+  },
+  {
+    "id": "synthetic-code-2",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C127259",
+    "code": "C15208",
+    "decode": "COHORT"
+  },
+  {
+    "id": "synthetic-code-3",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C127261",
+    "code": "C15273",
+    "decode": "PROSPECTIVE"
+  },
+  {
+    "id": "synthetic-code-4",
+    "package": "protocolct-2025-09-26",
+    "codelist": "C174222",
+    "code": "C174270",
+    "decode": "No Intervention Arm"
+  },
+  {
+    "id": "synthetic-code-5",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C188727",
+    "code": "C176263",
+    "decode": "Synthetic Data"
+  },
+  {
+    "id": "synthetic-code-6",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C99079",
+    "code": "C165873",
+    "decode": "OBSERVATION"
+  },
+  {
+    "id": "synthetic-code-7",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C66732",
+    "code": "C16576",
+    "decode": "F"
+  },
+  {
+    "id": "synthetic-code-8",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C66732",
+    "code": "C20197",
+    "decode": "M"
+  },
+  {
+    "id": "synthetic-code-9",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C71620",
+    "code": "C29848",
+    "decode": "YEARS"
+  },
+  {
+    "id": "synthetic-code-10",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C71620",
+    "code": "C29848",
+    "decode": "YEARS"
+  },
+  {
+    "id": "synthetic-code-11",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C66797",
+    "code": "C25532",
+    "decode": "INCLUSION"
+  },
+  {
+    "id": "synthetic-code-12",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C188725",
+    "code": "C85826",
+    "decode": "Study Primary Objective"
+  },
+  {
+    "id": "synthetic-code-13",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C188726",
+    "code": "C94496",
+    "decode": "Primary Endpoint"
+  },
+  {
+    "id": "synthetic-code-14",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C188728",
+    "code": "C25716",
+    "decode": "Visit"
+  },
+  {
+    "id": "synthetic-code-15",
+    "package": "sdtmct-2025-09-26",
+    "codelist": "C71620",
+    "code": "C25301",
+    "decode": "DAYS"
+  },
+  {
+    "id": "synthetic-code-16",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C201264",
+    "code": "C201358",
+    "decode": "Fixed Reference"
+  },
+  {
+    "id": "synthetic-code-17",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C201265",
+    "code": "C201355",
+    "decode": "Start to Start"
+  },
+  {
+    "id": "synthetic-code-18",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C207413",
+    "code": "C215664",
+    "decode": "Issued Date"
+  },
+  {
+    "id": "synthetic-code-19",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C207412",
+    "code": "C68846",
+    "decode": "Global"
+  },
+  {
+    "id": "synthetic-code-20",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C207419",
+    "code": "C207616",
+    "decode": "Official Study Title"
+  },
+  {
+    "id": "synthetic-code-21",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C188724",
+    "code": "C18240",
+    "decode": "Academic Institution"
+  },
+  {
+    "id": "synthetic-code-22",
+    "package": "ddfct-2025-09-26",
+    "codelist": "C215480",
+    "code": "C70793",
+    "decode": "Sponsor"
+  }
+]

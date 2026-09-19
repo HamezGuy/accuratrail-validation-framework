@@ -1,0 +1,25 @@
+{
+  "draftValid": true,
+  "structureValid": true,
+  "referencesValid": true,
+  "terminologyValid": true,
+  "conformanceValid": false,
+  "releaseReady": false,
+  "issues": [
+    {
+      "code": "USDM_CORE_REPORT_REQUIRED",
+      "path": "/document",
+      "message": "Official executable CORE rules must run against this exact document before release.",
+      "stage": "conformance",
+      "severity": "error"
+    }
+  ],
+  "profile": {
+    "modelVersion": "4.0.0",
+    "schemaSha256": "dc4303bca26256c56e5cb83222e898a09a5244472f7fd092b425cc2b7568fe19",
+    "terminologyPackage": "ddfct-2025-09-26; sdtmct-2025-09-26; protocolct-2025-09-26; ddfct-2026-03-27; sdtmct-2026-03-27",
+    "terminologySha256": "7eeb37256c7ac66886b0d6def901481a7c9cf0d1557c0d1c58cee82afff8e469",
+    "ruleRelease": null,
+    "ruleSha256": null
+  }
+}

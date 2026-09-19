@@ -17,6 +17,8 @@ export interface EvidenceResult {
   testDescription?: string;
   acceptanceCriteria?: string;
   durationMs?: number;
+  /** Ordered command/readback exchanges for a multi-request qualification step. */
+  relatedEvidence?: EvidenceResult[];
 }
 
 export type EvidenceCategory = 'iq' | 'oq' | 'pq' | 'security' | 'dr' | 'performance';

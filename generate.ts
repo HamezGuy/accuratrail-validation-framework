@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import type { EvidenceResult } from './runners/evidence-capture';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -117,6 +118,22 @@ interface CollectorEntry {
   file: string;
 }
 
+function failedRunnerCases(results: unknown): string[] {
+  if (!Array.isArray(results) || results.length === 0) {
+    throw new Error('Selected runner returned no test evidence.');
+  }
+  const failed: string[] = [];
+  for (const result of results) {
+    if (!result || typeof result !== 'object' || Array.isArray(result)
+      || typeof result.testCaseId !== 'string' || !result.testCaseId.trim()
+      || typeof result.passed !== 'boolean') {
+      throw new Error('Selected runner returned malformed test evidence.');
+    }
+    if (!result.passed) failed.push(result.testCaseId);
+  }
+  return failed;
+}
+
 const COLLECTORS: CollectorEntry[] = [
   { name: 'routes', file: './collectors/route-collector' },
   { name: 'middleware', file: './collectors/middleware-collector' },
@@ -180,12 +197,15 @@ async function main(): Promise<void> {
 
   // Phase 1: Run collectors
   console.log('--- Collectors ---');
+  let collectorsFailed = 0;
   for (const collector of COLLECTORS) {
     try {
       require(collector.file);
       console.log(`  [OK] ${collector.name}`);
-    } catch {
-      console.log(`  [SKIP] ${collector.name} (not available)`);
+    } catch (err) {
+      collectorsFailed++;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`  [FAIL] ${collector.name}: ${message}`);
     }
   }
   console.log('');
@@ -195,6 +215,8 @@ async function main(): Promise<void> {
   let generated = 0;
   let skipped = 0;
   let failed = 0;
+  let runnersPassed = 0;
+  let runnersFailed = 0;
 
   for (const gen of GENERATORS) {
     if (args.only && gen.name !== args.only) {
@@ -232,10 +254,18 @@ async function main(): Promise<void> {
     for (const runner of runners) {
       if (!runner.flag) continue;
       try {
-        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string) => Promise<void> };
-        await mod.run(outputDir, args.baseUrl);
-        console.log(`  [OK] ${runner.name}`);
+        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string) => Promise<EvidenceResult[]> };
+        const results = await mod.run(outputDir, args.baseUrl);
+        const failedCases = failedRunnerCases(results);
+        if (failedCases.length > 0) {
+          runnersFailed++;
+          console.error(`  [FAIL] ${runner.name}: ${failedCases.length}/${results.length} cases failed or remain unexecuted (${failedCases.join(', ')}).`);
+        } else {
+          runnersPassed++;
+          console.log(`  [OK] ${runner.name}: ${results.length} cases passed`);
+        }
       } catch (err) {
+        runnersFailed++;
         const message = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] ${runner.name}: ${message}`);
       }
@@ -257,6 +287,7 @@ async function main(): Promise<void> {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] ${gen.name}: ${message}`);
+        failed++;
       }
     }
 
@@ -277,6 +308,12 @@ async function main(): Promise<void> {
   if (failed > 0) {
     console.log(`  Failed:    ${failed}`);
   }
+  if (runnersPassed + runnersFailed > 0) {
+    console.log(`  Runners:   ${runnersPassed} passed, ${runnersFailed} failed`);
+  }
+  if (collectorsFailed > 0) {
+    console.log(`  Collectors failed: ${collectorsFailed}`);
+  }
   console.log(`  Output:    ${outputDir}`);
   console.log('');
 
@@ -289,8 +326,8 @@ async function main(): Promise<void> {
     console.log('');
   }
 
-  if (failed > 0) {
-    console.log(`  WARNING: ${failed} generator(s) failed. Review errors above.`);
+  if (failed > 0 || runnersFailed > 0 || collectorsFailed > 0) {
+    console.log(`  WARNING: ${collectorsFailed} collector(s), ${failed} document generation operation(s) and ${runnersFailed} runner(s) failed. Review errors and retained evidence above.`);
     process.exitCode = 1;
   } else {
     console.log('  All generators completed successfully.');

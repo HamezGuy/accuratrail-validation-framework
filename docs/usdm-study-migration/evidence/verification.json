@@ -1,0 +1,45 @@
+{
+  "recordedAt": "2026-09-09T09:56:08.645Z",
+  "node": "v24.19.0",
+  "branch": "codex/usdm-study-migration",
+  "commands": [
+    {
+      "command": "node --test -r ts-node/register tests/study-definition.contract.test.ts tests/study-runners.contract.test.ts",
+      "exitCode": 0,
+      "passed": 32,
+      "failed": 0
+    },
+    {
+      "command": "node node_modules/typescript/bin/tsc --noEmit",
+      "exitCode": 0
+    }
+  ],
+  "fixture": [
+    {
+      "file": "synthetic-usdm4.json",
+      "bytes": 9918,
+      "sha256": "8babd346e3e6b5ce39fe4946513a78110fc8482d36ad8bb9df6b9f06bedceb66"
+    },
+    {
+      "file": "synthetic-definition.json",
+      "bytes": 10785,
+      "sha256": "4ba4504abbd053b1d148170b277a5c35b00356d60712264d1e12bafccf74a3ef"
+    },
+    {
+      "file": "coding-evidence.json",
+      "bytes": 3346,
+      "sha256": "2934ea0cf8b321e4f95d7ed56ef5c9dce8ffd3e809a3be9c1a61c9ace3330649"
+    },
+    {
+      "file": "shared-validation.json",
+      "bytes": 824,
+      "sha256": "6545233b7b446203fe918238e3b86057d7a0122572c866e608175b0437a951b7"
+    },
+    {
+      "file": "iteration-2-core-report.evidence.json",
+      "bytes": 1828,
+      "sha256": "f545c28e37b036cff8dbf82d1fc7cbe397f88327145c8d6f08665e38be0e3a11"
+    }
+  ],
+  "liveRequestsPerformed": false
+}

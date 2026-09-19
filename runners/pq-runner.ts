@@ -4,6 +4,8 @@ import {
   enrichResult,
   saveEvidence,
 } from './evidence-capture';
+import { cloneStudy, pendingStudy, type StudyWorkspace } from './study-definition-client';
+import { captureStudyOperation } from './study-qualification';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -72,9 +74,10 @@ interface WorkflowState {
   queryId: number | null;
   signatureId: number | null;
   baseUrl: string;
+  studyWorkspace?: StudyWorkspace;
 }
 
-async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+export async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
 
   if (!state.adminToken) {
@@ -89,89 +92,76 @@ async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<Evi
   const protocolId = `PQ-PROTO-${Date.now()}`;
 
   // PQ-001: Create a new test study
-  const pq001 = await captureWithValidator(
-    { testCaseId: 'PQ-001', method: 'POST', url: '/api/studies', baseUrl, headers, body: {
-      name: state.studyName,
-      protocolId,
-      phase: 'Phase III',
-      description: 'PQ validation test study — created by automated PQ runner',
-      status: 'ACTIVE',
-      organizationId: state.orgId,
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/studies not available' };
-      if (s === 200 || s === 201) {
-        state.studyId = extractId(b);
-        return { passed: state.studyId !== null, notes: state.studyId !== null ? `Study created with ID ${state.studyId}` : 'Created but ID not parseable' };
-      }
-      return { passed: false, notes: `Study creation returned ${s}` };
-    },
-  );
-  results.push(enrichResult(pq001, {
+  const initial = pendingStudy(state.studyName, protocolId, 'PQ validation test study — created by automated PQ runner');
+  // A draft can retain an incomplete clinical design without claiming release.
+  initial.document.study!.versions = [{
+    id: 'pq-version', instanceType: 'StudyVersion', versionIdentifier: '1.0',
+    rationale: 'Synthetic performance qualification fixture',
+    studyDesigns: [{
+      id: 'pq-design', instanceType: 'InterventionalStudyDesign', name: 'PQ design',
+      studyPhase: { id: 'pq-phase', instanceType: 'AliasCode',
+        standardCode: { id: 'pq-phase-code', instanceType: 'Code', decode: 'Phase III' } },
+    }],
+  }];
+  initial.selection = { versionId: 'pq-version', designId: 'pq-design' };
+  const created = await captureStudyOperation('PQ-001', baseUrl, state.adminToken, 'Create and read back canonical draft',
+    client => client.create(initial, 'Create synthetic PQ study definition'));
+  if (created.value) {
+    state.studyWorkspace = created.value;
+    state.studyId = created.value.summary.studyId;
+  }
+  results.push(enrichResult(created.evidence, {
     regulatoryRef: '21 CFR 11.10(a) — System validation',
     testDescription: 'Create a new clinical study via API',
-    acceptanceCriteria: 'API returns 201 with a valid study ID',
+    acceptanceCriteria: 'HTTP 201 success=true workspace and HTTP 200 readback preserve the complete draft and native study ID',
   }));
 
   // PQ-002: Verify study appears in study list
-  const pq002 = await captureWithValidator(
-    { testCaseId: 'PQ-002', method: 'GET', url: '/api/studies', baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/studies not available' };
-      if (s === 200) {
-        const studies = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        const found = studies.some((st: unknown) => isRecord(st) && (st.id === state.studyId || st.studyId === state.studyId));
-        return { passed: found, notes: found ? `Study ${state.studyId} found in list of ${studies.length} studies` : `Study ${state.studyId} not found in ${studies.length} studies` };
-      }
-      return { passed: false, notes: `Study list returned ${s}` };
-    },
-  );
+  const pq002 = state.studyWorkspace
+    ? (await captureStudyOperation('PQ-002', baseUrl, state.adminToken, 'Find created revision in summary pages',
+      client => client.findInSummaries(state.studyWorkspace!))).evidence
+    : evidence('PQ-002', '/api/studies', 'GET', 0, null, false, 'Blocked — no verified study from PQ-001');
   results.push(enrichResult(pq002, {
     regulatoryRef: '21 CFR 11.10(a) — System validation',
     testDescription: 'Verify newly created study appears in the study listing',
-    acceptanceCriteria: 'GET /api/studies returns list containing the created study ID',
+    acceptanceCriteria: 'Canonical summary pages contain the exact created native ID, revision ID, name and identifier',
   }));
 
   // PQ-003: Update study configuration
-  const pq003 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-003', method: 'PUT', url: `/api/studies/${state.studyId}`, baseUrl, headers, body: {
-      description: 'PQ validation test study — UPDATED by automated PQ runner',
-      phase: 'Phase III',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/studies/:id not available' };
-      if (s === 200) return { passed: true, notes: 'Study configuration updated successfully' };
-      return { passed: false, notes: `Study update returned ${s}` };
-    },
-  ) : evidence('PQ-003', '/api/studies/:id', 'PUT', 0, null, false, 'Skipped — no study ID from PQ-001');
+  let pq003 = evidence('PQ-003', '/api/studies/:id', 'PUT', 0, null, false, 'Blocked — no verified study from PQ-001');
+  if (state.studyWorkspace) {
+    const content = cloneStudy(state.studyWorkspace.revision.content);
+    content.document.study!.description = 'PQ validation test study — UPDATED by automated PQ runner';
+    const updated = await captureStudyOperation('PQ-003', baseUrl, state.adminToken, 'Replace and read back canonical draft',
+      client => client.replace(state.studyWorkspace!, content, 'Review PQ study description change'));
+    pq003 = updated.evidence;
+    if (updated.value) state.studyWorkspace = updated.value;
+  }
   results.push(enrichResult(pq003, {
     regulatoryRef: '21 CFR 11.10(a) — System validation',
     testDescription: 'Update study configuration after creation',
-    acceptanceCriteria: 'PUT /api/studies/:id returns 200 with updated fields',
+    acceptanceCriteria: 'PUT uses the reviewed baseRevisionToken; the next revision and GET readback preserve the complete edited graph',
   }));
 
   // PQ-004: Create a study event/visit definition
-  const pq004 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-004', method: 'POST', url: '/api/events/definitions', baseUrl, headers, body: {
-      studyId: state.studyId,
-      name: 'Screening Visit',
-      ordinal: 1,
-      mandatory: true,
-      type: 'SCHEDULED',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/events/definitions not available' };
-      if (s === 200 || s === 201) {
-        state.eventDefinitionId = extractId(b);
-        return { passed: true, notes: `Event definition created${state.eventDefinitionId ? ` with ID ${state.eventDefinitionId}` : ''}` };
-      }
-      return { passed: false, notes: `Event definition creation returned ${s}` };
-    },
-  ) : evidence('PQ-004', '/api/events/definitions', 'POST', 0, null, false, 'Skipped — no study ID');
+  let pq004 = evidence('PQ-004', '/api/studies/:id/execution', 'PUT', 0, null, false, 'Blocked — no verified updated study');
+  if (state.studyWorkspace && pq003.passed) {
+    const executed = await captureStudyOperation('PQ-004', baseUrl, state.adminToken, 'Create and read back native visit',
+      client => client.editExecution(state.studyWorkspace!, {
+        visits: { upsert: [{ name: 'Screening Visit', ordinal: 1, type: 'scheduled', repeating: false,
+          scheduleDay: 0, minDay: -3, maxDay: 3 }], removeIds: [] },
+      }, 'Add synthetic PQ screening visit'));
+    pq004 = executed.evidence;
+    if (executed.value) {
+      state.studyWorkspace = executed.value;
+      // editExecution and its exact GET readback have verified this native ID.
+      state.eventDefinitionId = executed.value.executionContext.visits.find(visit => visit.ordinal === 1)!.studyEventDefinitionId!;
+    }
+  }
   results.push(enrichResult(pq004, {
     regulatoryRef: '21 CFR 11.10(a) — Validated system with accurate records',
     testDescription: 'Create a visit/event definition for the study schedule',
-    acceptanceCriteria: 'API returns 201 with event definition ID',
+    acceptanceCriteria: 'Revision-aware execution command and GET readback preserve the visit and its numeric native ID',
   }));
 
   // PQ-005: Assign a form/CRF to the study
@@ -204,13 +194,27 @@ async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<Evi
     acceptanceCriteria: 'API returns 201 with form ID; form has text, date, number, dropdown fields',
   }));
 
+  // Canonical draft creation does not authorize patient enrollment. A genuine
+  // conformant fixture plus signed release/application and lifecycle readiness
+  // are required before resuming the clinical workflow.
+  for (let i = 6; i <= 10; i++) {
+    results.push(manual(`PQ-${String(i).padStart(3, '0')}`,
+      'Blocked: synthetic study is a pending draft. A validated fixture, signed release/application and reviewed lifecycle readiness are required.'));
+  }
+  return results;
+}
+
+/** Kept separate from draft qualification so pending setup cannot enroll into
+ * an arbitrary native study/site or substitute ID 1 for a missing visit. */
+async function runAppliedStudyEnrollment(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+  const results: EvidenceResult[] = [];
+  const headers = authHeaders(state.adminToken!);
   // PQ-006: Create a test subject
   state.subjectLabel = `PQ-SUBJ-${Date.now()}`;
   const pq006 = state.studyId ? await captureWithValidator(
     { testCaseId: 'PQ-006', method: 'POST', url: '/api/subjects', baseUrl, headers, body: {
       studyId: state.studyId,
       label: state.subjectLabel,
-      siteId: state.siteId ?? 1,
       status: 'ENROLLED',
       enrollmentDate: new Date().toISOString().split('T')[0],
     }},
@@ -253,7 +257,6 @@ async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<Evi
     { testCaseId: 'PQ-008', method: 'POST', url: '/api/subjects', baseUrl, headers, body: {
       studyId: state.studyId,
       label: state.subjectLabel,
-      siteId: state.siteId ?? 1,
       status: 'ENROLLED',
     }},
     (s, _b) => {
@@ -269,11 +272,11 @@ async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<Evi
   }));
 
   // PQ-009: Schedule a visit for the subject
-  const pq009 = state.subjectId ? await captureWithValidator(
+  const pq009 = state.subjectId && state.eventDefinitionId ? await captureWithValidator(
     { testCaseId: 'PQ-009', method: 'POST', url: '/api/events', baseUrl, headers, body: {
       subjectId: state.subjectId,
       studyId: state.studyId,
-      eventDefinitionId: state.eventDefinitionId ?? 1,
+      eventDefinitionId: state.eventDefinitionId,
       name: 'Screening Visit',
       scheduledDate: new Date().toISOString().split('T')[0],
       status: 'SCHEDULED',
