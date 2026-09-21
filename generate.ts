@@ -254,8 +254,8 @@ async function main(): Promise<void> {
     for (const runner of runners) {
       if (!runner.flag) continue;
       try {
-        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string) => Promise<EvidenceResult[]> };
-        const results = await mod.run(outputDir, args.baseUrl);
+        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string, workspaceRoot: string) => Promise<EvidenceResult[]> };
+        const results = await mod.run(outputDir, args.baseUrl, WORKSPACE_ROOT);
         const failedCases = failedRunnerCases(results);
         if (failedCases.length > 0) {
           runnersFailed++;

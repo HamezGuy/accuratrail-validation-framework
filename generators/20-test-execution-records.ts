@@ -15,29 +15,18 @@ import {
   statusBadge,
 } from './helpers/markdown-writer';
 import { SYSTEM_INFO } from '../config/system-info';
+import {
+  EVIDENCE_CATEGORIES as ALL_CATEGORIES,
+  loadEvidence as loadCategoryResults,
+  redactEvidenceSecrets,
+  type EvidenceResult as EvidenceRecord,
+  type EvidenceCategory,
+} from '../runners/evidence-capture';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
 
 type PassFail = 'Pass' | 'Fail' | 'Not Tested';
-
-interface EvidenceRecord {
-  testCaseId: string;
-  timestamp: string;
-  endpoint: string;
-  method: string;
-  requestBody: unknown;
-  responseStatus: number;
-  responseBody: unknown;
-  passed: boolean;
-  notes: string;
-  regulatoryRef: string;
-  testDescription: string;
-  acceptanceCriteria: string;
-  durationMs: number;
-}
-
-type EvidenceCategory = 'iq' | 'oq' | 'pq' | 'security' | 'dr' | 'performance';
 
 const CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   iq: 'Installation Qualification (IQ)',
@@ -47,48 +36,6 @@ const CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   dr: 'Disaster Recovery Testing',
   performance: 'Performance Testing',
 };
-
-const ALL_CATEGORIES: EvidenceCategory[] = ['iq', 'oq', 'pq', 'security', 'dr', 'performance'];
-
-function isEvidenceRecord(value: unknown): value is EvidenceRecord {
-  if (typeof value !== 'object' || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return (
-    typeof obj.testCaseId === 'string' &&
-    typeof obj.passed === 'boolean'
-  );
-}
-
-function loadCategoryResults(outputDir: string, category: EvidenceCategory): EvidenceRecord[] {
-  const filePath = path.join(outputDir, 'evidence', category, `${category}-results.json`);
-  if (!fs.existsSync(filePath)) return [];
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isEvidenceRecord);
-  } catch {
-    return [];
-  }
-}
-
-function redactPasswords(body: unknown): unknown {
-  if (body === null || body === undefined) return body;
-  if (typeof body === 'string') return body;
-  if (Array.isArray(body)) return body.map(redactPasswords);
-  if (typeof body === 'object') {
-    const redacted: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(body as Record<string, unknown>)) {
-      if (/password|passwd|secret|token|apiKey/i.test(key)) {
-        redacted[key] = '***REDACTED***';
-      } else {
-        redacted[key] = redactPasswords(val);
-      }
-    }
-    return redacted;
-  }
-  return body;
-}
 
 function safeJsonExcerpt(body: unknown, maxLength: number = 500): string {
   if (body === null || body === undefined) return 'N/A';
@@ -133,7 +80,7 @@ function formatDuration(ms: number | undefined): string {
 function renderExecutionRecord(record: EvidenceRecord, category: EvidenceCategory): string {
   const status = deriveStatus(record);
   const steps = deriveProcedureSteps(record);
-  const redactedReqBody = redactPasswords(record.requestBody);
+  const redactedReqBody = redactEvidenceSecrets(record.requestBody);
 
   let block = '';
 
@@ -171,7 +118,7 @@ function renderExecutionRecord(record: EvidenceRecord, category: EvidenceCategor
   if (record.responseStatus !== undefined) {
     block += '**Response:**\n';
     block += `- Status: ${record.responseStatus}\n`;
-    const redactedRespBody = redactPasswords(record.responseBody);
+    const redactedRespBody = redactEvidenceSecrets(record.responseBody);
     block += `- Body (excerpt): \`${safeJsonExcerpt(redactedRespBody, 400)}\`\n`;
     block += '\n';
   }
@@ -279,7 +226,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += section(3, 'Data Handling');
   content += '- All password fields in request bodies are **redacted** in this report\n';
   content += '- Response bodies are shown as excerpts (truncated at 400 characters)\n';
-  content += '- Full unredacted evidence is retained in the JSON evidence files\n';
+  content += '- JSON evidence retains the full result with credentials and session secrets redacted\n';
   content += '- All timestamps are in **UTC** format\n\n';
   content += hr();
 

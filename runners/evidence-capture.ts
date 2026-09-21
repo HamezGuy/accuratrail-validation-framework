@@ -17,11 +17,14 @@ export interface EvidenceResult {
   testDescription?: string;
   acceptanceCriteria?: string;
   durationMs?: number;
+  /** Transport, decoding, or validator failure; a status code alone cannot override it. */
+  captureError?: string;
   /** Ordered command/readback exchanges for a multi-request qualification step. */
   relatedEvidence?: EvidenceResult[];
 }
 
-export type EvidenceCategory = 'iq' | 'oq' | 'pq' | 'security' | 'dr' | 'performance';
+export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance'] as const;
+export type EvidenceCategory = typeof EVIDENCE_CATEGORIES[number];
 
 export interface CaptureOptions {
   testCaseId: string;
@@ -30,23 +33,70 @@ export interface CaptureOptions {
   body?: unknown;
   headers?: Record<string, string>;
   baseUrl: string;
+  timeoutMs?: number;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+/** Plain-object guard shared by every runner that inspects untyped API payloads. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isEvidenceResult(value: unknown): value is EvidenceResult {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.testCaseId === 'string' &&
-    typeof value.timestamp === 'string' &&
-    typeof value.endpoint === 'string' &&
-    typeof value.method === 'string' &&
-    typeof value.responseStatus === 'number' &&
-    typeof value.passed === 'boolean' &&
-    typeof value.notes === 'string'
-  );
+/** Remove credentials from retained evidence, preserving revision tokens and other identifiers. */
+export function redactEvidenceSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactEvidenceSecrets);
+  if (!isRecord(value) || value instanceof Date) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    /^(?:password(?:hash)?|passwd|signaturepassword|secret|clientsecret|accesstoken|refreshtoken|token|apikey|authorization|cookie|setcookie)$/i
+      .test(key.replace(/[-_]/g, ''))
+      ? '[redacted]' : redactEvidenceSecrets(item),
+  ]));
+}
+
+function requireEvidenceResults(value: unknown, source: string): asserts value is EvidenceResult[] {
+  if (!Array.isArray(value)) throw new Error(`Invalid evidence in ${source}: expected a result array`);
+  const seen = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)
+      || typeof item.testCaseId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(item.testCaseId)
+      || typeof item.passed !== 'boolean'
+      || typeof item.notes !== 'string'
+      || typeof item.timestamp !== 'string'
+      || typeof item.endpoint !== 'string'
+      || typeof item.method !== 'string'
+      || typeof item.responseStatus !== 'number' || !Number.isInteger(item.responseStatus)) {
+      throw new Error(`Invalid evidence in ${source}: malformed result at index ${index}`);
+    }
+    if (item.method === 'MANUAL' && item.passed) {
+      throw new Error(`Invalid evidence in ${source}: manual result cannot pass automatically`);
+    }
+    if (item.captureError !== undefined
+      && (typeof item.captureError !== 'string' || item.passed)) {
+      throw new Error(`Invalid evidence in ${source}: capture failure cannot pass`);
+    }
+    if (seen.has(item.testCaseId)) throw new Error(`Invalid evidence in ${source}: duplicate test case ${item.testCaseId}`);
+    seen.add(item.testCaseId);
+  }
+}
+
+/** Read the same result contract written by saveEvidence. Only absence means unexecuted. */
+export function loadEvidence(outputDir: string, category: EvidenceCategory): EvidenceResult[] {
+  const filePath = path.join(outputDir, 'evidence', category, `${category}-results.json`);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid evidence in ${filePath}: malformed JSON`);
+  }
+  requireEvidenceResults(parsed, filePath);
+  return parsed;
 }
 
 export function enrichResult(
@@ -59,11 +109,33 @@ export function enrichResult(
   return result;
 }
 
+/** Evidence stub for a step that needs manual verification. `saveEvidence`
+ * counts these via method === 'MANUAL'; a manual step never passes automatically. */
+export function manualResult(
+  testCaseId: string,
+  note: string,
+  meta?: { regulatoryRef?: string; testDescription?: string; acceptanceCriteria?: string },
+): EvidenceResult {
+  return {
+    testCaseId,
+    timestamp: new Date().toISOString(),
+    endpoint: 'N/A',
+    method: 'MANUAL',
+    responseStatus: 0,
+    responseBody: null,
+    passed: false,
+    notes: `Manual verification required: ${note}`,
+    ...meta,
+  };
+}
+
 export function saveEvidence(
   outputDir: string,
   category: EvidenceCategory,
   results: EvidenceResult[],
 ): string {
+  requireEvidenceResults(results, category);
+  results = redactEvidenceSecrets(results) as EvidenceResult[];
   const evidenceDir = path.join(outputDir, 'evidence', category);
   fs.mkdirSync(evidenceDir, { recursive: true });
 
@@ -161,26 +233,6 @@ export function saveEvidence(
   return evidenceDir;
 }
 
-export function loadEvidence(
-  outputDir: string,
-  category: EvidenceCategory,
-): EvidenceResult[] {
-  const filePath = path.join(outputDir, 'evidence', category, `${category}-results.json`);
-
-  if (!fs.existsSync(filePath)) {
-    return [];
-  }
-
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  const parsed: unknown = JSON.parse(raw);
-
-  if (!Array.isArray(parsed)) {
-    return [];
-  }
-
-  return parsed.filter(isEvidenceResult);
-}
-
 export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResult> {
   const fullUrl = opts.url.startsWith('http')
     ? opts.url
@@ -195,19 +247,21 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
     },
   };
 
-  if (opts.body !== undefined && opts.method !== 'GET' && opts.method !== 'HEAD') {
-    fetchOpts.body = JSON.stringify(opts.body);
-  }
-
   let responseStatus = 0;
   let responseBody: unknown = null;
   let responseHeaders: Record<string, string> = {};
   let notes = '';
   let passed = false;
   let durationMs = 0;
+  let captureError: string | undefined;
 
+  // Timed to the response headers; a failed request records its elapsed time too.
+  const startTime = Date.now();
   try {
-    const startTime = Date.now();
+    fetchOpts.signal = AbortSignal.timeout(opts.timeoutMs ?? 30000);
+    if (opts.body !== undefined && opts.method !== 'GET' && opts.method !== 'HEAD') {
+      fetchOpts.body = JSON.stringify(opts.body);
+    }
     const response = await fetch(fullUrl, fetchOpts);
     durationMs = Date.now() - startTime;
     responseStatus = response.status;
@@ -228,7 +282,9 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
     passed = response.ok;
     notes = passed ? 'Request successful' : `HTTP ${responseStatus} returned`;
   } catch (err: unknown) {
+    durationMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
+    captureError = message;
     notes = `Request failed: ${message}`;
     responseBody = { error: message };
   }
@@ -246,6 +302,7 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
     passed,
     notes,
     durationMs,
+    ...(captureError !== undefined ? { captureError } : {}),
   };
 }
 
@@ -254,6 +311,7 @@ export async function captureWithExpectedStatus(
   expectedStatus: number,
 ): Promise<EvidenceResult> {
   const result = await captureApiCall(opts);
+  if (result.captureError !== undefined) return result;
   result.passed = result.responseStatus === expectedStatus;
   result.notes = result.passed
     ? `Expected ${expectedStatus}, got ${result.responseStatus} — PASS`
@@ -266,8 +324,18 @@ export async function captureWithValidator(
   validator: (status: number, body: unknown) => { passed: boolean; notes: string },
 ): Promise<EvidenceResult> {
   const result = await captureApiCall(opts);
-  const validation = validator(result.responseStatus, result.responseBody);
-  result.passed = validation.passed;
-  result.notes = validation.notes;
+  if (result.captureError !== undefined) return result;
+  try {
+    const validation = validator(result.responseStatus, result.responseBody);
+    if (typeof validation.passed !== 'boolean' || typeof validation.notes !== 'string') {
+      throw new Error('Validator returned an invalid verdict');
+    }
+    result.passed = validation.passed;
+    result.notes = validation.notes;
+  } catch (error) {
+    result.passed = false;
+    result.captureError = error instanceof Error ? error.message : String(error);
+    result.notes = `Validation failed: ${result.captureError}`;
+  }
   return result;
 }

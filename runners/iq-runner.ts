@@ -12,6 +12,7 @@ import {
   captureWithValidator,
   saveEvidence,
 } from './evidence-capture';
+import { defaultWorkspaceRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -72,12 +73,12 @@ function countMatches(content: string, pattern: RegExp): number {
 //    IQ-001 and IQ-002 are API-based and run separately in the main runner.
 // ---------------------------------------------------------------------------
 
-function checkSoftwareInstallation(workspaceRoot: string): EvidenceResult[] {
+function checkSoftwareInstallation(workspaceRoot: string, apiRoot: string): EvidenceResult[] {
   const results: EvidenceResult[] = [];
 
   // IQ-003: Backend package.json exists and has version
   {
-    const fp = path.join(workspaceRoot, 'libreclinicaapi', 'package.json');
+    const fp = path.join(apiRoot, 'package.json');
     const content = safeReadFile(fp);
     if (!content) {
       results.push(fileResult('IQ-003', 'Backend package.json exists', false, 'file NOT found', fp));
@@ -92,7 +93,7 @@ function checkSoftwareInstallation(workspaceRoot: string): EvidenceResult[] {
 
   // IQ-004: Node.js version requirement (engines.node includes "20" or version field exists)
   {
-    const fp = path.join(workspaceRoot, 'libreclinicaapi', 'package.json');
+    const fp = path.join(apiRoot, 'package.json');
     const content = safeReadFile(fp);
     if (!content) {
       results.push(fileResult('IQ-004', 'Node.js >=20 configured', false, 'package.json not found', fp));
@@ -163,7 +164,7 @@ function checkSoftwareInstallation(workspaceRoot: string): EvidenceResult[] {
 
   // IQ-007: Backend dependencies installed (node_modules exists)
   {
-    const nmDir = path.join(workspaceRoot, 'libreclinicaapi', 'node_modules');
+    const nmDir = path.join(apiRoot, 'node_modules');
     const exists = fs.existsSync(nmDir);
     results.push(fileResult('IQ-007', 'Backend dependencies installed', exists,
       exists ? 'node_modules directory present' : 'node_modules directory NOT found', nmDir));
@@ -184,11 +185,11 @@ function checkSoftwareInstallation(workspaceRoot: string): EvidenceResult[] {
 // 2. Database Schema (IQ-009 through IQ-018)
 // ---------------------------------------------------------------------------
 
-function checkDatabaseSchema(workspaceRoot: string): EvidenceResult[] {
+function checkDatabaseSchema(apiRoot: string): EvidenceResult[] {
   const results: EvidenceResult[] = [];
 
-  const migrationsPath = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'config', 'migrations.ts');
-  const databasePath = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'config', 'database.ts');
+  const migrationsPath = path.join(apiRoot, 'src', 'config', 'migrations.ts');
+  const databasePath = path.join(apiRoot, 'src', 'config', 'database.ts');
   const migrationsContent = safeReadFile(migrationsPath);
   const databaseContent = safeReadFile(databasePath);
 
@@ -281,11 +282,11 @@ function checkDatabaseSchema(workspaceRoot: string): EvidenceResult[] {
 // 3. Configuration (IQ-019 through IQ-025)
 // ---------------------------------------------------------------------------
 
-function checkConfiguration(workspaceRoot: string): EvidenceResult[] {
+function checkConfiguration(apiRoot: string): EvidenceResult[] {
   const results: EvidenceResult[] = [];
-  const mwDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'middleware');
-  const cfgDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'config');
-  const srcDir = path.join(workspaceRoot, 'libreclinicaapi', 'src');
+  const mwDir = path.join(apiRoot, 'src', 'middleware');
+  const cfgDir = path.join(apiRoot, 'src', 'config');
+  const srcDir = path.join(apiRoot, 'src');
 
   // IQ-019: Part 11 compliance middleware
   {
@@ -386,11 +387,11 @@ function checkConfiguration(workspaceRoot: string): EvidenceResult[] {
 //    IQ-031 is API-based and runs separately in the main runner.
 // ---------------------------------------------------------------------------
 
-function checkSecurityAndBackup(workspaceRoot: string): EvidenceResult[] {
+function checkSecurityAndBackup(workspaceRoot: string, apiRoot: string): EvidenceResult[] {
   const results: EvidenceResult[] = [];
-  const backupDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'services', 'backup');
-  const cfgDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'config');
-  const svcDir = path.join(workspaceRoot, 'libreclinicaapi', 'src', 'services', 'database');
+  const backupDir = path.join(apiRoot, 'src', 'services', 'backup');
+  const cfgDir = path.join(apiRoot, 'src', 'config');
+  const svcDir = path.join(apiRoot, 'src', 'services', 'database');
 
   // IQ-026: Backup service exists
   {
@@ -489,22 +490,23 @@ export async function run(
   baseUrl: string,
   workspaceRoot?: string,
 ): Promise<EvidenceResult[]> {
-  const wsRoot = workspaceRoot || path.resolve(__dirname, '..', '..');
+  const wsRoot = workspaceRoot || defaultWorkspaceRoot();
+  const apiRoot = resolveLibreclinicaApiRoot(wsRoot);
   console.log(`\n  Running IQ checks (32 test cases) against ${baseUrl}...`);
 
   const results: EvidenceResult[] = [];
 
   // --- File-based checks (IQ-003..IQ-030, IQ-032) ---
-  try { results.push(...checkSoftwareInstallation(wsRoot)); } catch (err: unknown) {
+  try { results.push(...checkSoftwareInstallation(wsRoot, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkSoftwareInstallation error:', err);
   }
-  try { results.push(...checkDatabaseSchema(wsRoot)); } catch (err: unknown) {
+  try { results.push(...checkDatabaseSchema(apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkDatabaseSchema error:', err);
   }
-  try { results.push(...checkConfiguration(wsRoot)); } catch (err: unknown) {
+  try { results.push(...checkConfiguration(apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkConfiguration error:', err);
   }
-  try { results.push(...checkSecurityAndBackup(wsRoot)); } catch (err: unknown) {
+  try { results.push(...checkSecurityAndBackup(wsRoot, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkSecurityAndBackup error:', err);
   }
 

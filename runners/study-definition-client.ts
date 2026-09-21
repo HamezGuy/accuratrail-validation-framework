@@ -10,6 +10,7 @@ import type {
 import { validateStudyDefinitionContent } from '@accura-trial/shared-types/usdm/validation';
 import { validateStudyExchange } from '@accura-trial/shared-types/study-exchange/validation';
 import { ENTITY_STATUS } from '@accura-trial/shared-types';
+import { isRecord } from './evidence-capture';
 
 /** The installed immutable package owns the wire graph and command types.
  * These aliases preserve the qualification clients' import names. This module
@@ -51,8 +52,8 @@ export interface StudyActivationSnapshot {
     matchesApplied: boolean;
   };
 }
-const record = (value: unknown): value is Record<string, any> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
+/** `any`-typed view of the shared record guard; every wire field is verified below. */
+const record = (value: unknown): value is Record<string, any> => isRecord(value);
 export const nativeId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 const uuid = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);

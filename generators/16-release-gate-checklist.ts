@@ -8,45 +8,10 @@ import {
   tableOfContents,
   hr,
 } from './helpers/markdown-writer';
-import { loadRunnerEvidence, RunnerResult } from './helpers/evidence-linker';
+import { EvidenceStats, loadRunnerEvidence, RunnerResult, tryLoadEvidence } from './helpers/evidence-linker';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
-
-interface EvidenceStats {
-  total: number;
-  pass: number;
-  fail: number;
-}
-
-function tryLoadEvidence(outputDir: string, category: string): EvidenceStats {
-  const resultPath = path.join(outputDir, 'evidence', category, `${category}-results.json`);
-  try {
-    if (fs.existsSync(resultPath)) {
-      const data: unknown = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
-      const results = Array.isArray(data) ? data : [];
-      return {
-        total: results.length,
-        pass: results.filter((r: Record<string, unknown>) => r.passed === true).length,
-        fail: results.filter((r: Record<string, unknown>) => r.passed === false).length,
-      };
-    }
-  } catch { /* ignore */ }
-
-  const evidencePath = path.join(outputDir, 'evidence', category, `${category}-evidence.json`);
-  try {
-    if (fs.existsSync(evidencePath)) {
-      const data: unknown = JSON.parse(fs.readFileSync(evidencePath, 'utf-8'));
-      const results = Array.isArray(data) ? data : [];
-      return {
-        total: results.length,
-        pass: results.filter((r: Record<string, unknown>) => r.passed === true).length,
-        fail: results.filter((r: Record<string, unknown>) => r.passed === false).length,
-      };
-    }
-  } catch { /* ignore */ }
-  return { total: 0, pass: 0, fail: 0 };
-}
 
 function evidenceStatus(stats: EvidenceStats): string {
   if (stats.total === 0) return 'Pending';

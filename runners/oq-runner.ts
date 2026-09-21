@@ -2,37 +2,18 @@
  * OQ Runner — Operational Qualification test execution.
  * Covers all 70 OQ test cases against the live AccuraTrial system.
  */
+import { authHeaders, login, qualificationCredentials } from './auth';
 import {
   EvidenceResult,
   captureApiCall,
   captureWithExpectedStatus,
   captureWithValidator,
+  isRecord,
+  manualResult,
   saveEvidence,
 } from './evidence-capture';
 import { pendingStudy, readStudySummaryPage } from './study-definition-client';
 import { captureStudyOperation } from './study-qualification';
-
-function manual(
-  id: string, note: string,
-  meta?: { regulatoryRef?: string; testDescription?: string; acceptanceCriteria?: string },
-): EvidenceResult {
-  return {
-    testCaseId: id, timestamp: new Date().toISOString(), endpoint: 'N/A',
-    method: 'MANUAL', responseStatus: 0, responseBody: null, passed: false,
-    notes: `Manual verification required: ${note}`,
-    regulatoryRef: meta?.regulatoryRef,
-    testDescription: meta?.testDescription,
-    acceptanceCriteria: meta?.acceptanceCriteria,
-  };
-}
-
-function authHeaders(token: string): Record<string, string> {
-  return { Authorization: `Bearer ${token}` };
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
 
 function validateStudyPage(status: number, body: unknown): { passed: boolean; notes: string } {
   try {
@@ -48,23 +29,6 @@ function getEntries(body: unknown): Record<string, unknown>[] | null {
   if (isRecord(body)) {
     const d = (body.data ?? body.entries ?? body.results ?? body.items) as unknown;
     if (Array.isArray(d) && d.length > 0) return d as Record<string, unknown>[];
-  }
-  return null;
-}
-
-async function login(
-  baseUrl: string, username: string, password: string,
-): Promise<{ token: string; userId: number } | null> {
-  const result = await captureApiCall({
-    testCaseId: 'OQ-LOGIN', method: 'POST', url: '/api/auth/login', baseUrl,
-    body: { username, password },
-  });
-  if (result.passed && isRecord(result.responseBody)) {
-    const b = result.responseBody;
-    const token = (b.accessToken as string) || '';
-    const user = isRecord(b.user) ? b.user : b;
-    const userId = (user.userId as number) || 0;
-    return token ? { token, userId } : null;
   }
   return null;
 }
@@ -168,7 +132,7 @@ async function runAuthenticationTests(
   }
 
   // OQ-007: Device fingerprint (manual)
-  results.push(manual('OQ-007', 'Device fingerprint requires multi-device test', {
+  results.push(manualResult('OQ-007', 'Device fingerprint requires multi-device test', {
     regulatoryRef: '§11.10(h)',
     testDescription: 'Verify that device fingerprinting is active on login for session binding',
     acceptanceCriteria: 'System captures device information for session binding',
@@ -222,7 +186,7 @@ async function runAuthenticationTests(
 
   // OQ-010: Logout invalidates token
   {
-    const freshLogin = await login(baseUrl, username, password);
+    const freshLogin = (await login(baseUrl, username, password)).session;
     if (freshLogin) {
       const h = authHeaders(freshLogin.token);
       await captureApiCall({ testCaseId: 'OQ-010-logout', method: 'POST', url: '/api/auth/logout', baseUrl, headers: h });
@@ -349,14 +313,14 @@ async function runAccessControlTests(baseUrl: string, token: string): Promise<Ev
   }
 
   // OQ-021: Role change (manual)
-  results.push(manual('OQ-021', 'Role change effectiveness requires multi-user test', {
+  results.push(manualResult('OQ-021', 'Role change effectiveness requires multi-user test', {
     regulatoryRef: '§11.10(d)',
     testDescription: 'Verify that role changes take effect immediately and restrict access accordingly',
     acceptanceCriteria: 'User loses access to endpoints after role downgrade',
   }));
 
   // OQ-022: User deactivation (manual)
-  results.push(manual('OQ-022', 'User deactivation requires admin + target user accounts', {
+  results.push(manualResult('OQ-022', 'User deactivation requires admin + target user accounts', {
     regulatoryRef: '§11.10(d)',
     testDescription: 'Verify that deactivated users cannot authenticate or access system resources',
     acceptanceCriteria: 'Deactivated user receives HTTP 401/403 on login and API access',
@@ -457,7 +421,7 @@ async function runAuditTrailTests(baseUrl: string, token: string): Promise<Evide
   }
 
   // OQ-029: Reason for change (manual)
-  results.push(manual('OQ-029', 'Reason for change verification requires clinical data modification test', {
+  results.push(manualResult('OQ-029', 'Reason for change verification requires clinical data modification test', {
     regulatoryRef: '§11.10(e)',
     testDescription: 'Verify that the system requires a reason for change on clinical data modifications and records it in the audit trail',
     acceptanceCriteria: 'Audit entry contains a reason field when clinical data is modified',
@@ -579,17 +543,17 @@ async function runSignatureTests(baseUrl: string, token: string): Promise<Eviden
   }
 
   // OQ-038 through OQ-040: Manual
-  results.push(manual('OQ-038', 'Signature manifestation display requires UI/PDF verification', {
+  results.push(manualResult('OQ-038', 'Signature manifestation display requires UI/PDF verification', {
     regulatoryRef: '§11.50(b)',
     testDescription: 'Verify that e-signature manifestation is clearly displayed in human-readable form on screen and in printed/PDF output',
     acceptanceCriteria: 'Signature name, date/time, and meaning are visible in UI and exported documents',
   }));
-  results.push(manual('OQ-039', 'Post-signature change verification requires modification of signed record', {
+  results.push(manualResult('OQ-039', 'Post-signature change verification requires modification of signed record', {
     regulatoryRef: '§11.70(b)',
     testDescription: 'Verify that any change to a signed record invalidates or removes the existing e-signature',
     acceptanceCriteria: 'Modifying signed data clears the signature or blocks the modification',
   }));
-  results.push(manual('OQ-040', 'Signature copy prevention requires attempt to reassign signature', {
+  results.push(manualResult('OQ-040', 'Signature copy prevention requires attempt to reassign signature', {
     regulatoryRef: '§11.70(a)',
     testDescription: 'Verify that e-signatures cannot be copied, excised, or transferred to falsify another record',
     acceptanceCriteria: 'System prevents reuse or reassignment of an existing e-signature to a different record',
@@ -609,7 +573,7 @@ async function runSignatureTests(baseUrl: string, token: string): Promise<Eviden
   }
 
   // OQ-042: Manual
-  results.push(manual('OQ-042', 'Signature audit entry verification integrated with OQ-023 audit trail test', {
+  results.push(manualResult('OQ-042', 'Signature audit entry verification integrated with OQ-023 audit trail test', {
     regulatoryRef: '§11.100(a)',
     testDescription: 'Verify that every e-signature event is recorded in the audit trail with signer identity, timestamp, and meaning',
     acceptanceCriteria: 'Audit trail contains entry for each signature action including who signed and when',
@@ -634,7 +598,7 @@ async function runDataOperationTests(baseUrl: string, token: string): Promise<Ev
   }
 
   // OQ-044: Manual
-  results.push(manual('OQ-044', 'Data modification test requires existing form data and PUT operation', {
+  results.push(manualResult('OQ-044', 'Data modification test requires existing form data and PUT operation', {
     regulatoryRef: '§11.10(e)',
     testDescription: 'Verify that clinical data modification creates an audit trail entry with old value, new value, reason, and operator identity',
     acceptanceCriteria: 'PUT to form data creates audit entry with before/after values and reason for change',
@@ -653,7 +617,7 @@ async function runDataOperationTests(baseUrl: string, token: string): Promise<Ev
   }
 
   // OQ-046: Manual
-  results.push(manual('OQ-046', 'Data correction reason requirement tested in PQ-010', {
+  results.push(manualResult('OQ-046', 'Data correction reason requirement tested in PQ-010', {
     regulatoryRef: '§11.10(e)',
     testDescription: 'Verify that data corrections require a documented reason before the system accepts the change',
     acceptanceCriteria: 'System rejects data correction when reason field is empty or missing',
@@ -714,17 +678,17 @@ async function runDataLockTests(baseUrl: string, token: string): Promise<Evidenc
   const h = authHeaders(token);
 
   // OQ-051 through OQ-053: Manual
-  results.push(manual('OQ-051', 'Freeze test requires unfrozen casebook with complete data', {
+  results.push(manualResult('OQ-051', 'Freeze test requires unfrozen casebook with complete data', {
     regulatoryRef: '§11.10(a)',
     testDescription: 'Verify that a casebook can be frozen to prevent further data entry while preserving read access',
     acceptanceCriteria: 'Casebook status changes to frozen and subsequent data entry attempts are rejected',
   }));
-  results.push(manual('OQ-052', 'Lock test requires frozen casebook', {
+  results.push(manualResult('OQ-052', 'Lock test requires frozen casebook', {
     regulatoryRef: '§11.10(a)',
     testDescription: 'Verify that a frozen casebook can be locked to prevent all modifications including administrative changes',
     acceptanceCriteria: 'Locked casebook rejects all write operations and status changes',
   }));
-  results.push(manual('OQ-053', 'Unlock request requires locked casebook', {
+  results.push(manualResult('OQ-053', 'Unlock request requires locked casebook', {
     regulatoryRef: '§11.10(a)',
     testDescription: 'Verify that unlocking a casebook requires authorized role and generates an audit trail entry',
     acceptanceCriteria: 'Unlock operation requires admin authorization and creates audit record',
@@ -743,7 +707,7 @@ async function runDataLockTests(baseUrl: string, token: string): Promise<Evidenc
   }
 
   // OQ-055: Manual
-  results.push(manual('OQ-055', 'Lock/freeze audit tested via OQ-023 audit trail verification', {
+  results.push(manualResult('OQ-055', 'Lock/freeze audit tested via OQ-023 audit trail verification', {
     regulatoryRef: '§11.10(e)',
     testDescription: 'Verify that all lock and freeze operations generate audit trail entries with operator, timestamp, and reason',
     acceptanceCriteria: 'Audit trail contains entries for every lock/unlock/freeze/unfreeze action',
@@ -887,7 +851,7 @@ async function runPart11ComplianceTests(
 
   // OQ-062: §11.10(d) — Token blocklist active (logout invalidates immediately)
   {
-    const freshLogin = token ? { token } : await login(baseUrl, username, password);
+    const freshLogin = token ? { token } : (await login(baseUrl, username, password)).session;
     if (freshLogin) {
       const fh = authHeaders(freshLogin.token);
       await captureApiCall({ testCaseId: 'OQ-062-logout', method: 'POST', url: '/api/auth/logout', baseUrl, headers: fh });
@@ -901,7 +865,7 @@ async function runPart11ComplianceTests(
       reuseResult.acceptanceCriteria = 'HTTP 401 when reusing a token after logout — immediate invalidation';
       results.push(reuseResult);
     } else {
-      results.push(manual('OQ-062', 'Token blocklist test requires authentication', {
+      results.push(manualResult('OQ-062', 'Token blocklist test requires authentication', {
         regulatoryRef: '§11.10(d)',
         testDescription: 'Verify that token blocklist is active and logout immediately invalidates the JWT session token',
         acceptanceCriteria: 'HTTP 401 when reusing a token after logout — immediate invalidation',
@@ -1010,7 +974,7 @@ async function runPart11ComplianceTests(
     r.acceptanceCriteria = 'PDF export endpoint returns non-404 status with downloadable content';
     results.push(r);
   } else {
-    results.push(manual('OQ-067', 'Export test requires authentication', {
+    results.push(manualResult('OQ-067', 'Export test requires authentication', {
       regulatoryRef: '§11.10(b)',
       testDescription: 'Verify that the system can generate human-readable PDF copies of electronic records for FDA inspection',
       acceptanceCriteria: 'PDF export endpoint returns non-404 status with downloadable content',
@@ -1033,7 +997,7 @@ async function runPart11ComplianceTests(
     r.acceptanceCriteria = 'Backup status endpoint returns non-404 status indicating service availability';
     results.push(r);
   } else {
-    results.push(manual('OQ-068', 'Backup status check requires authentication', {
+    results.push(manualResult('OQ-068', 'Backup status check requires authentication', {
       regulatoryRef: '§11.10(c)',
       testDescription: 'Verify that the backup service is operational and provides record protection capabilities',
       acceptanceCriteria: 'Backup status endpoint returns non-404 status indicating service availability',
@@ -1056,7 +1020,7 @@ async function runPart11ComplianceTests(
     r.acceptanceCriteria = 'Certification status endpoint returns non-404 status indicating certification tracking';
     results.push(r);
   } else {
-    results.push(manual('OQ-069', 'Certification check requires authentication', {
+    results.push(manualResult('OQ-069', 'Certification check requires authentication', {
       regulatoryRef: '§11.100(b)',
       testDescription: 'Verify that e-signature user certification endpoint exists for identity verification before first use of e-signatures',
       acceptanceCriteria: 'Certification status endpoint returns non-404 status indicating certification tracking',
@@ -1644,7 +1608,7 @@ export async function runDeepDataOperationTests(baseUrl: string, token: string):
   // OQ-147
   { const r = created.value
     ? (await captureStudyOperation('OQ-147', baseUrl, token, 'Retrieve created native study', client => client.verify(created.value!))).evidence
-    : manual('OQ-147', 'Blocked: OQ-153 did not produce a verified canonical study');
+    : manualResult('OQ-147', 'Blocked: OQ-153 did not produce a verified canonical study');
     r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Retrieve the fixture created by OQ-153'; r.acceptanceCriteria = 'HTTP 200 with exact native ID, revision and content'; results.push(r); }
 
   // OQ-148
@@ -1663,12 +1627,12 @@ export async function runDeepDataOperationTests(baseUrl: string, token: string):
   { const r = await captureWithValidator({ testCaseId: 'OQ-152', method: 'GET', url: '/api/queries?status=open', baseUrl, headers: h }, (status) => ({ passed: status === 200 || status === 400, notes: `Queries with status filter: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/queries with status filter'; r.acceptanceCriteria = 'HTTP 200/400 for status-filtered queries'; results.push(r); }
 
   // OQ-154
-  results.push(manual('OQ-154', 'Blocked: enrollment requires a conformant fixture, signed release/application and reviewed lifecycle readiness. OQ-153 creates only a pending draft.'));
+  results.push(manualResult('OQ-154', 'Blocked: enrollment requires a conformant fixture, signed release/application and reviewed lifecycle readiness. OQ-153 creates only a pending draft.'));
 
   // OQ-155
   { const r = created.value
     ? (await captureStudyOperation('OQ-155', baseUrl, token, 'Verify exact canonical graph roundtrip', client => client.verify(created.value!))).evidence
-    : manual('OQ-155', 'Blocked: OQ-153 did not produce a verified canonical study');
+    : manualResult('OQ-155', 'Blocked: OQ-153 did not produce a verified canonical study');
     r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify persisted canonical graph and native identity from the fixture created by this runner'; r.acceptanceCriteria = 'HTTP 200 success=true, matching native study ID, revision token and complete content'; results.push(r); }
 
   // OQ-156
@@ -1824,8 +1788,7 @@ async function runSecurityValidationTests(
 // ── Main Runner ──
 
 export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
-  const username = process.env.OQ_USERNAME || 'admin';
-  const password = process.env.OQ_PASSWORD || 'admin';
+  const { username, password } = qualificationCredentials();
   console.log(`\n  Running OQ tests (200+ cases) against ${baseUrl}...`);
 
   const allResults: EvidenceResult[] = [];
@@ -1834,7 +1797,8 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   allResults.push(...authResults);
   console.log(`  Suite 1 (Authentication): ${authResults.filter(r => r.passed).length}/${authResults.length} passed`);
 
-  const auth = await login(baseUrl, username, password);
+  // The OQ-LOGIN exchange itself is not retained; OQ-001 records the valid login.
+  const auth = (await login(baseUrl, username, password)).session;
   if (auth) {
     console.log(`  Authenticated as user ${auth.userId}`);
 

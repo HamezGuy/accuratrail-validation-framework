@@ -1,53 +1,25 @@
+import { authHeaders, login, qualificationCredentials } from './auth';
 import {
   type EvidenceResult,
   captureWithValidator,
   enrichResult,
+  isRecord,
+  manualResult,
   saveEvidence,
 } from './evidence-capture';
 import { cloneStudy, pendingStudy, type StudyWorkspace } from './study-definition-client';
 import { captureStudyOperation } from './study-qualification';
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function authHeaders(token: string): Record<string, string> {
-  return { Authorization: `Bearer ${token}` };
-}
-
-async function login(baseUrl: string, username: string, password: string): Promise<{ token: string; userId: number; orgId: number } | null> {
-  try {
-    const resp = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!resp.ok) return null;
-    const body: unknown = await resp.json();
-    if (isRecord(body) && typeof body.accessToken === 'string') {
-      const userId = isRecord(body.user) && typeof body.user.userId === 'number' ? body.user.userId : 0;
-      const orgs = Array.isArray(body.organizations) ? body.organizations : [];
-      const orgId = orgs.length > 0 && isRecord(orgs[0]) && typeof orgs[0].id === 'number' ? orgs[0].id : 1;
-      return { token: body.accessToken, userId, orgId };
-    }
-    if (isRecord(body) && isRecord(body.data) && typeof body.data.accessToken === 'string') {
-      return { token: body.data.accessToken, userId: 0, orgId: 1 };
-    }
-    if (isRecord(body) && typeof body.token === 'string') {
-      return { token: body.token, userId: 0, orgId: 1 };
-    }
-    return null;
-  } catch {
-    return null;
-  }
+/** PQ keeps its own default operator; OQ_USERNAME / OQ_PASSWORD still take precedence. */
+function pqCredentials(): { username: string; password: string } {
+  return qualificationCredentials({
+    username: process.env.PQ_USERNAME || 'jamesgui333',
+    password: process.env.PQ_PASSWORD || 'Welcome2025!',
+  });
 }
 
 function evidence(testCaseId: string, endpoint: string, method: string, status: number, body: unknown, passed: boolean, notes: string): EvidenceResult {
   return { testCaseId, timestamp: new Date().toISOString(), endpoint, method, responseStatus: status, responseBody: body, passed, notes };
-}
-
-function manual(testCaseId: string, note: string): EvidenceResult {
-  return evidence(testCaseId, 'N/A', 'MANUAL', 0, null, false, `Manual/integration test required: ${note}`);
 }
 
 function extractId(body: unknown): number | null {
@@ -60,8 +32,8 @@ function extractId(body: unknown): number | null {
 
 interface WorkflowState {
   adminToken: string | null;
-  userId: number;
-  orgId: number;
+  userId: number | null;
+  orgId: number | null;
   studyId: number | null;
   studyName: string;
   siteId: number | null;
@@ -82,7 +54,7 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState): Prom
 
   if (!state.adminToken) {
     for (let i = 1; i <= 10; i++) {
-      results.push(manual(`PQ-${String(i).padStart(3, '0')}`, 'No admin token available'));
+      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No admin token available'));
     }
     return results;
   }
@@ -198,7 +170,7 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState): Prom
   // conformant fixture plus signed release/application and lifecycle readiness
   // are required before resuming the clinical workflow.
   for (let i = 6; i <= 10; i++) {
-    results.push(manual(`PQ-${String(i).padStart(3, '0')}`,
+    results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`,
       'Blocked: synthetic study is a pending draft. A validated fixture, signed release/application and reviewed lifecycle readiness are required.'));
   }
   return results;
@@ -323,7 +295,7 @@ async function runDataEntry(baseUrl: string, state: WorkflowState): Promise<Evid
 
   if (!state.adminToken || !state.subjectId) {
     for (let i = 11; i <= 25; i++) {
-      results.push(manual(`PQ-${String(i).padStart(3, '0')}`, 'No subject available from study setup phase'));
+      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No subject available from study setup phase'));
     }
     return results;
   }
@@ -703,7 +675,7 @@ async function runReviewAndSignature(baseUrl: string, state: WorkflowState): Pro
 
   if (!state.adminToken || !state.subjectId) {
     for (let i = 26; i <= 35; i++) {
-      results.push(manual(`PQ-${String(i).padStart(3, '0')}`, 'No subject/form data available from data entry phase'));
+      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No subject/form data available from data entry phase'));
     }
     return results;
   }
@@ -737,8 +709,7 @@ async function runReviewAndSignature(baseUrl: string, state: WorkflowState): Pro
       formDataId: state.formDataId,
       subjectId: state.subjectId,
       studyId: state.studyId,
-      username: process.env.OQ_USERNAME || process.env.PQ_USERNAME || 'jamesgui333',
-      password: process.env.OQ_PASSWORD || process.env.PQ_PASSWORD || 'Welcome2025!',
+      ...pqCredentials(),
       reason: 'I have reviewed this data and confirm it is accurate and complete',
       meaning: 'APPROVAL',
     }},
@@ -927,7 +898,7 @@ async function runCleanupVerification(baseUrl: string, state: WorkflowState): Pr
 
   if (!state.adminToken || !state.studyId) {
     for (let i = 36; i <= 40; i++) {
-      results.push(manual(`PQ-${String(i).padStart(3, '0')}`, 'No study/token available for cleanup verification'));
+      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No study/token available for cleanup verification'));
     }
     return results;
   }
@@ -1028,13 +999,12 @@ async function runCleanupVerification(baseUrl: string, state: WorkflowState): Pr
 }
 
 export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
-  const pqUsername = process.env.OQ_USERNAME || process.env.PQ_USERNAME || 'jamesgui333';
-  const pqPassword = process.env.OQ_PASSWORD || process.env.PQ_PASSWORD || 'Welcome2025!';
+  const { username: pqUsername, password: pqPassword } = pqCredentials();
 
   const state: WorkflowState = {
     adminToken: null,
-    userId: 0,
-    orgId: 1,
+    userId: null,
+    orgId: null,
     studyId: null,
     studyName: '',
     siteId: null,
@@ -1049,7 +1019,8 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
     baseUrl,
   };
 
-  const loginResult = await login(baseUrl, pqUsername, pqPassword);
+  // PQ-000 below is synthesised from the session so no token enters the evidence.
+  const loginResult = (await login(baseUrl, pqUsername, pqPassword, 'PQ-000')).session;
 
   if (!loginResult) {
     const loginEvidence = evidence(

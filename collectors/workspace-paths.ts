@@ -23,6 +23,12 @@ function firstExisting(
   return null;
 }
 
+/** The AccuraTrial workspace containing this framework checkout. Runners fall back
+ * to it when generate.ts does not hand them an explicit workspace root. */
+export function defaultWorkspaceRoot(): string {
+  return path.resolve(__dirname, '..', '..');
+}
+
 /** Root of the main REST API (libreclinica-api). */
 export function resolveLibreclinicaApiRoot(workspaceRoot: string): string {
   const found = firstExisting(workspaceRoot, ['libreclinica-api', 'libreclinicaapi']);

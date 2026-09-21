@@ -1,148 +1,40 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { type EvidenceResult, captureApiCall } from './evidence-capture';
+import { authHeaders, login, qualificationCredentials } from './auth';
+import { type EvidenceResult, captureApiCall, isRecord, saveEvidence } from './evidence-capture';
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function savePerfEvidence(outputDir: string, results: EvidenceResult[]): string {
-  const evidenceDir = path.join(outputDir, 'evidence', 'performance');
-  fs.mkdirSync(evidenceDir, { recursive: true });
-
-  fs.writeFileSync(
-    path.join(evidenceDir, 'performance-results.json'),
-    JSON.stringify(results, null, 2),
-    'utf-8',
-  );
-
-  for (const result of results) {
-    fs.writeFileSync(
-      path.join(evidenceDir, `${result.testCaseId}.json`),
-      JSON.stringify(result, null, 2),
-      'utf-8',
-    );
-  }
-
-  const passed = results.filter((r) => r.passed).length;
-  const summary = {
-    category: 'performance',
-    executedAt: new Date().toISOString(),
-    total: results.length,
-    passed,
-    failed: results.length - passed,
-    passRate: results.length > 0 ? `${((passed / results.length) * 100).toFixed(1)}%` : 'N/A',
-    results: results.map((r) => ({
-      testCaseId: r.testCaseId,
-      passed: r.passed,
-      status: r.responseStatus,
-      notes: r.notes,
-    })),
-  };
-  fs.writeFileSync(
-    path.join(evidenceDir, 'performance-summary.json'),
-    JSON.stringify(summary, null, 2),
-    'utf-8',
-  );
-
-  return evidenceDir;
-}
-
-async function timedFetch(
-  url: string,
-  opts: RequestInit,
-): Promise<{ status: number; body: unknown; durationMs: number }> {
-  const start = Date.now();
-  try {
-    const resp = await fetch(url, opts);
-    const durationMs = Date.now() - start;
-    const ct = resp.headers.get('content-type') ?? '';
-    let body: unknown;
-    if (ct.includes('application/json')) {
-      body = await resp.json() as unknown;
-    } else {
-      const text = await resp.text();
-      body = text.length > 2000 ? text.slice(0, 2000) + '... [truncated]' : text;
-    }
-    return { status: resp.status, body, durationMs };
-  } catch (err: unknown) {
-    const durationMs = Date.now() - start;
-    const message = err instanceof Error ? err.message : String(err);
-    return { status: 0, body: { error: message }, durationMs };
-  }
-}
+// Every timing below is captureApiCall's durationMs: the interval to the response
+// headers, with a failed request recording the time until it failed.
 
 async function testHealthResponseTime(baseUrl: string): Promise<EvidenceResult> {
-  const url = `${baseUrl.replace(/\/$/, '')}/health`;
-  const timestamp = new Date().toISOString();
-  const { status, body, durationMs } = await timedFetch(url, { method: 'GET' });
   const maxMs = 500;
-  const passed = status === 200 && durationMs < maxMs;
-
-  return {
-    testCaseId: 'PERF-001',
-    timestamp,
-    endpoint: url,
-    method: 'GET',
-    responseStatus: status,
-    responseBody: { ...((isRecord(body) ? body : { raw: body }) as Record<string, unknown>), durationMs },
-    passed,
-    notes: status === 200
-      ? `Health endpoint responded in ${durationMs}ms (threshold: ${maxMs}ms) — ${durationMs < maxMs ? 'PASS' : 'FAIL: too slow'}`
-      : `Health endpoint returned HTTP ${status} in ${durationMs}ms`,
-  };
+  const r = await captureApiCall({ testCaseId: 'PERF-001', method: 'GET', url: '/health', baseUrl });
+  const durationMs = r.durationMs ?? 0;
+  r.passed = r.responseStatus === 200 && durationMs < maxMs;
+  r.responseBody = { ...(isRecord(r.responseBody) ? r.responseBody : { raw: r.responseBody }), durationMs };
+  r.notes = r.responseStatus === 200
+    ? `Health endpoint responded in ${durationMs}ms (threshold: ${maxMs}ms) — ${durationMs < maxMs ? 'PASS' : 'FAIL: too slow'}`
+    : `Health endpoint returned HTTP ${r.responseStatus} in ${durationMs}ms`;
+  return r;
 }
 
 async function testLoginResponseTime(baseUrl: string): Promise<EvidenceResult> {
-  const url = `${baseUrl.replace(/\/$/, '')}/api/auth/login`;
-  const timestamp = new Date().toISOString();
   const maxMs = 1000;
-  const { status, body, durationMs } = await timedFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      username: process.env.OQ_USERNAME || 'admin',
-      password: process.env.OQ_PASSWORD || 'admin',
-    }),
-  });
-  const passed = (status === 200 || status === 401) && durationMs < maxMs;
-
-  return {
-    testCaseId: 'PERF-002',
-    timestamp,
-    endpoint: url,
-    method: 'POST',
-    responseStatus: status,
-    responseBody: { durationMs },
-    passed,
-    notes: `Login endpoint responded in ${durationMs}ms (threshold: ${maxMs}ms) — ${durationMs < maxMs ? 'PASS' : 'FAIL: too slow'}`,
-  };
+  const { username, password } = qualificationCredentials();
+  const { evidence: r } = await login(baseUrl, username, password, 'PERF-002');
+  const durationMs = r.durationMs ?? 0;
+  r.passed = (r.responseStatus === 200 || r.responseStatus === 401) && durationMs < maxMs;
+  r.responseBody = { durationMs };
+  r.notes = `Login endpoint responded in ${durationMs}ms (threshold: ${maxMs}ms) — ${durationMs < maxMs ? 'PASS' : 'FAIL: too slow'}`;
+  return r;
 }
 
 async function testStudiesResponseTime(baseUrl: string): Promise<EvidenceResult> {
-  const loginUrl = `${baseUrl.replace(/\/$/, '')}/api/auth/login`;
-  const timestamp = new Date().toISOString();
+  const { username, password } = qualificationCredentials();
+  const { session } = await login(baseUrl, username, password);
 
-  let token: string | null = null;
-  try {
-    const loginResp = await fetch(loginUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: process.env.OQ_USERNAME || 'admin',
-        password: process.env.OQ_PASSWORD || 'admin',
-      }),
-    });
-    if (loginResp.ok) {
-      const b: unknown = await loginResp.json();
-      if (isRecord(b) && typeof b.accessToken === 'string') token = b.accessToken;
-    }
-  } catch { /* proceed without token */ }
-
-  if (!token) {
+  if (!session) {
     return {
       testCaseId: 'PERF-003',
-      timestamp,
+      timestamp: new Date().toISOString(),
       endpoint: '/api/studies',
       method: 'GET',
       responseStatus: 0,
@@ -152,47 +44,32 @@ async function testStudiesResponseTime(baseUrl: string): Promise<EvidenceResult>
     };
   }
 
-  const url = `${baseUrl.replace(/\/$/, '')}/api/studies`;
   const maxMs = 1000;
-  const { status, body, durationMs } = await timedFetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${token}` },
+  const r = await captureApiCall({
+    testCaseId: 'PERF-003', method: 'GET', url: '/api/studies', baseUrl, headers: authHeaders(session.token),
   });
-  const passed = status === 200 && durationMs < maxMs;
-
-  return {
-    testCaseId: 'PERF-003',
-    timestamp,
-    endpoint: url,
-    method: 'GET',
-    responseStatus: status,
-    responseBody: { durationMs },
-    passed,
-    notes: status === 200
-      ? `Studies endpoint responded in ${durationMs}ms (threshold: ${maxMs}ms) — ${durationMs < maxMs ? 'PASS' : 'FAIL: too slow'}`
-      : `Studies endpoint returned HTTP ${status} in ${durationMs}ms`,
-  };
+  const durationMs = r.durationMs ?? 0;
+  r.requestHeaders = { ...r.requestHeaders, Authorization: '[redacted]' };
+  r.passed = r.responseStatus === 200 && durationMs < maxMs;
+  r.responseBody = { durationMs };
+  r.notes = r.responseStatus === 200
+    ? `Studies endpoint responded in ${durationMs}ms (threshold: ${maxMs}ms) — ${durationMs < maxMs ? 'PASS' : 'FAIL: too slow'}`
+    : `Studies endpoint returned HTTP ${r.responseStatus} in ${durationMs}ms`;
+  return r;
 }
 
 async function testConcurrentLogins(baseUrl: string): Promise<EvidenceResult> {
   const url = `${baseUrl.replace(/\/$/, '')}/api/auth/login`;
   const timestamp = new Date().toISOString();
   const concurrency = 5;
+  const { username, password } = qualificationCredentials();
 
-  const promises = Array.from({ length: concurrency }, () =>
-    timedFetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: process.env.OQ_USERNAME || 'admin',
-        password: process.env.OQ_PASSWORD || 'admin',
-      }),
-    }),
+  const attempts = await Promise.all(
+    Array.from({ length: concurrency }, () => login(baseUrl, username, password, 'PERF-004')),
   );
-
-  const results = await Promise.all(promises);
-  const succeeded = results.filter((r) => r.status === 200).length;
-  const maxDuration = Math.max(...results.map((r) => r.durationMs));
+  const durations = attempts.map((attempt) => attempt.evidence.durationMs ?? 0);
+  const succeeded = attempts.filter((attempt) => attempt.evidence.responseStatus === 200).length;
+  const maxDuration = Math.max(...durations);
   const allSucceeded = succeeded === concurrency;
 
   return {
@@ -206,7 +83,7 @@ async function testConcurrentLogins(baseUrl: string): Promise<EvidenceResult> {
       succeeded,
       failed: concurrency - succeeded,
       maxDurationMs: maxDuration,
-      durations: results.map((r) => r.durationMs),
+      durations,
     },
     passed: allSucceeded,
     notes: allSucceeded
@@ -217,24 +94,16 @@ async function testConcurrentLogins(baseUrl: string): Promise<EvidenceResult> {
 
 async function testLargeQueryString(baseUrl: string): Promise<EvidenceResult> {
   const longParam = 'x'.repeat(1100);
-  const url = `${baseUrl.replace(/\/$/, '')}/health?q=${longParam}`;
-  const timestamp = new Date().toISOString();
-
-  const { status, body, durationMs } = await timedFetch(url, { method: 'GET' });
-  const passed = status > 0 && status < 500;
-
-  return {
-    testCaseId: 'PERF-005',
-    timestamp,
-    endpoint: `${baseUrl.replace(/\/$/, '')}/health?q=[1100 chars]`,
-    method: 'GET',
-    responseStatus: status,
-    responseBody: { durationMs, queryLength: longParam.length },
-    passed,
-    notes: passed
-      ? `Large query string handled gracefully (HTTP ${status}, ${durationMs}ms)`
-      : `Large query string caused server error (HTTP ${status}, ${durationMs}ms)`,
-  };
+  const r = await captureApiCall({ testCaseId: 'PERF-005', method: 'GET', url: `/health?q=${longParam}`, baseUrl });
+  const durationMs = r.durationMs ?? 0;
+  const status = r.responseStatus;
+  r.endpoint = `${baseUrl.replace(/\/$/, '')}/health?q=[1100 chars]`;
+  r.passed = status > 0 && status < 500;
+  r.responseBody = { durationMs, queryLength: longParam.length };
+  r.notes = r.passed
+    ? `Large query string handled gracefully (HTTP ${status}, ${durationMs}ms)`
+    : `Large query string caused server error (HTTP ${status}, ${durationMs}ms)`;
+  return r;
 }
 
 export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
@@ -282,7 +151,7 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   const failed = results.length - passed;
   console.log(`\n  Performance Summary: ${passed} passed / ${failed} failed out of ${results.length} total`);
 
-  const evidencePath = savePerfEvidence(outputDir, results);
+  const evidencePath = saveEvidence(outputDir, 'performance', results);
   console.log(`  Evidence saved: ${evidencePath}`);
   return results;
 }

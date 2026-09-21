@@ -1,56 +1,10 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import { login, qualificationCredentials } from './auth';
 import {
   type EvidenceResult,
   captureWithValidator,
-  captureApiCall,
+  isRecord,
+  saveEvidence,
 } from './evidence-capture';
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function saveSecurityEvidence(outputDir: string, results: EvidenceResult[]): string {
-  const evidenceDir = path.join(outputDir, 'evidence', 'security');
-  fs.mkdirSync(evidenceDir, { recursive: true });
-
-  fs.writeFileSync(
-    path.join(evidenceDir, 'security-results.json'),
-    JSON.stringify(results, null, 2),
-    'utf-8',
-  );
-
-  for (const result of results) {
-    fs.writeFileSync(
-      path.join(evidenceDir, `${result.testCaseId}.json`),
-      JSON.stringify(result, null, 2),
-      'utf-8',
-    );
-  }
-
-  const passed = results.filter((r) => r.passed).length;
-  const summary = {
-    category: 'security',
-    executedAt: new Date().toISOString(),
-    total: results.length,
-    passed,
-    failed: results.length - passed,
-    passRate: results.length > 0 ? `${((passed / results.length) * 100).toFixed(1)}%` : 'N/A',
-    results: results.map((r) => ({
-      testCaseId: r.testCaseId,
-      passed: r.passed,
-      status: r.responseStatus,
-      notes: r.notes,
-    })),
-  };
-  fs.writeFileSync(
-    path.join(evidenceDir, 'security-summary.json'),
-    JSON.stringify(summary, null, 2),
-    'utf-8',
-  );
-
-  return evidenceDir;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -339,23 +293,9 @@ async function testContentTypeEnforcement(baseUrl: string): Promise<EvidenceResu
 export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
   console.log(`\n  Running Security tests (10 cases) against ${baseUrl}...`);
 
-  let token: string | null = null;
-  try {
-    const loginResp = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: process.env.OQ_USERNAME || 'admin',
-        password: process.env.OQ_PASSWORD || 'admin',
-      }),
-    });
-    if (loginResp.ok) {
-      const body: unknown = await loginResp.json();
-      if (isRecord(body) && typeof body.accessToken === 'string') {
-        token = body.accessToken;
-      }
-    }
-  } catch { /* proceed without token for tests that don't need it */ }
+  // Tests that need a session use this token; the rest run unauthenticated.
+  const { username, password } = qualificationCredentials();
+  const token = (await login(baseUrl, username, password)).session?.token ?? null;
 
   const results: EvidenceResult[] = [];
 
@@ -435,7 +375,7 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   const failed = results.length - passed;
   console.log(`\n  Security Summary: ${passed} passed / ${failed} failed out of ${results.length} total`);
 
-  const evidencePath = saveSecurityEvidence(outputDir, results);
+  const evidencePath = saveEvidence(outputDir, 'security', results);
   console.log(`  Evidence saved: ${evidencePath}`);
   return results;
 }

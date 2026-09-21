@@ -89,15 +89,3 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
   lines.push('');
   return lines.join('\n');
 }
-
-export function createOutputDir(baseOutputDir: string, versionLabel?: string): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-  const dirName = versionLabel
-    ? `${timestamp}_${versionLabel}`
-    : timestamp;
-  const fullPath = path.join(baseOutputDir, dirName);
-
-  fs.mkdirSync(fullPath, { recursive: true });
-
-  return fullPath;
-}

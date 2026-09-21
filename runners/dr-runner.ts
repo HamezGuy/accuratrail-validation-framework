@@ -1,68 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { defaultWorkspaceRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
+import { login, qualificationCredentials } from './auth';
 import {
   type EvidenceResult,
   captureWithValidator,
+  isRecord,
+  manualResult,
+  saveEvidence,
 } from './evidence-capture';
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function saveDrEvidence(outputDir: string, results: EvidenceResult[]): string {
-  const evidenceDir = path.join(outputDir, 'evidence', 'dr');
-  fs.mkdirSync(evidenceDir, { recursive: true });
-
-  fs.writeFileSync(
-    path.join(evidenceDir, 'dr-results.json'),
-    JSON.stringify(results, null, 2),
-    'utf-8',
-  );
-
-  for (const result of results) {
-    fs.writeFileSync(
-      path.join(evidenceDir, `${result.testCaseId}.json`),
-      JSON.stringify(result, null, 2),
-      'utf-8',
-    );
-  }
-
-  const passed = results.filter((r) => r.passed).length;
-  const summary = {
-    category: 'dr',
-    executedAt: new Date().toISOString(),
-    total: results.length,
-    passed,
-    failed: results.length - passed,
-    passRate: results.length > 0 ? `${((passed / results.length) * 100).toFixed(1)}%` : 'N/A',
-    results: results.map((r) => ({
-      testCaseId: r.testCaseId,
-      passed: r.passed,
-      status: r.responseStatus,
-      notes: r.notes,
-    })),
-  };
-  fs.writeFileSync(
-    path.join(evidenceDir, 'dr-summary.json'),
-    JSON.stringify(summary, null, 2),
-    'utf-8',
-  );
-
-  return evidenceDir;
-}
-
-function manual(testCaseId: string, note: string): EvidenceResult {
-  return {
-    testCaseId,
-    timestamp: new Date().toISOString(),
-    endpoint: 'N/A',
-    method: 'MANUAL',
-    responseStatus: 0,
-    responseBody: null,
-    passed: false,
-    notes: `Manual verification required: ${note}`,
-  };
-}
 
 async function testBackupEndpoint(baseUrl: string, token: string | null): Promise<EvidenceResult> {
   const headers: Record<string, string> = {};
@@ -91,7 +37,7 @@ async function testBackupEndpoint(baseUrl: string, token: string | null): Promis
   );
 }
 
-function verifyEncryptionEvidence(outputDir: string): EvidenceResult {
+function verifyEncryptionEvidence(outputDir: string, apiRoot: string): EvidenceResult {
   const iqEvidencePath = path.join(outputDir, 'evidence', 'iq', 'IQ-027.json');
   const timestamp = new Date().toISOString();
 
@@ -124,7 +70,7 @@ function verifyEncryptionEvidence(outputDir: string): EvidenceResult {
     }
   } catch { /* fall through */ }
 
-  const backupServicePath = path.resolve(__dirname, '..', '..', 'libreclinicaapi', 'src', 'services', 'backup', 'encryption.service.ts');
+  const backupServicePath = path.join(apiRoot, 'src', 'services', 'backup', 'encryption.service.ts');
   const encryptionExists = fs.existsSync(backupServicePath);
 
   return {
@@ -141,8 +87,8 @@ function verifyEncryptionEvidence(outputDir: string): EvidenceResult {
   };
 }
 
-function verifyRetentionPolicy(): EvidenceResult {
-  const retentionPath = path.resolve(__dirname, '..', '..', 'libreclinicaapi', 'src', 'services', 'backup', 'retention-manager.service.ts');
+function verifyRetentionPolicy(apiRoot: string): EvidenceResult {
+  const retentionPath = path.join(apiRoot, 'src', 'services', 'backup', 'retention-manager.service.ts');
   const timestamp = new Date().toISOString();
   const exists = fs.existsSync(retentionPath);
 
@@ -170,8 +116,8 @@ function verifyRetentionPolicy(): EvidenceResult {
   };
 }
 
-function verifyBackupScheduler(): EvidenceResult {
-  const schedulerPath = path.resolve(__dirname, '..', '..', 'libreclinicaapi', 'src', 'services', 'backup', 'backup-scheduler.service.ts');
+function verifyBackupScheduler(apiRoot: string): EvidenceResult {
+  const schedulerPath = path.join(apiRoot, 'src', 'services', 'backup', 'backup-scheduler.service.ts');
   const timestamp = new Date().toISOString();
   const exists = fs.existsSync(schedulerPath);
 
@@ -199,26 +145,13 @@ function verifyBackupScheduler(): EvidenceResult {
   };
 }
 
-export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
+export async function run(outputDir: string, baseUrl: string, workspaceRoot?: string): Promise<EvidenceResult[]> {
   console.log(`\n  Running DR tests (5 cases) against ${baseUrl}...`);
+  const apiRoot = resolveLibreclinicaApiRoot(workspaceRoot || defaultWorkspaceRoot());
 
-  let token: string | null = null;
-  try {
-    const loginResp = await fetch(`${baseUrl.replace(/\/$/, '')}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: process.env.OQ_USERNAME || 'admin',
-        password: process.env.OQ_PASSWORD || 'admin',
-      }),
-    });
-    if (loginResp.ok) {
-      const body: unknown = await loginResp.json();
-      if (isRecord(body) && typeof body.accessToken === 'string') {
-        token = body.accessToken;
-      }
-    }
-  } catch { /* proceed without token */ }
+  // DR-001 uses this session when one is available; the file checks need none.
+  const { username, password } = qualificationCredentials();
+  const token = (await login(baseUrl, username, password)).session?.token ?? null;
 
   const results: EvidenceResult[] = [];
 
@@ -231,28 +164,28 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   results.push(result);
   console.log(`  DR-001 (Backup Endpoint): ${result.passed ? 'PASS' : 'FAIL'}`);
 
-  result = verifyEncryptionEvidence(outputDir);
+  result = verifyEncryptionEvidence(outputDir, apiRoot);
   result.regulatoryRef = '§164.312(a)(2)(iv)';
   result.testDescription = 'AES-256 encryption configured for backups';
   result.acceptanceCriteria = 'encryption.service.ts exists with AES-256 reference';
   results.push(result);
   console.log(`  DR-002 (Encryption Config): ${result.passed ? 'PASS' : 'FAIL'}`);
 
-  result = verifyRetentionPolicy();
+  result = verifyRetentionPolicy(apiRoot);
   result.regulatoryRef = '§11.10(c)';
   result.testDescription = 'Data retention policy configured';
   result.acceptanceCriteria = 'retention-manager.service.ts exists with retention/policy configuration';
   results.push(result);
   console.log(`  DR-003 (Retention Policy): ${result.passed ? 'PASS' : 'FAIL'}`);
 
-  result = verifyBackupScheduler();
+  result = verifyBackupScheduler(apiRoot);
   result.regulatoryRef = '§11.10(c)';
   result.testDescription = 'Automated backup schedule active';
   result.acceptanceCriteria = 'backup-scheduler.service.ts exists with schedule/cron configuration';
   results.push(result);
   console.log(`  DR-004 (Backup Scheduler): ${result.passed ? 'PASS' : 'FAIL'}`);
 
-  result = manual('DR-005', 'Full restore verification requires DBA-assisted restore to isolated environment');
+  result = manualResult('DR-005', 'Full restore verification requires DBA-assisted restore to isolated environment');
   result.regulatoryRef = '§11.10(c), §164.308(a)(7)';
   result.testDescription = 'Full restore from backup verified';
   result.acceptanceCriteria = 'Manual: restored data matches source';
@@ -264,7 +197,7 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   const failed = results.length - passed;
   console.log(`\n  DR Summary: ${passed} passed / ${failed} failed (${manualCount} manual) out of ${results.length} total`);
 
-  const evidencePath = saveDrEvidence(outputDir, results);
+  const evidencePath = saveEvidence(outputDir, 'dr', results);
   console.log(`  Evidence saved: ${evidencePath}`);
   return results;
 }
