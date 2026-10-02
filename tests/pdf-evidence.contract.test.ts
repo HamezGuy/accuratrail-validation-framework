@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import childProcess from 'node:child_process';
+import Module from 'node:module';
 import { parsePdfEvidence, requirePrintedRow } from '../runners/pdf-evidence';
 
 const fixture = (name: string): Buffer => readFileSync(path.join(__dirname, 'fixtures', 'pdf', name));
@@ -20,6 +22,53 @@ test('real PDF bytes parse to the exact fictional subject, field content, and on
   assert.match(result.text, /Fictional manifestation only; no signature authority is asserted/);
   assert.match(result.text, /Café naïve/);
   assert.match(result.text, /μg/);
+});
+
+test('a parser process failure cannot become success even after it sends text', async t => {
+  const realSpawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', (executable: string, _args: readonly string[], options: childProcess.SpawnOptions) => realSpawn(executable,
+    ['-e', "process.once('message', () => { process.send({result:{pages:1,text:'False success'}}, () => process.exit(87)); });"], options));
+  await assert.rejects(parsePdfEvidence(ownedPdf), /PDF parsing process failed \(87\)/);
+});
+
+test('missing parser dependencies fail before any process is spawned', async t => {
+  const loader = Module as unknown as { _resolveFilename: (...args: any[]) => string };
+  const original = loader._resolveFilename;
+  t.mock.method(loader, '_resolveFilename', function(this: unknown, ...args: any[]) {
+    if (args[0] === 'pdfjs-dist/legacy/build/pdf.mjs') throw new Error('Parser dependency unavailable');
+    return original.apply(this, args);
+  });
+  const spawned = t.mock.method(childProcess, 'spawn', () => { throw new Error('Must not spawn'); });
+  await assert.rejects(parsePdfEvidence(ownedPdf), /Parser dependency unavailable/);
+  assert.equal(spawned.mock.callCount(), 0);
+});
+
+for (const result of [{ pages: 1, text: 42 }, { pages: 0, text: 'text' }, { pages: 201, text: 'text' }])
+test(`malformed parser IPC cannot escape as a controller exception: ${JSON.stringify(result)}`, async t => {
+  const realSpawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', (executable: string, _args: readonly string[], options: childProcess.SpawnOptions) => realSpawn(executable,
+    ['-e', `process.once('message', () => { process.send(${JSON.stringify({ result })}, () => process.disconnect()); });`], options));
+  await assert.rejects(parsePdfEvidence(ownedPdf), /malformed parser result/);
+});
+
+test('successive real PDFs leave the qualification controller alive', async () => {
+  for (const name of ['owned-form.pdf', 'signed-form.pdf', 'owned-form.pdf', 'signed-form.pdf']) {
+    const result = await parsePdfEvidence(fixture(name));
+    assert.equal(result.pages, 1);
+    requirePrintedRow(result.text, ['Weight', '70.5', 'kg'], 'the unchanged weight across parser processes');
+  }
+});
+
+test('a hung parser reaches its deadline and its owned process is confirmed closed', async t => {
+  const realSpawn = childProcess.spawn;
+  let closed = false;
+  t.mock.method(childProcess, 'spawn', (executable: string, _args: readonly string[], options: childProcess.SpawnOptions) => {
+    const child = realSpawn(executable, ['-e', "process.once('message', () => { setInterval(() => {}, 1000); });"], options);
+    child.once('close', () => { closed = true; });
+    return child;
+  });
+  await assert.rejects(parsePdfEvidence(ownedPdf), /PDF parsing exceeded its 15-second deadline/);
+  assert.equal(closed, true, 'Deadline failure must retain cleanup custody until the exact child closes.');
 });
 
 test('signed fictional PDF retains the full manifestation and audit content', async () => {
