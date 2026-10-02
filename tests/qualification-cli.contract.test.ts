@@ -75,3 +75,10 @@ test('docs-only does not import benchmark evidence or silently consume missing p
   assert.equal(runCli('pass', ['--benchmark-run']).status, 1);
   assert.equal(runCli('pass', ['--benchmark-evaluator-root', 'archived-evaluator']).status, 1);
 });
+
+test('synthetic qualification switches reach each selected runner without inferred acknowledgments', () => {
+  const explicit = runCli('pass', ['--pq', '--synthetic-qualification', '--allow-production-qualification', '--acknowledge-ungoverned']);
+  assert.equal(explicit.status, 0, explicit.output);
+  assert.match(explicit.output, /QUALIFICATION_FLAGS --synthetic-qualification,--allow-production-qualification,--acknowledge-ungoverned/);
+  assert.doesNotMatch(explicit.output, /acknowledge-incomplete/);
+});

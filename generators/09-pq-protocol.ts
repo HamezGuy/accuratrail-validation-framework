@@ -48,7 +48,7 @@ function pqTestCaseBlock(tc: PqTestCase): string {
     `- **Expected Result:** ${tc.expectedResult}`,
     '- **Actual Result:** _[To be completed]_',
     '- **Pass/Fail:** _[Pending]_',
-    `- **Evidence:** _[See evidence/pq/]_`,
+    `- **Evidence:** _[${tc.evidence}; retain explicit reviewed manual evidence separately]_`,
     '',
   );
 
@@ -56,13 +56,13 @@ function pqTestCaseBlock(tc: PqTestCase): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Section 4 — Study Setup (PQ-001 to PQ-003)                       */
+/*  Section 4 — Study Setup (PQM-001 to PQM-003)                       */
 /* ------------------------------------------------------------------ */
 
 function studySetupCases(): PqTestCase[] {
   return [
     {
-      id: 'PQ-001',
+      id: 'PQM-001',
       title: 'Complete Study Creation',
       requirement: 'FRS-STUDY-001',
       cfr: '§11.10(a) — Validation',
@@ -83,15 +83,15 @@ function studySetupCases(): PqTestCase[] {
       ],
       expectedResult:
         'Study created with complete multi-tab configuration, all settings persisted and retrievable.',
-      evidence: 'See evidence/pq/PQ-001.json',
+      evidence: 'See evidence/pq/PQM-001.json',
     },
     {
-      id: 'PQ-002',
+      id: 'PQM-002',
       title: 'Site and User Setup',
       requirement: 'FRS-STUDY-002 / URS-RBAC-001',
       cfr: '§11.10(d) — Authority checks',
       riskLevel: 'High',
-      preconditions: 'Study created (PQ-001 complete)',
+      preconditions: 'Study created (PQM-001 complete)',
       steps: [
         'Add site(s) to the study.',
         'Create or assign users with specific roles (investigator, coordinator, monitor, data_manager).',
@@ -100,15 +100,15 @@ function studySetupCases(): PqTestCase[] {
       ],
       expectedResult:
         'Sites added, users assigned with roles, each user accesses study with correct permissions.',
-      evidence: 'See evidence/pq/PQ-002.json',
+      evidence: 'See evidence/pq/PQM-002.json',
     },
     {
-      id: 'PQ-003',
+      id: 'PQM-003',
       title: 'CRF Assignment to Study',
       requirement: 'FRS-FORM-001',
       cfr: '§11.10(a) — Validation',
       riskLevel: 'High',
-      preconditions: 'Study with visits defined (PQ-001), eCRF templates exist',
+      preconditions: 'Study with visits defined (PQM-001), eCRF templates exist',
       steps: [
         'Assign eCRF templates to specific study visits.',
         'Verify each visit shows assigned forms.',
@@ -116,19 +116,19 @@ function studySetupCases(): PqTestCase[] {
       ],
       expectedResult:
         'eCRF templates assigned to visits, forms available at each visit with correct structure.',
-      evidence: 'See evidence/pq/PQ-003.json',
+      evidence: 'See evidence/pq/PQM-003.json',
     },
   ];
 }
 
 /* ------------------------------------------------------------------ */
-/*  Section 5 — Subject Enrollment (PQ-004 to PQ-006)                 */
+/*  Section 5 — Subject Enrollment (PQM-004 to PQM-006)                 */
 /* ------------------------------------------------------------------ */
 
 function subjectEnrollmentCases(): PqTestCase[] {
   return [
     {
-      id: 'PQ-004',
+      id: 'PQM-004',
       title: 'Subject Enrollment Workflow',
       requirement: 'FRS-SUBJ-001',
       cfr: '§11.10(a) / §11.10(e) — Validation / Audit trails',
@@ -146,10 +146,10 @@ function subjectEnrollmentCases(): PqTestCase[] {
       ],
       expectedResult:
         'Subject enrolled, unique ID assigned, complete visit schedule auto-generated, enrollment audited.',
-      evidence: 'See evidence/pq/PQ-004.json',
+      evidence: 'See evidence/pq/PQM-004.json',
     },
     {
-      id: 'PQ-005',
+      id: 'PQM-005',
       title: 'Duplicate Subject Prevention',
       requirement: 'FRS-SUBJ-002',
       cfr: '§11.10(a) — Validation',
@@ -162,15 +162,15 @@ function subjectEnrollmentCases(): PqTestCase[] {
       ],
       expectedResult:
         'System rejects duplicate subject ID, returns clear error message.',
-      evidence: 'See evidence/pq/PQ-005.json',
+      evidence: 'See evidence/pq/PQM-005.json',
     },
     {
-      id: 'PQ-006',
+      id: 'PQM-006',
       title: 'Visit Schedule Auto-Generation',
       requirement: 'FRS-VISIT-001',
       cfr: '§11.10(a) — Validation',
       riskLevel: 'High',
-      preconditions: 'Subject enrolled (PQ-004)',
+      preconditions: 'Subject enrolled (PQM-004)',
       steps: [
         "GET subject's visit schedule.",
         'Verify all planned visits present.',
@@ -179,19 +179,19 @@ function subjectEnrollmentCases(): PqTestCase[] {
       ],
       expectedResult:
         'All scheduled visits appear with correct forms assigned per study design.',
-      evidence: 'See evidence/pq/PQ-006.json',
+      evidence: 'See evidence/pq/PQM-006.json',
     },
   ];
 }
 
 /* ------------------------------------------------------------------ */
-/*  Section 6 — Data Entry and Queries (PQ-007 to PQ-012)             */
+/*  Section 6 — Data Entry and Queries (PQM-007 to PQM-012)             */
 /* ------------------------------------------------------------------ */
 
 function dataEntryQueryCases(): PqTestCase[] {
   return [
     {
-      id: 'PQ-007',
+      id: 'PQM-007',
       title: 'Complete eCRF Entry',
       requirement: 'FRS-DATA-002 / URS-AUDIT-002',
       cfr: '§11.10(a) / §11.10(e) — Validation / Audit trails',
@@ -206,10 +206,10 @@ function dataEntryQueryCases(): PqTestCase[] {
       ],
       expectedResult:
         'All form fields saved, data retrievable, audit trail records creation with user identity and timestamp.',
-      evidence: 'See evidence/pq/PQ-007.json',
+      evidence: 'See evidence/pq/PQM-007.json',
     },
     {
-      id: 'PQ-008',
+      id: 'PQM-008',
       title: 'Validation Rule Firing',
       requirement: 'FRS-VAL-001',
       cfr: '§11.10(a) — Validation',
@@ -225,10 +225,10 @@ function dataEntryQueryCases(): PqTestCase[] {
       ],
       expectedResult:
         'Block-save rules prevent submission, query-level rules create automatic data queries.',
-      evidence: 'See evidence/pq/PQ-008.json',
+      evidence: 'See evidence/pq/PQM-008.json',
     },
     {
-      id: 'PQ-009',
+      id: 'PQM-009',
       title: 'Manual Query Lifecycle',
       requirement: 'FRS-QUERY-001',
       cfr: '§11.10(e) — Audit trails',
@@ -242,10 +242,10 @@ function dataEntryQueryCases(): PqTestCase[] {
       ],
       expectedResult:
         'Full query lifecycle (Open → Answered → Closed) completed with audit trail for each transition.',
-      evidence: 'See evidence/pq/PQ-009.json',
+      evidence: 'See evidence/pq/PQM-009.json',
     },
     {
-      id: 'PQ-010',
+      id: 'PQM-010',
       title: 'Data Correction with Reason',
       requirement: 'FRS-DATA-004 / URS-AUDIT-008',
       cfr: '§11.10(e) — Audit trails',
@@ -262,10 +262,10 @@ function dataEntryQueryCases(): PqTestCase[] {
       ],
       expectedResult:
         'Data corrected, audit trail shows old value, new value, reason, user, and timestamp.',
-      evidence: 'See evidence/pq/PQ-010.json',
+      evidence: 'See evidence/pq/PQM-010.json',
     },
     {
-      id: 'PQ-011',
+      id: 'PQM-011',
       title: 'Skip/Branching Logic',
       requirement: 'FRS-FORM-002',
       cfr: '§11.10(a) — Validation',
@@ -282,10 +282,10 @@ function dataEntryQueryCases(): PqTestCase[] {
       ],
       expectedResult:
         'Skip logic correctly shows/hides fields based on trigger values.',
-      evidence: 'See evidence/pq/PQ-011.json',
+      evidence: 'See evidence/pq/PQM-011.json',
     },
     {
-      id: 'PQ-012',
+      id: 'PQM-012',
       title: 'Multi-Form Visit Completion',
       requirement: 'FRS-VISIT-002',
       cfr: '§11.10(a) — Validation',
@@ -299,19 +299,19 @@ function dataEntryQueryCases(): PqTestCase[] {
       ],
       expectedResult:
         'All forms in visit completed and marked as complete, visit status reflects completion.',
-      evidence: 'See evidence/pq/PQ-012.json',
+      evidence: 'See evidence/pq/PQM-012.json',
     },
   ];
 }
 
 /* ------------------------------------------------------------------ */
-/*  Section 7 — Review and Approval (PQ-013 to PQ-016)                */
+/*  Section 7 — Review and Approval (PQM-013 to PQM-016)                */
 /* ------------------------------------------------------------------ */
 
 function reviewApprovalCases(): PqTestCase[] {
   return [
     {
-      id: 'PQ-013',
+      id: 'PQM-013',
       title: 'SDV Workflow',
       requirement: 'FRS-SDV-001',
       cfr: '§11.10(a) / §11.10(e) — Validation / Audit trails',
@@ -327,10 +327,10 @@ function reviewApprovalCases(): PqTestCase[] {
       ],
       expectedResult:
         'SDV workflow completed, verification status tracked per field/form, all actions audited.',
-      evidence: 'See evidence/pq/PQ-013.json',
+      evidence: 'See evidence/pq/PQM-013.json',
     },
     {
-      id: 'PQ-014',
+      id: 'PQM-014',
       title: 'Data Manager Review',
       requirement: 'FRS-DM-001',
       cfr: '§11.10(a) — Validation',
@@ -345,10 +345,10 @@ function reviewApprovalCases(): PqTestCase[] {
       ],
       expectedResult:
         'DM reviews and cleans data, queries resolved, form status reflects DM review.',
-      evidence: 'See evidence/pq/PQ-014.json',
+      evidence: 'See evidence/pq/PQM-014.json',
     },
     {
-      id: 'PQ-015',
+      id: 'PQM-015',
       title: 'Investigator E-Signature',
       requirement: 'FRS-ESIG-001 / URS-ESIG-001',
       cfr: '§11.50 / §11.70 — Electronic signatures',
@@ -365,10 +365,10 @@ function reviewApprovalCases(): PqTestCase[] {
       ],
       expectedResult:
         'E-signature completed with full Part 11 compliance (name, date, meaning, re-auth), manifestation visible.',
-      evidence: 'See evidence/pq/PQ-015.json',
+      evidence: 'See evidence/pq/PQM-015.json',
     },
     {
-      id: 'PQ-016',
+      id: 'PQM-016',
       title: 'Form Sign-Off Workflow',
       requirement: 'FRS-ESIG-002',
       cfr: '§11.50(b) — Signature manifestations',
@@ -384,19 +384,19 @@ function reviewApprovalCases(): PqTestCase[] {
       ],
       expectedResult:
         'Form progresses through sign-off workflow, status is "Signed", signature manifestation displayed.',
-      evidence: 'See evidence/pq/PQ-016.json',
+      evidence: 'See evidence/pq/PQM-016.json',
     },
   ];
 }
 
 /* ------------------------------------------------------------------ */
-/*  Section 8 — Data Closure (PQ-017 to PQ-020)                      */
+/*  Section 8 — Data Closure (PQM-017 to PQM-020)                      */
 /* ------------------------------------------------------------------ */
 
 function dataClosureCases(): PqTestCase[] {
   return [
     {
-      id: 'PQ-017',
+      id: 'PQM-017',
       title: 'Casebook Freeze',
       requirement: 'FRS-LOCK-001',
       cfr: '§11.10(a) / §11.10(e) — Validation / Audit trails',
@@ -411,10 +411,10 @@ function dataClosureCases(): PqTestCase[] {
       ],
       expectedResult:
         'Frozen casebook blocks edits, unfreeze available via workflow, all actions audited.',
-      evidence: 'See evidence/pq/PQ-017.json',
+      evidence: 'See evidence/pq/PQM-017.json',
     },
     {
-      id: 'PQ-018',
+      id: 'PQM-018',
       title: 'Casebook Lock',
       requirement: 'FRS-LOCK-002',
       cfr: '§11.10(a) / §11.10(e) — Validation / Audit trails',
@@ -428,10 +428,10 @@ function dataClosureCases(): PqTestCase[] {
       ],
       expectedResult:
         'Locked casebook blocks all modifications including queries and new data entry.',
-      evidence: 'See evidence/pq/PQ-018.json',
+      evidence: 'See evidence/pq/PQM-018.json',
     },
     {
-      id: 'PQ-019',
+      id: 'PQM-019',
       title: 'Study Database Lock',
       requirement: 'FRS-LOCK-003',
       cfr: '§11.10(a) — Validation',
@@ -445,10 +445,10 @@ function dataClosureCases(): PqTestCase[] {
       ],
       expectedResult:
         'Study-wide lock applied to all subjects, data frozen for analysis, export still functional.',
-      evidence: 'See evidence/pq/PQ-019.json',
+      evidence: 'See evidence/pq/PQM-019.json',
     },
     {
-      id: 'PQ-020',
+      id: 'PQM-020',
       title: 'Final Data Export',
       requirement: 'FRS-EXPORT-001',
       cfr: '§11.10(b) — Record copying',
@@ -465,19 +465,19 @@ function dataClosureCases(): PqTestCase[] {
       ],
       expectedResult:
         'Complete study data exported with all metadata, audit trails, queries, signatures, verifiable completeness.',
-      evidence: 'See evidence/pq/PQ-020.json',
+      evidence: 'See evidence/pq/PQM-020.json',
     },
   ];
 }
 
 /* ------------------------------------------------------------------ */
-/*  Section 9 — Archive and Recovery (PQ-021 to PQ-022)               */
+/*  Section 9 — Archive and Recovery (PQM-021 to PQM-022)               */
 /* ------------------------------------------------------------------ */
 
 function archiveRecoveryCases(): PqTestCase[] {
   return [
     {
-      id: 'PQ-021',
+      id: 'PQM-021',
       title: 'Backup Execution',
       requirement: 'FRS-BACKUP-001',
       cfr: 'HIPAA §164.308(a)(7) / §164.312(a)(2)(iv) — Contingency plan / Encryption',
@@ -492,15 +492,15 @@ function archiveRecoveryCases(): PqTestCase[] {
       ],
       expectedResult:
         'Encrypted backup file created with AES-256, metadata logged, file integrity verified.',
-      evidence: 'See evidence/pq/PQ-021.json',
+      evidence: 'See evidence/pq/PQM-021.json',
     },
     {
-      id: 'PQ-022',
+      id: 'PQM-022',
       title: 'Data Retrieval from Archive',
       requirement: 'FRS-BACKUP-002',
       cfr: 'HIPAA §164.308(a)(7) — Contingency plan',
       riskLevel: 'Critical',
-      preconditions: 'Backup file from PQ-021',
+      preconditions: 'Backup file from PQM-021',
       steps: [
         'Initiate data retrieval/restore from backup.',
         'Verify decryption succeeds.',
@@ -511,7 +511,7 @@ function archiveRecoveryCases(): PqTestCase[] {
       ],
       expectedResult:
         'All data, audit trails, and signatures recoverable from encrypted backup with full integrity.',
-      evidence: 'See evidence/pq/PQ-022.json',
+      evidence: 'See evidence/pq/PQM-022.json',
     },
   ];
 }
@@ -590,6 +590,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Backup execution and data recovery\n\n';
   content += `**Applicable regulations:** ${REGULATORY_SCOPE.part11Applicable ? '21 CFR Part 11' : ''}` +
     `${REGULATORY_SCOPE.hipaaApplicable ? ', HIPAA Security Rule' : ''}\n\n`;
+
+  content += '**Evidence identity:** PQM-001 through PQM-022 below are the broader manual/UI protocol. Automated synthetic native API cases use PQ-000 through PQ-040 in 20-test-execution-records.md, with exact procedures and command/readback evidence. A passing automated case does not satisfy a same-numbered manual case. No backup/restore, clinical effectiveness, independent validation or human-effort claim follows from the synthetic workflow. Missing manual evidence remains pending.\n\n';
 
   /* Section 3 — Test Environment */
   content += section(2, 'Test Environment');

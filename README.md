@@ -96,3 +96,18 @@ exercise the adapter against the real scorer fixture, including tampered,
 missing, mismatched-evaluator, and blocked-gate cases. This checks the adapter;
 it is not a product benchmark. See [P13 evidence attachment contract](docs/p13-evidence-attachment.md)
 for the separate protocol-extraction evaluation boundary.
+
+## Native synthetic qualification
+
+The explicit mode connects OQ-154 and PQ-001 through PQ-040 to the existing signed study-definition workflow and the current native API. Use a local qualification environment with the official CORE validator, an authorized operator, and the immutable shared package already installed. Set `OQ_USERNAME` and `OQ_PASSWORD` through the environment (PQ-specific credentials are also supported). Run:
+
+```powershell
+npm run generate -- --pq --base-url http://localhost:3000 --synthetic-qualification
+npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification
+```
+
+Use the actual authorized API URL/port. This creates owned synthetic studies, native forms and observations, signed release/application/activation, enrollment and planned visits. PQ exercises field preservation, a signed query lifecycle, completion, stale-write refusal, SDV, signature invalidation/re-signing, signed freeze/unfreeze/lock, raw native value readback, and exact correction audit records. It soft-archives only its owned synthetic fixture after retention checks. OQ retains its fixture. Evidence contains native commands and separate readbacks; credentials are redacted.
+
+Missing conformance, governance or permission remains a failure. `--acknowledge-ungoverned` and `--acknowledge-incomplete` are explicit operator acknowledgments accepted only when the server permits them; the runner never adds these in response to a failure. A nonlocal target additionally requires `--allow-production-qualification`. Without `--synthetic-qualification`, setup remains a draft and dependent cases remain blocked.
+
+The broader manual/UI protocol now uses **PQM-001 through PQM-022**. Its report mappings remain pending until those exact cases have evidence; automated **PQ-000 through PQ-040** results cannot stand in for manual backup/recovery or other unrelated cases. The generated execution records describe each executed automated case. Tests under `tests/pq-workflow.contract.test.ts` are offline wire-contract checks, not native qualification, clinical validation, independent review, or evidence of human time savings.

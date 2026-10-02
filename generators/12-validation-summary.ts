@@ -23,12 +23,12 @@ interface ComplianceMapping {
 }
 
 const PART11_MAPPINGS: ComplianceMapping[] = [
-  { section: '11.10(a)', title: 'Validation', testCaseIds: ['OQ-043', 'OQ-044', 'OQ-049', 'PQ-007'], evidenceRef: 'This validation package' },
-  { section: '11.10(b)', title: 'Accurate and complete copies', testCaseIds: ['OQ-045', 'OQ-047', 'OQ-048', 'PQ-020'], evidenceRef: 'OQ — export test cases' },
-  { section: '11.10(c)', title: 'Record protection', testCaseIds: ['IQ-026', 'IQ-027', 'PQ-021'], evidenceRef: 'OQ — access control, backup tests' },
+  { section: '11.10(a)', title: 'Validation', testCaseIds: ['OQ-043', 'OQ-044', 'OQ-049', 'PQM-007'], evidenceRef: 'This validation package' },
+  { section: '11.10(b)', title: 'Accurate and complete copies', testCaseIds: ['OQ-045', 'OQ-047', 'OQ-048', 'PQM-020'], evidenceRef: 'OQ — export test cases' },
+  { section: '11.10(c)', title: 'Record protection', testCaseIds: ['IQ-026', 'IQ-027', 'PQM-021'], evidenceRef: 'OQ — access control, backup tests' },
   { section: '11.10(d)', title: 'Limiting system access', testCaseIds: ['OQ-001', 'OQ-002', 'OQ-003', 'OQ-005', 'OQ-006', 'OQ-008', 'OQ-009', 'OQ-010'], evidenceRef: 'OQ — RBAC, authentication tests' },
   { section: '11.10(e)', title: 'Audit trails', testCaseIds: ['OQ-023', 'OQ-024', 'OQ-025', 'OQ-026', 'OQ-027', 'OQ-028', 'OQ-029', 'OQ-030', 'OQ-031', 'OQ-032', 'OQ-042', 'OQ-044'], evidenceRef: 'OQ — audit trail test cases' },
-  { section: '11.10(f)', title: 'Operational system checks', testCaseIds: ['OQ-043', 'PQ-008'], evidenceRef: 'OQ — validation rules, edit checks' },
+  { section: '11.10(f)', title: 'Operational system checks', testCaseIds: ['OQ-043', 'PQM-008'], evidenceRef: 'OQ — validation rules, edit checks' },
   { section: '11.10(g)', title: 'Authority checks', testCaseIds: ['OQ-011', 'OQ-012', 'OQ-013', 'OQ-014', 'OQ-015', 'OQ-016', 'OQ-017', 'OQ-018', 'OQ-019', 'OQ-020', 'OQ-021', 'OQ-022'], evidenceRef: 'OQ — role-based access tests' },
   { section: '11.10(h)', title: 'Device checks', testCaseIds: ['OQ-005', 'OQ-007'], evidenceRef: 'IQ — infrastructure verification' },
   { section: '11.10(i)', title: 'Training', testCaseIds: [], evidenceRef: '15-training-matrix.md' },

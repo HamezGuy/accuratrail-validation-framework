@@ -17,6 +17,7 @@ interface CliArgs {
   baseUrl: string;
   benchmarkRun?: string;
   benchmarkEvaluatorRoot?: string;
+  qualificationFlags: string[];
 }
 
 function parseArgs(): CliArgs {
@@ -32,6 +33,7 @@ function parseArgs(): CliArgs {
     only: undefined,
     version: undefined,
     baseUrl: 'https://api.accuratrials.com',
+    qualificationFlags: [],
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -86,6 +88,12 @@ function parseArgs(): CliArgs {
         else args.benchmarkEvaluatorRoot = value;
         break;
       }
+      case '--synthetic-qualification':
+      case '--allow-production-qualification':
+      case '--acknowledge-ungoverned':
+      case '--acknowledge-incomplete':
+        args.qualificationFlags.push(arg);
+        break;
       default:
         console.warn(`  [WARN] Unknown argument: ${arg}`);
     }
@@ -284,8 +292,8 @@ async function main(): Promise<void> {
     for (const runner of runners) {
       if (!runner.flag) continue;
       try {
-        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string, workspaceRoot: string) => Promise<EvidenceResult[]> };
-        const results = await mod.run(outputDir, args.baseUrl, WORKSPACE_ROOT);
+        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string, workspaceRoot: string, qualificationFlags: readonly string[]) => Promise<EvidenceResult[]> };
+        const results = await mod.run(outputDir, args.baseUrl, WORKSPACE_ROOT, args.qualificationFlags);
         const failedCases = failedRunnerCases(results);
         if (failedCases.length > 0) {
           runnersFailed++;

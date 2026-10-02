@@ -147,3 +147,22 @@ test('network and validator failures cannot become passing qualification records
   const directory = workspace(t);
   assert.throws(() => saveEvidence(directory, 'oq', [{ ...invalid, passed: true }]), /capture failure/);
 });
+
+test('automatic PQ corrections cannot satisfy manual backup, recovery or regulatory mappings', async t => {
+  const directory = workspace(t);
+  saveEvidence(directory, 'pq', [result({ testCaseId: 'PQ-021' }), result({ testCaseId: 'PQ-022' })]);
+  const { generate: traceability } = await import('../generators/06-traceability-matrix');
+  const { generate: protocol } = await import('../generators/09-pq-protocol');
+  const { generate: summary } = await import('../generators/12-validation-summary');
+  traceability(directory, directory); protocol(directory, directory); summary(directory, directory);
+  const trace = fs.readFileSync(path.join(directory, '06-traceability-matrix.md'), 'utf8');
+  for (const title of ['Backup process (AES-256)', 'Archive/retrieval process', 'Records retrievable for retention period']) {
+    const row = trace.split('\n').find(line => line.includes(title));
+    assert.ok(row, title); assert.match(row, /PQM-02[12]/); assert.match(row, /Pending/); assert.doesNotMatch(row, /\bPASS\b/);
+  }
+  const content = fs.readFileSync(path.join(directory, '09-pq-protocol.md'), 'utf8');
+  assert.match(content, /PQM-022/); assert.match(content, /does not satisfy a same-numbered manual case/);
+  const vsr = fs.readFileSync(path.join(directory, '12-validation-summary.md'), 'utf8');
+  const row = vsr.split('\n').find(line => line.includes('11.10(c)') && line.includes('Record protection'));
+  assert.ok(row); assert.match(row, /Pending/); assert.doesNotMatch(row, /\bPASS\b/);
+});

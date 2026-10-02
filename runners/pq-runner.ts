@@ -1,14 +1,14 @@
-import { authHeaders, login, qualificationCredentials } from './auth';
+import { login, qualificationCredentials } from './auth';
 import {
   type EvidenceResult,
-  captureWithValidator,
   enrichResult,
   isRecord,
   manualResult,
   saveEvidence,
 } from './evidence-capture';
-import { cloneStudy, pendingStudy, type StudyWorkspace } from './study-definition-client';
-import { captureStudyOperation } from './study-qualification';
+import { cloneStudy, pendingStudy, type StudyWorkspace, type StudyActivationReview, type StudyTransport, expectStudySuccess, nativeId } from './study-definition-client';
+import { captureStudyOperation, captureQualificationOperation } from './study-qualification';
+import { qualificationOptions, syntheticStudyDefinition } from './qualification-fixture';
 
 /** PQ keeps its own default operator; OQ_USERNAME / OQ_PASSWORD still take precedence. */
 function pqCredentials(): { username: string; password: string } {
@@ -22,15 +22,7 @@ function evidence(testCaseId: string, endpoint: string, method: string, status: 
   return { testCaseId, timestamp: new Date().toISOString(), endpoint, method, responseStatus: status, responseBody: body, passed, notes };
 }
 
-function extractId(body: unknown): number | null {
-  if (isRecord(body) && isRecord(body.data) && typeof body.data.id === 'number') return body.data.id;
-  if (isRecord(body) && typeof body.id === 'number') return body.id;
-  if (isRecord(body) && isRecord(body.data) && typeof body.data.studyId === 'number') return body.data.studyId;
-  if (isRecord(body) && typeof body.studyId === 'number') return body.studyId;
-  return null;
-}
-
-interface WorkflowState {
+export interface WorkflowState {
   adminToken: string | null;
   userId: number | null;
   orgId: number | null;
@@ -47,10 +39,17 @@ interface WorkflowState {
   signatureId: number | null;
   baseUrl: string;
   studyWorkspace?: StudyWorkspace;
+  formItems?: Record<string, number>;
+  crfVersionId?: number;
+  qualification?: StudyActivationReview;
+  values?: Record<string, unknown>;
+  enrollmentRequest?: { studyId: number; label: string; enrollmentDate: string; enrollmentStatus: string; autoScheduleVisits: boolean };
 }
 
-export async function runStudySetup(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+export async function runStudySetup(baseUrl: string, state: WorkflowState, qualification?: StudyActivationReview): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
+  state.qualification = qualification;
+  state.baseUrl = baseUrl;
 
   if (!state.adminToken) {
     for (let i = 1; i <= 10; i++) {
@@ -59,14 +58,14 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState): Prom
     return results;
   }
 
-  const headers = authHeaders(state.adminToken);
   state.studyName = `PQ Validation Study ${Date.now()}`;
   const protocolId = `PQ-PROTO-${Date.now()}`;
 
   // PQ-001: Create a new test study
-  const initial = pendingStudy(state.studyName, protocolId, 'PQ validation test study — created by automated PQ runner');
+  const initial = qualification ? syntheticStudyDefinition(protocolId)
+    : pendingStudy(state.studyName, protocolId, 'PQ validation test study — created by automated PQ runner');
   // A draft can retain an incomplete clinical design without claiming release.
-  initial.document.study!.versions = [{
+  if (!qualification) initial.document.study!.versions = [{
     id: 'pq-version', instanceType: 'StudyVersion', versionIdentifier: '1.0',
     rationale: 'Synthetic performance qualification fixture',
     studyDesigns: [{
@@ -75,7 +74,7 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState): Prom
         standardCode: { id: 'pq-phase-code', instanceType: 'Code', decode: 'Phase III' } },
     }],
   }];
-  initial.selection = { versionId: 'pq-version', designId: 'pq-design' };
+  if (!qualification) initial.selection = { versionId: 'pq-version', designId: 'pq-design' };
   const created = await captureStudyOperation('PQ-001', baseUrl, state.adminToken, 'Create and read back canonical draft',
     client => client.create(initial, 'Create synthetic PQ study definition'));
   if (created.value) {
@@ -103,7 +102,8 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState): Prom
   let pq003 = evidence('PQ-003', '/api/studies/:id', 'PUT', 0, null, false, 'Blocked — no verified study from PQ-001');
   if (state.studyWorkspace) {
     const content = cloneStudy(state.studyWorkspace.revision.content);
-    content.document.study!.description = 'PQ validation test study — UPDATED by automated PQ runner';
+    if (qualification) content.execution.extensions.qualificationRun = protocolId;
+    else content.document.study!.description = 'PQ validation test study — UPDATED by automated PQ runner';
     const updated = await captureStudyOperation('PQ-003', baseUrl, state.adminToken, 'Replace and read back canonical draft',
       client => client.replace(state.studyWorkspace!, content, 'Review PQ study description change'));
     pq003 = updated.evidence;
@@ -136,873 +136,357 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState): Prom
     acceptanceCriteria: 'Revision-aware execution command and GET readback preserve the visit and its numeric native ID',
   }));
 
-  // PQ-005: Assign a form/CRF to the study
-  const pq005 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-005', method: 'POST', url: '/api/forms', baseUrl, headers, body: {
-      studyId: state.studyId,
-      name: 'Demographics CRF',
-      version: '1.0',
-      status: 'ACTIVE',
-      fields: [
-        { name: 'patientInitials', label: 'Patient Initials', type: 'text', required: true, ordinal: 1 },
-        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true, ordinal: 2 },
-        { name: 'weight', label: 'Weight (kg)', type: 'number', required: false, ordinal: 3 },
-        { name: 'gender', label: 'Gender', type: 'dropdown', required: true, ordinal: 4, options: ['Male', 'Female', 'Other'] },
-        { name: 'notes', label: 'Notes', type: 'text', required: false, ordinal: 5 },
-      ],
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/forms not available' };
-      if (s === 200 || s === 201) {
-        state.formId = extractId(b);
-        return { passed: state.formId !== null, notes: `Form created${state.formId ? ` with ID ${state.formId}` : ' but ID not parseable'}` };
+  // PQ-005 creates native fields, checks their identities, assigns this exact
+  // version to the visit, then applies and activates the exact reviewed fixture.
+  const configured = state.studyWorkspace && pq004.passed
+    ? await captureStudyOperation('PQ-005', baseUrl, state.adminToken, 'Create and verify assigned qualification CRF', async client => {
+      const form = await client.createForm(state.studyId!, {
+        name: `Synthetic PQ demographics ${protocolId}`,
+        fields: [
+          { name: 'patientInitials', label: 'Synthetic initials', type: 'text', required: true, ordinal: 1 },
+          { name: 'dateOfBirth', label: 'Synthetic date', type: 'date', required: true, ordinal: 2 },
+          { name: 'weight', label: 'Synthetic weight (kg)', type: 'number', required: false, ordinal: 3, min: 0, max: 300 },
+          { name: 'gender', label: 'Synthetic gender', type: 'select', required: true, ordinal: 4,
+            options: [{ label: 'Male', value: 'Male' }, { label: 'Female', value: 'Female' }, { label: 'Other', value: 'Other' }] },
+          { name: 'notes', label: 'Synthetic notes', type: 'text', required: false, ordinal: 5 },
+        ],
+      });
+      state.formId = form.crfId; state.crfVersionId = form.crfVersionId; state.formItems = form.items;
+      const current = await client.get(state.studyId!);
+      const visit = current.executionContext.visits.find(row => row.studyEventDefinitionId === state.eventDefinitionId);
+      if (!visit) throw new Error('Qualification visit disappeared before form assignment.');
+      let configured = await client.editExecution(current, {
+        visits: { upsert: [{ ...visit, crfAssignments: [{ crfId: form.crfId, defaultVersionId: form.crfVersionId,
+          required: true, doubleDataEntry: false, hideCrf: false, electronicSignature: false, ordinal: 1 }] }], removeIds: [] },
+      }, 'Assign the verified synthetic PQ form version');
+      if (qualification) {
+        configured = await client.releaseAndApply(configured, { password: qualification.password,
+          meaning: 'Approve this synthetic software qualification configuration' }, qualification.reason);
+        const reviewed = await client.getActivationReview(configured);
+        configured = await client.activateReviewed(configured, { ...qualification,
+          activationReviewHash: qualification.activationReviewHash ?? reviewed.executionWitness.reviewHash });
       }
-      return { passed: false, notes: `Form creation returned ${s}` };
-    },
-  ) : evidence('PQ-005', '/api/forms', 'POST', 0, null, false, 'Skipped — no study ID');
-  results.push(enrichResult(pq005, {
-    regulatoryRef: '21 CFR 11.10(b) — Generate accurate and complete copies of records',
-    testDescription: 'Create and assign a CRF form with multiple field types to the study',
-    acceptanceCriteria: 'API returns 201 with form ID; form has text, date, number, dropdown fields',
+      return configured;
+    }) : { evidence: evidence('PQ-005', '/api/forms', 'POST', 0, null, false, 'Blocked: no verified qualification visit') };
+  results.push(enrichResult(configured.evidence, {
+    regulatoryRef: '21 CFR 11.10(a)', testDescription: 'Create, assign and independently read back the synthetic CRF',
+    acceptanceCriteria: qualification
+      ? 'Exact native form/version/items and visit assignment; conformant signed release, application and reviewed activation; active readback'
+      : 'Exact native form/version/items and visit assignment; draft remains unactivated',
   }));
-
-  // Canonical draft creation does not authorize patient enrollment. A genuine
-  // conformant fixture plus signed release/application and lifecycle readiness
-  // are required before resuming the clinical workflow.
-  for (let i = 6; i <= 10; i++) {
-    results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`,
-      'Blocked: synthetic study is a pending draft. A validated fixture, signed release/application and reviewed lifecycle readiness are required.'));
+  if (configured.value) state.studyWorkspace = configured.value;
+  if (!qualification || !configured.evidence.passed) {
+    for (let i = 6; i <= 10; i++) results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`,
+      'Blocked: explicit synthetic qualification and verified release/application/activation are required.'));
+    return results;
   }
+  results.push(...await runAppliedStudyEnrollment(baseUrl, state));
   return results;
 }
 
-/** Kept separate from draft qualification so pending setup cannot enroll into
- * an arbitrary native study/site or substitute ID 1 for a missing visit. */
-async function runAppliedStudyEnrollment(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
-  const results: EvidenceResult[] = [];
-  const headers = authHeaders(state.adminToken!);
-  // PQ-006: Create a test subject
+/** The same native enrollment path serves PQ and the OQ fixture check. */
+export async function runAppliedStudyEnrollment(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+  const results: EvidenceResult[] = [], date = new Date().toISOString().slice(0, 10);
   state.subjectLabel = `PQ-SUBJ-${Date.now()}`;
-  const pq006 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-006', method: 'POST', url: '/api/subjects', baseUrl, headers, body: {
-      studyId: state.studyId,
-      label: state.subjectLabel,
-      status: 'ENROLLED',
-      enrollmentDate: new Date().toISOString().split('T')[0],
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/subjects not available' };
-      if (s === 200 || s === 201) {
-        state.subjectId = extractId(b);
-        return { passed: state.subjectId !== null, notes: `Subject created${state.subjectId ? ` with ID ${state.subjectId}` : ' but ID not parseable'}` };
-      }
-      return { passed: false, notes: `Subject creation returned ${s}` };
-    },
-  ) : evidence('PQ-006', '/api/subjects', 'POST', 0, null, false, 'Skipped — no study ID');
-  results.push(enrichResult(pq006, {
-    regulatoryRef: '21 CFR 11.10(a) — Validated system ensuring accuracy',
-    testDescription: 'Create/enroll a new subject in the study',
-    acceptanceCriteria: 'API returns 201 with subject ID and label matches input',
-  }));
-
-  // PQ-007: Verify subject appears in list
-  const pq007 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-007', method: 'GET', url: `/api/subjects?studyId=${state.studyId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/subjects not available' };
-      if (s === 200) {
-        const subjects = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        const found = subjects.some((sub: unknown) => isRecord(sub) && (sub.id === state.subjectId || sub.subjectId === state.subjectId || sub.label === state.subjectLabel));
-        return { passed: found, notes: found ? `Subject found in list of ${subjects.length}` : `Subject not found in ${subjects.length} subjects` };
-      }
-      return { passed: false, notes: `Subject list returned ${s}` };
-    },
-  ) : evidence('PQ-007', '/api/subjects', 'GET', 0, null, false, 'Skipped — no study ID');
-  results.push(enrichResult(pq007, {
-    regulatoryRef: '21 CFR 11.10(b) — Accurate and complete copies of records',
-    testDescription: 'Verify newly enrolled subject appears in the subject listing',
-    acceptanceCriteria: 'GET /api/subjects returns list containing the enrolled subject',
-  }));
-
-  // PQ-008: Create duplicate subject (should be rejected)
-  const pq008 = state.studyId && state.subjectId ? await captureWithValidator(
-    { testCaseId: 'PQ-008', method: 'POST', url: '/api/subjects', baseUrl, headers, body: {
-      studyId: state.studyId,
-      label: state.subjectLabel,
-      status: 'ENROLLED',
-    }},
-    (s, _b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/subjects not available' };
-      const rejected = s === 409 || s === 400 || s === 422;
-      return { passed: rejected, notes: rejected ? `Duplicate correctly rejected with ${s}` : `Expected 409/400/422, got ${s} — duplicate may not be detected` };
-    },
-  ) : evidence('PQ-008', '/api/subjects', 'POST', 0, null, false, 'Skipped — no subject from PQ-006');
-  results.push(enrichResult(pq008, {
-    regulatoryRef: '21 CFR 11.10(a) — System controls to ensure data integrity',
-    testDescription: 'Attempt to create a duplicate subject with the same label',
-    acceptanceCriteria: 'API rejects duplicate with 409/400/422 status code',
-  }));
-
-  // PQ-009: Schedule a visit for the subject
-  const pq009 = state.subjectId && state.eventDefinitionId ? await captureWithValidator(
-    { testCaseId: 'PQ-009', method: 'POST', url: '/api/events', baseUrl, headers, body: {
-      subjectId: state.subjectId,
-      studyId: state.studyId,
-      eventDefinitionId: state.eventDefinitionId,
-      name: 'Screening Visit',
-      scheduledDate: new Date().toISOString().split('T')[0],
-      status: 'SCHEDULED',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/events not available' };
-      if (s === 200 || s === 201) {
-        state.visitId = extractId(b);
-        return { passed: true, notes: `Visit scheduled${state.visitId ? ` with ID ${state.visitId}` : ''}` };
-      }
-      return { passed: false, notes: `Event creation returned ${s}` };
-    },
-  ) : evidence('PQ-009', '/api/events', 'POST', 0, null, false, 'Skipped — no subject ID');
-  results.push(enrichResult(pq009, {
-    regulatoryRef: '21 CFR 11.10(a) — Accurate records of clinical activities',
-    testDescription: 'Schedule a visit/event for the enrolled subject',
-    acceptanceCriteria: 'API returns 201 with event ID and scheduled status',
-  }));
-
-  // PQ-010: Verify visit appears in subject timeline
-  const pq010 = state.subjectId ? await captureWithValidator(
-    { testCaseId: 'PQ-010', method: 'GET', url: `/api/events?subjectId=${state.subjectId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/events not available' };
-      if (s === 200) {
-        const events = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        const found = events.length > 0;
-        return { passed: found, notes: found ? `Found ${events.length} event(s) for subject` : 'No events found for subject' };
-      }
-      return { passed: false, notes: `Events list returned ${s}` };
-    },
-  ) : evidence('PQ-010', '/api/events', 'GET', 0, null, false, 'Skipped — no subject ID');
-  results.push(enrichResult(pq010, {
-    regulatoryRef: '21 CFR 11.10(b) — Complete records retrievable throughout retention period',
-    testDescription: 'Verify the scheduled visit appears in the subject event timeline',
-    acceptanceCriteria: 'GET /api/events returns at least one event for the subject',
-  }));
-
-  return results;
-}
-
-async function runDataEntry(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
-  const results: EvidenceResult[] = [];
-
-  if (!state.adminToken || !state.subjectId) {
-    for (let i = 11; i <= 25; i++) {
-      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No subject available from study setup phase'));
-    }
+  const step = async (id: string, description: string, action: Parameters<typeof captureStudyOperation>[4]) => {
+    const result = await captureStudyOperation(id, baseUrl, state.adminToken!, description, action);
+    results.push(result.evidence); return result;
+  };
+  const enrolled = await step('PQ-006', 'Enroll in this signed, active fixture and verify native subject',
+    client => client.enroll(state.studyWorkspace!, state.subjectLabel, date));
+  if (enrolled.value) {
+    const value = enrolled.value as Awaited<ReturnType<import('./study-definition-client').StudyDefinitionClient['enroll']>>;
+    state.subjectId = value.subject.studySubjectId; state.enrollmentRequest = value.request;
+  }
+  if (!state.subjectId || !state.enrollmentRequest) {
+    for (let i = 7; i <= 10; i++) results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'Blocked: enrollment has no verified native subject.'));
     return results;
   }
-
-  const headers = authHeaders(state.adminToken);
-
-  // PQ-011: Enter form data for a visit
-  const pq011 = state.formId && state.visitId ? await captureWithValidator(
-    { testCaseId: 'PQ-011', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: {
-        patientInitials: 'JD',
-        dateOfBirth: '1985-06-15',
-        weight: 72.5,
-        gender: 'Male',
-        notes: 'PQ test data entry',
-      },
-      status: 'IN_PROGRESS',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/form-data not available' };
-      if (s === 200 || s === 201) {
-        state.formDataId = extractId(b);
-        return { passed: true, notes: `Form data saved${state.formDataId ? ` with ID ${state.formDataId}` : ''}` };
-      }
-      return { passed: false, notes: `Form data submission returned ${s}` };
-    },
-  ) : evidence('PQ-011', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form/visit from setup phase');
-  results.push(enrichResult(pq011, {
-    regulatoryRef: '21 CFR 11.10(a) — Accurate records',
-    testDescription: 'Enter clinical data into a CRF form for a scheduled visit',
-    acceptanceCriteria: 'API returns 201 with form data ID; all field values persisted',
-  }));
-
-  // PQ-012: Verify data is saved correctly
-  const pq012 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-012', method: 'GET', url: `/api/form-data/${state.formDataId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/form-data/:id not available' };
-      if (s === 200) {
-        const data = isRecord(b) && isRecord(b.data) ? b.data : b;
-        const formData = isRecord(data) && isRecord(data.data) ? data.data : (isRecord(data) ? data : null);
-        if (formData && formData.patientInitials === 'JD') {
-          return { passed: true, notes: 'Form data retrieved and matches submitted values' };
-        }
-        return { passed: false, notes: 'Data retrieved but values do not match submitted data' };
-      }
-      return { passed: false, notes: `Form data retrieval returned ${s}` };
-    },
-  ) : evidence('PQ-012', '/api/form-data/:id', 'GET', 0, null, false, 'Skipped — no form data from PQ-011');
-  results.push(enrichResult(pq012, {
-    regulatoryRef: '21 CFR 11.10(b) — Accurate and complete copies of records',
-    testDescription: 'Retrieve saved form data and verify field values match submitted data',
-    acceptanceCriteria: 'GET returns exact values entered in PQ-011',
-  }));
-
-  // PQ-013: Edit form data (verify old value preserved in audit)
-  const pq013 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-013', method: 'PUT', url: `/api/form-data/${state.formDataId}`, baseUrl, headers, body: {
-      data: {
-        patientInitials: 'JD',
-        dateOfBirth: '1985-06-15',
-        weight: 75.0,
-        gender: 'Male',
-        notes: 'PQ test data — EDITED weight from 72.5 to 75.0',
-      },
-      reason: 'Data correction per source document verification',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/form-data/:id not available' };
-      if (s === 200) return { passed: true, notes: 'Form data updated; reason for change recorded' };
-      return { passed: false, notes: `Form data edit returned ${s}` };
-    },
-  ) : evidence('PQ-013', '/api/form-data/:id', 'PUT', 0, null, false, 'Skipped — no form data from PQ-011');
-  results.push(enrichResult(pq013, {
-    regulatoryRef: '21 CFR 11.10(e) — Audit trail of changes with reason',
-    testDescription: 'Edit existing form data and verify reason is required/recorded',
-    acceptanceCriteria: 'PUT returns 200; audit trail preserves old value and records change reason',
-  }));
-
-  // PQ-014: Validation rule fires on invalid data
-  const pq014 = state.formId ? await captureWithValidator(
-    { testCaseId: 'PQ-014', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: {
-        patientInitials: '',
-        dateOfBirth: '2099-01-01',
-        weight: -5,
-        gender: '',
-        notes: '',
-      },
-      status: 'IN_PROGRESS',
-      validateOnly: true,
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: Validation endpoint not available' };
-      if (s === 422 || s === 400) return { passed: true, notes: `Validation correctly rejected invalid data with ${s}` };
-      if (s === 200 && isRecord(b)) {
-        const hasErrors = (Array.isArray(b.errors) && b.errors.length > 0) ||
-          (isRecord(b.data) && Array.isArray(b.data.errors) && b.data.errors.length > 0) ||
-          (Array.isArray(b.validationErrors) && b.validationErrors.length > 0);
-        return { passed: hasErrors, notes: hasErrors ? 'Validation errors returned for invalid data' : 'No validation errors returned for clearly invalid data' };
-      }
-      return { passed: false, notes: `Validation request returned ${s}` };
-    },
-  ) : evidence('PQ-014', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form ID');
-  results.push(enrichResult(pq014, {
-    regulatoryRef: '21 CFR 11.10(f) — Operational system checks for valid data entry',
-    testDescription: 'Submit invalid data and verify validation rules fire correctly',
-    acceptanceCriteria: 'API returns 422/400 or 200 with validation errors for invalid field values',
-  }));
-
-  // PQ-015: Enter data in all field types
-  const pq015 = state.formId ? await captureWithValidator(
-    { testCaseId: 'PQ-015', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: {
-        patientInitials: 'AB',
-        dateOfBirth: '1990-03-22',
-        weight: 68.2,
-        gender: 'Female',
-        notes: 'Testing all field types: text=AB, date=1990-03-22, number=68.2, dropdown=Female',
-      },
-      status: 'COMPLETE',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/form-data not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'All field types (text, date, number, dropdown) accepted and saved' };
-      return { passed: false, notes: `Multi-type data entry returned ${s}` };
-    },
-  ) : evidence('PQ-015', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form ID');
-  results.push(enrichResult(pq015, {
-    regulatoryRef: '21 CFR 11.10(a) — System validation for intended use',
-    testDescription: 'Enter data in all supported field types (text, number, date, dropdown)',
-    acceptanceCriteria: 'All field types accepted and persisted without data loss or type coercion errors',
-  }));
-
-  // PQ-016: Query is auto-generated from validation failure
-  const pq016 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-016', method: 'GET', url: `/api/queries?studyId=${state.studyId}&status=OPEN`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/queries not available' };
-      if (s === 200) {
-        const queries = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        return { passed: true, notes: `Query check: ${queries.length} open queries found for study` };
-      }
-      return { passed: false, notes: `Query listing returned ${s}` };
-    },
-  ) : evidence('PQ-016', '/api/queries', 'GET', 0, null, false, 'Skipped — no study ID');
-  results.push(enrichResult(pq016, {
-    regulatoryRef: '21 CFR 11.10(f) — Operational system checks',
-    testDescription: 'Verify queries are auto-generated from validation rule failures',
-    acceptanceCriteria: 'Open queries exist for the study after validation failure in PQ-014',
-  }));
-
-  // PQ-017: Manual query creation on a field
-  const pq017 = state.subjectId ? await captureWithValidator(
-    { testCaseId: 'PQ-017', method: 'POST', url: '/api/queries', baseUrl, headers, body: {
-      studyId: state.studyId,
-      subjectId: state.subjectId,
-      formDataId: state.formDataId,
-      fieldName: 'weight',
-      message: 'Please confirm weight value — appears inconsistent with previous visit',
-      type: 'MANUAL',
-      priority: 'MEDIUM',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/queries not available' };
-      if (s === 200 || s === 201) {
-        state.queryId = extractId(b);
-        return { passed: true, notes: `Query created${state.queryId ? ` with ID ${state.queryId}` : ''}` };
-      }
-      return { passed: false, notes: `Query creation returned ${s}` };
-    },
-  ) : evidence('PQ-017', '/api/queries', 'POST', 0, null, false, 'Skipped — no subject ID');
-  results.push(enrichResult(pq017, {
-    regulatoryRef: '21 CFR 11.10(a) — System validation ensuring data quality',
-    testDescription: 'Manually create a data query on a specific form field',
-    acceptanceCriteria: 'API returns 201 with query ID; query linked to subject and field',
-  }));
-
-  // PQ-018: Respond to a query
-  const pq018 = state.queryId ? await captureWithValidator(
-    { testCaseId: 'PQ-018', method: 'POST', url: `/api/queries/${state.queryId}/respond`, baseUrl, headers, body: {
-      message: 'Weight confirmed at 75.0 kg per source document dated today',
-      action: 'RESPOND',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/queries/:id/respond not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Query response submitted successfully' };
-      return { passed: false, notes: `Query response returned ${s}` };
-    },
-  ) : evidence('PQ-018', '/api/queries/:id/respond', 'POST', 0, null, false, 'Skipped — no query from PQ-017');
-  results.push(enrichResult(pq018, {
-    regulatoryRef: '21 CFR 11.10(e) — Audit trail of data query workflow',
-    testDescription: 'Respond to an open data query with an explanation',
-    acceptanceCriteria: 'Response accepted; query status moves to ANSWERED/RESPONDED',
-  }));
-
-  // PQ-019: Resolve a query
-  const pq019 = state.queryId ? await captureWithValidator(
-    { testCaseId: 'PQ-019', method: 'POST', url: `/api/queries/${state.queryId}/close`, baseUrl, headers, body: {
-      message: 'Confirmed — closing query',
-      action: 'CLOSE',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/queries/:id/close not available' };
-      if (s === 200) return { passed: true, notes: 'Query resolved/closed successfully' };
-      return { passed: false, notes: `Query close returned ${s}` };
-    },
-  ) : evidence('PQ-019', '/api/queries/:id/close', 'POST', 0, null, false, 'Skipped — no query from PQ-017');
-  results.push(enrichResult(pq019, {
-    regulatoryRef: '21 CFR 11.10(e) — Complete audit trail through query lifecycle',
-    testDescription: 'Close/resolve an answered data query',
-    acceptanceCriteria: 'Query status changes to CLOSED; closure timestamp recorded',
-  }));
-
-  // PQ-020: Mark form as complete
-  const pq020 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-020', method: 'PUT', url: `/api/form-data/${state.formDataId}/status`, baseUrl, headers, body: {
-      status: 'COMPLETE',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/form-data/:id/status not available' };
-      if (s === 200) return { passed: true, notes: 'Form marked as COMPLETE' };
-      return { passed: false, notes: `Form status update returned ${s}` };
-    },
-  ) : evidence('PQ-020', '/api/form-data/:id/status', 'PUT', 0, null, false, 'Skipped — no form data from PQ-011');
-  results.push(enrichResult(pq020, {
-    regulatoryRef: '21 CFR 11.10(a) — System tracks record completion status',
-    testDescription: 'Mark a form as complete after all data entry is finished',
-    acceptanceCriteria: 'Form status transitions to COMPLETE; no further edits without reason',
-  }));
-
-  // PQ-021: Partial save and resume
-  const pq021 = state.formId ? await captureWithValidator(
-    { testCaseId: 'PQ-021', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: { patientInitials: 'XY' },
-      status: 'IN_PROGRESS',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/form-data not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Partial form data saved in IN_PROGRESS state' };
-      return { passed: false, notes: `Partial save returned ${s}` };
-    },
-  ) : evidence('PQ-021', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form ID');
-  results.push(enrichResult(pq021, {
-    regulatoryRef: '21 CFR 11.10(a) — System supports incremental data entry',
-    testDescription: 'Partially save form data and verify IN_PROGRESS state is preserved',
-    acceptanceCriteria: 'Partial data saved; status remains IN_PROGRESS; data retrievable on resume',
-  }));
-
-  // PQ-022: Concurrent edit detection
-  const pq022 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-022', method: 'PUT', url: `/api/form-data/${state.formDataId}`, baseUrl, headers, body: {
-      data: { weight: 80.0 },
-      reason: 'Concurrent edit test',
-      expectedVersion: 0,
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/form-data/:id not available' };
-      if (s === 409) return { passed: true, notes: 'Concurrent edit correctly detected and rejected (409 Conflict)' };
-      if (s === 200) return { passed: true, notes: 'Edit accepted — system may not enforce optimistic locking (acceptable)' };
-      return { passed: false, notes: `Concurrent edit test returned ${s}` };
-    },
-  ) : evidence('PQ-022', '/api/form-data/:id', 'PUT', 0, null, false, 'Skipped — no form data');
-  results.push(enrichResult(pq022, {
-    regulatoryRef: '21 CFR 11.10(a) — Data integrity under concurrent access',
-    testDescription: 'Test concurrent edit detection with stale version number',
-    acceptanceCriteria: 'System either rejects with 409 or accepts with proper audit trail',
-  }));
-
-  // PQ-023: Empty/null field handling
-  const pq023 = state.formId ? await captureWithValidator(
-    { testCaseId: 'PQ-023', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: {
-        patientInitials: 'ZZ',
-        dateOfBirth: '2000-01-01',
-        weight: null,
-        gender: 'Other',
-        notes: '',
-      },
-      status: 'IN_PROGRESS',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/form-data not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Null and empty values handled correctly' };
-      if (s === 422 || s === 400) return { passed: true, notes: `Correctly validated null/empty — rejected with ${s}` };
-      return { passed: false, notes: `Null field test returned ${s}` };
-    },
-  ) : evidence('PQ-023', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form ID');
-  results.push(enrichResult(pq023, {
-    regulatoryRef: '21 CFR 11.10(f) — System checks for permitted values',
-    testDescription: 'Test handling of null and empty field values',
-    acceptanceCriteria: 'System either accepts nullable fields or rejects with clear validation message',
-  }));
-
-  // PQ-024: Unicode in patient data
-  const pq024 = state.formId ? await captureWithValidator(
-    { testCaseId: 'PQ-024', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: {
-        patientInitials: 'ÄÖ',
-        dateOfBirth: '1978-11-03',
-        weight: 65.0,
-        gender: 'Female',
-        notes: 'Unicode test: Ñoño — 日本語テスト — émojis 👍',
-      },
-      status: 'IN_PROGRESS',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/form-data not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Unicode characters accepted and stored' };
-      return { passed: false, notes: `Unicode test returned ${s}` };
-    },
-  ) : evidence('PQ-024', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form ID');
-  results.push(enrichResult(pq024, {
-    regulatoryRef: '21 CFR 11.10(b) — Accurate copies of records in human readable form',
-    testDescription: 'Enter Unicode characters (accented, CJK, emoji) in form fields',
-    acceptanceCriteria: 'Unicode data saved and retrievable without corruption',
-  }));
-
-  // PQ-025: Boundary number values
-  const pq025 = state.formId ? await captureWithValidator(
-    { testCaseId: 'PQ-025', method: 'POST', url: '/api/form-data', baseUrl, headers, body: {
-      formId: state.formId,
-      subjectId: state.subjectId,
-      eventId: state.visitId,
-      studyId: state.studyId,
-      data: {
-        patientInitials: 'BV',
-        dateOfBirth: '1950-01-01',
-        weight: 0,
-        gender: 'Male',
-        notes: 'Boundary value test — weight=0',
-      },
-      status: 'IN_PROGRESS',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/form-data not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Boundary value (0) accepted for numeric field' };
-      if (s === 422 || s === 400) return { passed: true, notes: `Boundary value correctly rejected as invalid — ${s}` };
-      return { passed: false, notes: `Boundary value test returned ${s}` };
-    },
-  ) : evidence('PQ-025', '/api/form-data', 'POST', 0, null, false, 'Skipped — no form ID');
-  results.push(enrichResult(pq025, {
-    regulatoryRef: '21 CFR 11.10(f) — System checks for valid values at boundary',
-    testDescription: 'Test boundary numeric values (zero) in form fields',
-    acceptanceCriteria: 'System handles boundary values correctly — either accepts or rejects with reason',
-  }));
-
+  await step('PQ-007', 'Verify the exact native study subject and label',
+    client => client.readSubject(state.subjectId!, state.studyId!, state.subjectLabel, state.enrollmentRequest!.enrollmentDate));
+  await step('PQ-008', 'Reject an exact duplicate enrollment and verify unchanged subject census',
+    client => client.rejectDuplicateSubject(state.subjectId!, state.enrollmentRequest!));
+  const scheduled = await step('PQ-009', 'Schedule and read back the native patient visit',
+    client => client.scheduleVisit(state.subjectId!, state.eventDefinitionId!, date));
+  if (scheduled.value) state.visitId = scheduled.value as number;
+  if (state.visitId) await step('PQ-010', 'Verify the exact planned visit; no actual date is invented',
+    client => client.readVisit(state.subjectId!, state.visitId!, state.eventDefinitionId!, date));
+  else results.push(manualResult('PQ-010', 'Blocked: no independently verified scheduled visit.'));
   return results;
 }
 
-async function runReviewAndSignature(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
-  const results: EvidenceResult[] = [];
+function demand(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+const dataOf = (response: Awaited<ReturnType<StudyTransport>>, status = 200): any => expectStudySuccess(response, status).data;
+const reviewed = (snapshot: any) => ({ expectedExecution: snapshot.execution ?? null,
+  expectedObservations: { contract: 'edc-form-observation-preconditions/1', snapshotHash: snapshot.observationSnapshotHash } });
 
-  if (!state.adminToken || !state.subjectId) {
-    for (let i = 26; i <= 35; i++) {
-      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No subject/form data available from data entry phase'));
-    }
-    return results;
+async function patientForm(request: StudyTransport, state: WorkflowState): Promise<any> {
+  if (!state.formDataId) {
+    const forms = dataOf(await request('GET', `/events/instance/${state.visitId}/crfs`));
+    demand(Array.isArray(forms), 'Native patient-form census is missing.');
+    const matches = forms.filter((form: any) => form.crfId === state.formId && form.crfVersionId === state.crfVersionId
+      && form.studyEventId === state.visitId && form.studySubjectId === state.subjectId);
+    demand(matches.length === 1 && nativeId(matches[0].eventCrfId), 'Missing or ambiguous assigned native patient form.');
+    state.formDataId = matches[0].eventCrfId;
   }
-
-  const headers = authHeaders(state.adminToken);
-
-  // PQ-026: SDV a form (source data verification)
-  const pq026 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-026', method: 'POST', url: `/api/sdv`, baseUrl, headers, body: {
-      formDataId: state.formDataId,
-      subjectId: state.subjectId,
-      studyId: state.studyId,
-      verified: true,
-      comment: 'Source document reviewed and matches eCRF entry',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/sdv not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'SDV completed — form marked as source-verified' };
-      return { passed: false, notes: `SDV request returned ${s}` };
-    },
-  ) : evidence('PQ-026', '/api/sdv', 'POST', 0, null, false, 'Skipped — no form data');
-  results.push(enrichResult(pq026, {
-    regulatoryRef: '21 CFR 11.10(b) — Verification of accuracy of records',
-    testDescription: 'Perform source data verification (SDV) on a completed form',
-    acceptanceCriteria: 'SDV status saved; form flagged as source-verified with timestamp and verifier',
-  }));
-
-  // PQ-027: Sign a completed form (e-signature)
-  const pq027 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-027', method: 'POST', url: '/api/esignatures', baseUrl, headers, body: {
-      formDataId: state.formDataId,
-      subjectId: state.subjectId,
-      studyId: state.studyId,
-      ...pqCredentials(),
-      reason: 'I have reviewed this data and confirm it is accurate and complete',
-      meaning: 'APPROVAL',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/esignatures not available' };
-      if (s === 200 || s === 201) {
-        state.signatureId = extractId(b);
-        return { passed: true, notes: `E-signature applied${state.signatureId ? ` with ID ${state.signatureId}` : ''}` };
-      }
-      if (s === 401 || s === 403) return { passed: false, notes: `Signature authentication failed (${s}) — verify credentials` };
-      return { passed: false, notes: `E-signature returned ${s}` };
-    },
-  ) : evidence('PQ-027', '/api/esignatures', 'POST', 0, null, false, 'Skipped — no form data');
-  results.push(enrichResult(pq027, {
-    regulatoryRef: '21 CFR 11.50 — Signature manifestations; 21 CFR 11.70 — Signature/record linking',
-    testDescription: 'Apply electronic signature requiring username, password, and reason',
-    acceptanceCriteria: 'Signature created with full manifestation (signer, date, meaning, reason)',
-  }));
-
-  // PQ-028: Verify signature manifestation in response
-  const pq028 = state.signatureId ? await captureWithValidator(
-    { testCaseId: 'PQ-028', method: 'GET', url: `/api/esignatures/${state.signatureId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/esignatures/:id not available' };
-      if (s === 200) {
-        const sig = isRecord(b) && isRecord(b.data) ? b.data : b;
-        if (!isRecord(sig)) return { passed: false, notes: 'Signature data not parseable' };
-        const hasReason = typeof sig.reason === 'string' && sig.reason.length > 0;
-        const hasMeaning = typeof sig.meaning === 'string' && sig.meaning.length > 0;
-        const hasTimestamp = typeof sig.signedAt === 'string' || typeof sig.timestamp === 'string' || typeof sig.createdAt === 'string';
-        const complete = hasReason && hasMeaning && hasTimestamp;
-        return { passed: complete, notes: complete ? 'Signature manifestation complete (reason, meaning, timestamp)' : `Missing fields: reason=${hasReason}, meaning=${hasMeaning}, timestamp=${hasTimestamp}` };
-      }
-      return { passed: false, notes: `Signature retrieval returned ${s}` };
-    },
-  ) : evidence('PQ-028', '/api/esignatures/:id', 'GET', 0, null, false, 'Skipped — no signature from PQ-027');
-  results.push(enrichResult(pq028, {
-    regulatoryRef: '21 CFR 11.50(a) — Printed name, date/time, meaning of signature',
-    testDescription: 'Retrieve signature and verify all manifestation fields present',
-    acceptanceCriteria: 'Signature record contains signer name, timestamp, reason, and meaning',
-  }));
-
-  // PQ-029: Attempt to edit signed form (should be blocked)
-  const pq029 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-029', method: 'PUT', url: `/api/form-data/${state.formDataId}`, baseUrl, headers, body: {
-      data: { weight: 99.9 },
-      reason: 'Attempting edit on signed form',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/form-data/:id not available' };
-      if (s === 403 || s === 409 || s === 423) return { passed: true, notes: `Edit on signed form correctly blocked (${s})` };
-      if (s === 200) {
-        const invalidated = isRecord(b) && (b.signatureInvalidated === true || (isRecord(b.data) && b.data.signatureInvalidated === true));
-        return { passed: invalidated, notes: invalidated ? 'Edit allowed but signature invalidated (acceptable behavior)' : 'WARNING: Edit allowed on signed form without signature invalidation' };
-      }
-      return { passed: false, notes: `Signed form edit returned ${s}` };
-    },
-  ) : evidence('PQ-029', '/api/form-data/:id', 'PUT', 0, null, false, 'Skipped — no form data');
-  results.push(enrichResult(pq029, {
-    regulatoryRef: '21 CFR 11.70 — Signatures linked to respective records; cannot be detached',
-    testDescription: 'Attempt to edit a signed form and verify it is blocked or signature invalidated',
-    acceptanceCriteria: 'Edit blocked (403/423) OR edit allowed with explicit signature invalidation',
-  }));
-
-  // PQ-030: Freeze a subject casebook
-  const pq030 = state.subjectId ? await captureWithValidator(
-    { testCaseId: 'PQ-030', method: 'POST', url: `/api/data-locks/freeze`, baseUrl, headers, body: {
-      subjectId: state.subjectId,
-      studyId: state.studyId,
-      reason: 'Subject completed all visits — freezing for review',
-      scope: 'SUBJECT',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/data-locks/freeze not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Subject casebook frozen successfully' };
-      return { passed: false, notes: `Freeze request returned ${s}` };
-    },
-  ) : evidence('PQ-030', '/api/data-locks/freeze', 'POST', 0, null, false, 'Skipped — no subject ID');
-  results.push(enrichResult(pq030, {
-    regulatoryRef: '21 CFR 11.10(a) — Validated systems prevent unauthorized changes',
-    testDescription: 'Freeze a subject casebook to prevent further data modifications',
-    acceptanceCriteria: 'Freeze applied; all forms for subject become read-only',
-  }));
-
-  // PQ-031: Verify frozen data cannot be edited
-  const pq031 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-031', method: 'PUT', url: `/api/form-data/${state.formDataId}`, baseUrl, headers, body: {
-      data: { weight: 111.1 },
-      reason: 'Attempting edit on frozen data',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/form-data/:id not available' };
-      if (s === 403 || s === 423 || s === 409) return { passed: true, notes: `Frozen data edit correctly rejected (${s})` };
-      if (s === 200) return { passed: false, notes: 'CRITICAL: Edit succeeded on frozen data — data integrity violation' };
-      return { passed: false, notes: `Frozen data edit test returned ${s}` };
-    },
-  ) : evidence('PQ-031', '/api/form-data/:id', 'PUT', 0, null, false, 'Skipped — no form data');
-  results.push(enrichResult(pq031, {
-    regulatoryRef: '21 CFR 11.10(a) — Prevent unauthorized alteration of records',
-    testDescription: 'Attempt to edit frozen form data and verify rejection',
-    acceptanceCriteria: 'Edit blocked with 403/423; data remains unchanged',
-  }));
-
-  // PQ-032: Request unlock of frozen data
-  const pq032 = state.subjectId ? await captureWithValidator(
-    { testCaseId: 'PQ-032', method: 'POST', url: `/api/data-locks/unfreeze`, baseUrl, headers, body: {
-      subjectId: state.subjectId,
-      studyId: state.studyId,
-      reason: 'Protocol deviation requires data correction on frozen casebook',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/data-locks/unfreeze not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Unfreeze request accepted — casebook unlocked for corrections' };
-      return { passed: false, notes: `Unfreeze request returned ${s}` };
-    },
-  ) : evidence('PQ-032', '/api/data-locks/unfreeze', 'POST', 0, null, false, 'Skipped — no subject ID');
-  results.push(enrichResult(pq032, {
-    regulatoryRef: '21 CFR 11.10(d) — Limiting system access to authorized individuals',
-    testDescription: 'Request unlock/unfreeze of a frozen casebook with documented reason',
-    acceptanceCriteria: 'Unfreeze accepted with audit trail recording reason and authorizer',
-  }));
-
-  // PQ-033: Lock a subject casebook (hard lock)
-  const pq033 = state.subjectId ? await captureWithValidator(
-    { testCaseId: 'PQ-033', method: 'POST', url: `/api/data-locks/lock`, baseUrl, headers, body: {
-      subjectId: state.subjectId,
-      studyId: state.studyId,
-      reason: 'Database lock for final analysis — all queries resolved',
-      scope: 'SUBJECT',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/data-locks/lock not available' };
-      if (s === 200 || s === 201) return { passed: true, notes: 'Subject casebook hard-locked successfully' };
-      return { passed: false, notes: `Lock request returned ${s}` };
-    },
-  ) : evidence('PQ-033', '/api/data-locks/lock', 'POST', 0, null, false, 'Skipped — no subject ID');
-  results.push(enrichResult(pq033, {
-    regulatoryRef: '21 CFR 11.10(a) — System ensures data immutability for locked records',
-    testDescription: 'Apply hard database lock to a subject casebook',
-    acceptanceCriteria: 'Lock applied; no further modifications possible regardless of role',
-  }));
-
-  // PQ-034: Verify locked data is fully immutable
-  const pq034 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-034', method: 'PUT', url: `/api/form-data/${state.formDataId}`, baseUrl, headers, body: {
-      data: { weight: 222.2 },
-      reason: 'Attempting edit on hard-locked data',
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: PUT /api/form-data/:id not available' };
-      if (s === 403 || s === 423 || s === 409) return { passed: true, notes: `Locked data edit correctly rejected (${s}) — fully immutable` };
-      if (s === 200) return { passed: false, notes: 'CRITICAL: Edit succeeded on locked data — immutability violation' };
-      return { passed: false, notes: `Locked data edit test returned ${s}` };
-    },
-  ) : evidence('PQ-034', '/api/form-data/:id', 'PUT', 0, null, false, 'Skipped — no form data');
-  results.push(enrichResult(pq034, {
-    regulatoryRef: '21 CFR 11.10(a) — Locked records are immutable',
-    testDescription: 'Verify that locked data cannot be edited by any user',
-    acceptanceCriteria: 'All edit attempts return 403/423; data unchanged',
-  }));
-
-  // PQ-035: Export study data
-  const pq035 = state.studyId ? await captureWithValidator(
-    { testCaseId: 'PQ-035', method: 'POST', url: `/api/export`, baseUrl, headers, body: {
-      studyId: state.studyId,
-      format: 'JSON',
-      includeAudit: true,
-    }},
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: POST /api/export not available' };
-      if (s === 200 || s === 201 || s === 202) return { passed: true, notes: 'Study data export initiated/completed' };
-      return { passed: false, notes: `Export request returned ${s}` };
-    },
-  ) : evidence('PQ-035', '/api/export', 'POST', 0, null, false, 'Skipped — no study ID');
-  results.push(enrichResult(pq035, {
-    regulatoryRef: '21 CFR 11.10(b) — Generate accurate and complete copies of records in human-readable and electronic form',
-    testDescription: 'Export complete study data including audit trail',
-    acceptanceCriteria: 'Export contains all subject data, form entries, queries, and audit records',
-  }));
-
-  return results;
+  const read = dataOf(await request('GET', `/forms/data/${state.formDataId}`));
+  demand(isRecord(read) && read.eventCrfId === state.formDataId && read.studyId === state.studyId
+    && read.studySubjectId === state.subjectId && read.studyEventId === state.visitId
+    && read.crfId === state.formId && read.crfVersionId === state.crfVersionId
+    && isRecord(read.formData) && Array.isArray(read.data) && isRecord(read.lockStatus)
+    && /^sha256:[a-f0-9]{64}$/.test(String(read.observationSnapshotHash))
+    && read.observationPreconditionContract === 'edc-form-observation-preconditions/1',
+  'Native patient form custody or observation precondition is missing/mismatched.');
+  return read;
 }
-
-async function runCleanupVerification(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
-  const results: EvidenceResult[] = [];
-
-  if (!state.adminToken || !state.studyId) {
-    for (let i = 36; i <= 40; i++) {
-      results.push(manualResult(`PQ-${String(i).padStart(3, '0')}`, 'No study/token available for cleanup verification'));
-    }
-    return results;
+function nativeValues(state: WorkflowState, values: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(values).map(([name, value]) => {
+    const id = state.formItems?.[name]; demand(nativeId(id), `No verified native field for ${name}.`);
+    return [`item_${id}`, value];
+  }));
+}
+function assertValues(state: WorkflowState, read: any, values: Record<string, unknown>) {
+  for (const [key, value] of Object.entries(nativeValues(state, values))) {
+    demand(Object.prototype.hasOwnProperty.call(read.formData, key)
+      && read.formData[key] === String(value ?? ''), `Native saved value differs at ${key}.`);
   }
+}
+async function saveValues(request: StudyTransport, state: WorkflowState, values: Record<string, unknown>, reason: string,
+  basis?: any): Promise<any> {
+  const before = basis ?? await patientForm(request, state);
+  const { expectedExecution, expectedObservations } = reviewed(before);
+  const body = { studyId: state.studyId, subjectId: state.subjectId, studyEventId: state.visitId,
+    eventCrfId: state.formDataId, crfId: state.formId, formData: nativeValues(state, values),
+    reasonForChange: reason, submitAction: 'draft', expectedObservations,
+    ...(expectedExecution ? { expectedExecution } : {}) };
+  expectStudySuccess(await request('POST', '/forms/save', body), 200);
+  const after = await patientForm(request, state); assertValues(state, after, values);
+  state.values = { ...state.values, ...values }; return after;
+}
+function signature(state: WorkflowState) {
+  demand(state.qualification?.username && state.qualification.password, 'Explicit synthetic signer credentials are required.');
+  return { signatureUsername: state.qualification.username, signaturePassword: state.qualification.password };
+}
+async function pqStep(state: WorkflowState, id: number, description: string, action: (request: StudyTransport) => Promise<unknown>) {
+  const result = (await captureQualificationOperation(`PQ-${String(id).padStart(3, '0')}`, state.baseUrl, state.adminToken!, description, action)).evidence;
+  return enrichResult(result, { regulatoryRef: '21 CFR 11.10(a)', testDescription: description,
+    acceptanceCriteria: 'All native commands and independent identity, value and state readbacks satisfy the case assertions; absent or failed evidence fails.' });
+}
+const blocked = (from: number, to: number, reason: string) => Array.from({ length: to - from + 1 }, (_, i) =>
+  manualResult(`PQ-${String(from + i).padStart(3, '0')}`, `Blocked: ${reason}`));
 
-  const headers = authHeaders(state.adminToken);
-
-  // PQ-036: Verify audit trail contains entries for all above actions
-  const pq036 = await captureWithValidator(
-    { testCaseId: 'PQ-036', method: 'GET', url: `/api/audit?studyId=${state.studyId}&limit=100`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/audit not available' };
-      if (s === 200) {
-        const entries = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        const hasEntries = entries.length > 0;
-        return { passed: hasEntries, notes: hasEntries ? `Audit trail contains ${entries.length} entries for this study` : 'No audit entries found — audit logging may not be active' };
-      }
-      return { passed: false, notes: `Audit query returned ${s}` };
-    },
-  );
-  results.push(enrichResult(pq036, {
-    regulatoryRef: '21 CFR 11.10(e) — Secure, computer-generated, time-stamped audit trails',
-    testDescription: 'Verify the audit trail contains entries for all clinical workflow actions',
-    acceptanceCriteria: 'Audit trail has entries for create, update, sign, freeze, lock operations',
-  }));
-
-  // PQ-037: Verify audit trail has correct old/new values
-  const pq037 = state.formDataId ? await captureWithValidator(
-    { testCaseId: 'PQ-037', method: 'GET', url: `/api/audit?entityType=form_data&entityId=${state.formDataId}&limit=50`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/audit with entity filter not available' };
-      if (s === 200) {
-        const entries = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        const hasChangeLog = entries.some((e: unknown) => isRecord(e) && (e.oldValue !== undefined || e.previousValue !== undefined || e.changes !== undefined));
-        return { passed: entries.length > 0, notes: entries.length > 0 ? `${entries.length} audit entries for form data; change tracking=${hasChangeLog ? 'YES' : 'NOT DETECTED'}` : 'No audit entries for form data entity' };
-      }
-      return { passed: false, notes: `Audit detail query returned ${s}` };
-    },
-  ) : evidence('PQ-037', '/api/audit', 'GET', 0, null, false, 'Skipped — no form data ID');
-  results.push(enrichResult(pq037, {
-    regulatoryRef: '21 CFR 11.10(e) — Audit trail records old and new values',
-    testDescription: 'Verify audit entries contain old/new values for data changes',
-    acceptanceCriteria: 'Audit entries show previous value, new value, reason, and user who made change',
-  }));
-
-  // PQ-038: Verify query count matches expected
-  const pq038 = await captureWithValidator(
-    { testCaseId: 'PQ-038', method: 'GET', url: `/api/queries?studyId=${state.studyId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/queries not available' };
-      if (s === 200) {
-        const queries = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        return { passed: queries.length > 0, notes: `Total queries for study: ${queries.length} (expected at least 1 from PQ-017)` };
-      }
-      return { passed: false, notes: `Query count check returned ${s}` };
-    },
-  );
-  results.push(enrichResult(pq038, {
-    regulatoryRef: '21 CFR 11.10(a) — Complete and accurate records of query workflow',
-    testDescription: 'Verify total query count matches expected from test execution',
-    acceptanceCriteria: 'At least 1 query exists (from PQ-017 manual query creation)',
-  }));
-
-  // PQ-039: Verify signature records exist
-  const pq039 = await captureWithValidator(
-    { testCaseId: 'PQ-039', method: 'GET', url: `/api/esignatures?studyId=${state.studyId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: GET /api/esignatures with study filter not available' };
-      if (s === 200) {
-        const sigs = isRecord(b) && Array.isArray(b.data) ? b.data : Array.isArray(b) ? b : [];
-        return { passed: sigs.length > 0, notes: `Signature records found: ${sigs.length}` };
-      }
-      return { passed: false, notes: `Signature listing returned ${s}` };
-    },
-  );
-  results.push(enrichResult(pq039, {
-    regulatoryRef: '21 CFR 11.50 — Signature manifestations retained with record',
-    testDescription: 'Verify electronic signature records exist and are retrievable',
-    acceptanceCriteria: 'At least 1 signature record exists from PQ-027',
-  }));
-
-  // PQ-040: Delete test study (cleanup)
-  const pq040 = await captureWithValidator(
-    { testCaseId: 'PQ-040', method: 'DELETE', url: `/api/studies/${state.studyId}`, baseUrl, headers },
-    (s, b) => {
-      if (s === 404) return { passed: false, notes: 'PENDING_DEPLOY: DELETE /api/studies/:id not available' };
-      if (s === 200 || s === 204) return { passed: true, notes: 'Test study deleted — cleanup complete' };
-      if (s === 403 || s === 409) return { passed: true, notes: `Study deletion blocked (${s}) — expected for locked studies; cleanup requires manual action` };
-      return { passed: false, notes: `Study deletion returned ${s}` };
-    },
-  );
-  results.push(enrichResult(pq040, {
-    regulatoryRef: '21 CFR 11.10(a) — System validated; test data cleanup does not affect production',
-    testDescription: 'Delete the test study to clean up PQ test data',
-    acceptanceCriteria: 'Study deleted (200/204) or correctly blocked if locked (403/409)',
-  }));
-
+export async function runDataEntry(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+  if (!state.adminToken || !state.subjectId || !state.visitId || !state.formItems) return blocked(11, 25, 'no verified active subject, visit and form');
+  const results: EvidenceResult[] = [], step = async (id: number, description: string, action: (r: StudyTransport) => Promise<unknown>) => {
+    results.push(await pqStep(state, id, description, action));
+  };
+  const initial = { patientInitials: 'SY', dateOfBirth: '1990-01-01', weight: 75, gender: 'Other', notes: 'Synthetic software qualification only' };
+  await step(11, 'Save native scalar form values and verify independent readback', r => saveValues(r, state, initial, 'Initial synthetic qualification entry'));
+  if (!results[0].passed) return [...results, ...blocked(12, 25, 'initial native form save was not verified')];
+  await step(12, 'Read back every submitted native field', async r => assertValues(state, await patientForm(r, state), initial));
+  await step(13, 'Correct a native value with an explicit reason and readback', r => saveValues(r, state, { weight: 70.5 }, 'PQ verified synthetic weight correction'));
+  await step(14, 'Reject an out-of-range value without changing stored data', async r => {
+    const before = await patientForm(r, state);
+    const response = await r('POST', `/forms/validate-field/${state.formDataId}`, { fieldName: `item_${state.formItems!.weight}`, value: -1, createQueries: false });
+    const body = response.body as any;
+    demand(response.status === 200 && body?.success === false && body.data?.valid === false
+      && Array.isArray(body.data.errors) && body.data.errors.length > 0, 'Out-of-range field was not rejected by native validation.');
+    const after = await patientForm(r, state);
+    demand(after.observationSnapshotHash === before.observationSnapshotHash, 'Validation preview mutated clinical data.');
+  });
+  await step(15, 'Roundtrip all configured scalar field types', r => saveValues(r, state, { ...initial, weight: 70.5 }, 'PQ scalar type roundtrip'));
+  await step(16, 'Read the exact native form query inventory', async r => {
+    const rows = dataOf(await r('GET', `/queries/form/${state.formDataId}`));
+    demand(Array.isArray(rows) && rows.every((q: any) => q.eventCrfId === state.formDataId), 'Query inventory is missing or crosses form scope.');
+  });
+  await step(17, 'Create and independently read back a native item query', async r => {
+    const read = await patientForm(r, state), item = read.data.find((row: any) => row.itemId === state.formItems!.weight);
+    demand(item && nativeId(item.itemDataId), 'Weight has no native item_data identity.');
+    const created = expectStudySuccess(await r('POST', '/queries', { entityType: 'itemData', entityId: item.itemDataId,
+      itemDataId: item.itemDataId, itemId: item.itemId, eventCrfId: state.formDataId,
+      studyId: state.studyId, subjectId: state.subjectId, description: 'Verify the synthetic qualification weight', queryType: 'Query' }), 201);
+    demand(nativeId(created.queryId), 'Native query identity missing.');
+    const query = dataOf(await r('GET', `/queries/${created.queryId}`));
+    demand(query?.discrepancyNoteId === created.queryId && query.studyId === state.studyId
+      && query.eventCrfId === state.formDataId && query.itemId === item.itemId && query.resolutionStatusId === 1, 'Query readback lost native target or state.');
+    state.queryId = created.queryId;
+  });
+  await step(18, 'Propose a resolution and verify native query state', async r => {
+    demand(state.queryId, 'No verified native query.');
+    expectStudySuccess(await r('POST', `/queries/${state.queryId}/respond`, { description: 'Synthetic source reviewed; the recorded weight is correct.', newStatusId: 3 }), 200);
+    const query = dataOf(await r('GET', `/queries/${state.queryId}`));
+    demand(query?.discrepancyNoteId === state.queryId && query.resolutionStatusId === 3, 'Query resolution was not persisted.');
+  });
+  await step(19, 'Close the exact native query with an authorized signature', async r => {
+    demand(state.queryId, 'No verified native query.');
+    expectStudySuccess(await r('POST', `/queries/${state.queryId}/close-with-signature`, { reason: 'Accept synthetic qualification source review', ...signature(state) }), 200);
+    const query = dataOf(await r('GET', `/queries/${state.queryId}`));
+    demand(query?.discrepancyNoteId === state.queryId && query.resolutionStatusId === 4, 'Signed query closure not persisted.');
+  });
+  await step(20, 'Complete the reviewed native form and verify completion', async r => {
+    const read = await patientForm(r, state);
+    expectStudySuccess(await r('POST', `/forms/${state.formDataId}/complete`, reviewed(read)), 200);
+    demand((await patientForm(r, state)).lockStatus.isComplete === true, 'Native form is not complete.');
+  });
+  await step(21, 'Save a partial correction without dropping other fields', async r => {
+    const prior = { ...state.values }; const read = await saveValues(r, state, { notes: 'Synthetic partial correction' }, 'PQ partial update');
+    assertValues(state, read, { ...prior, notes: 'Synthetic partial correction' });
+  });
+  await step(22, 'Reject a stale observation snapshot and preserve the newer value', async r => {
+    const stale = await patientForm(r, state);
+    const current = await saveValues(r, state, { weight: 71 }, 'PQ competing synthetic correction');
+    const { expectedExecution, expectedObservations } = reviewed(stale);
+    const response = await r('POST', '/forms/save', { studyId: state.studyId, subjectId: state.subjectId,
+      studyEventId: state.visitId, eventCrfId: state.formDataId, crfId: state.formId,
+      formData: nativeValues(state, { weight: 80 }), reasonForChange: 'PQ stale write must fail', submitAction: 'draft',
+      expectedObservations, ...(expectedExecution ? { expectedExecution } : {}) });
+    demand(response.status === 409 && (response.body as any)?.success === false
+      && (response.body as any)?.code === 'STUDY_FORM_OBSERVATION_STALE', 'Stale observation write was not rejected by its native precondition.');
+    const after = await patientForm(r, state); assertValues(state, after, { weight: 71 });
+    demand(after.observationSnapshotHash === current.observationSnapshotHash, 'Rejected stale save changed observations.');
+  });
+  await step(23, 'Clear optional scalar values and verify the native blank representation', r => saveValues(r, state, { weight: null, notes: '' }, 'PQ explicit optional blanks'));
+  await step(24, 'Roundtrip Unicode without corruption', r => saveValues(r, state, { patientInitials: 'ÄÖ', notes: 'Ñoño — 日本語 — 👍' }, 'PQ Unicode preservation'));
+  await step(25, 'Roundtrip the declared minimum numeric boundary', r => saveValues(r, state, { weight: 0 }, 'PQ declared minimum boundary'));
   return results;
 }
 
-export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
-  const { username: pqUsername, password: pqPassword } = pqCredentials();
+async function signatureProof(r: StudyTransport, state: WorkflowState) {
+  const proof = dataOf(await r('GET', `/esignature/status/eventCrf/${state.formDataId}`));
+  demand(proof?.contract === 'edc-event-crf-signature-proof/1' && proof.entityId === state.formDataId
+    && proof.studyId === state.studyId && proof.studySubjectId === state.subjectId && proof.studyEventId === state.visitId,
+  'Native signature proof has missing or mismatched identity.');
+  return proof;
+}
+async function signForm(r: StudyTransport, state: WorkflowState) {
+  const read = await patientForm(r, state), credentials = state.qualification!;
+  expectStudySuccess(await r('POST', `/forms/${state.formDataId}/complete`, reviewed(read)), 200);
+  const complete = await patientForm(r, state);
+  const signed = dataOf(await r('POST', '/esignature/sign', { entityType: 'eventCrf', entityId: state.formDataId,
+    username: credentials.username, password: credentials.password, meaning: 'approval',
+    reasonForSigning: 'Synthetic software qualification approval', ...reviewed(complete) }));
+  demand(nativeId(signed?.signatureId), 'Native signature identifier is missing.');
+  state.signatureId = signed.signatureId;
+  const proof = await signatureProof(r, state);
+  demand(proof.isSigned === true && proof.signatureIntegrityValid === true && proof.integrityStatus === 'verified'
+    && proof.activeSignature?.signatureId === state.signatureId && proof.activeSignature.signerUsername === credentials.username,
+  'Signature lacks a verified current native proof.');
+}
+async function rejectedLockedEdit(r: StudyTransport, state: WorkflowState, flag: 'frozen' | 'locked') {
+  const before = await patientForm(r, state); demand(before.lockStatus[flag] === true, `Native form is not ${flag}.`);
+  const { expectedExecution, expectedObservations } = reviewed(before);
+  const response = await r('POST', '/forms/save', { studyId: state.studyId, subjectId: state.subjectId,
+    studyEventId: state.visitId, eventCrfId: state.formDataId, crfId: state.formId,
+    formData: nativeValues(state, { weight: 77 }), reasonForChange: `PQ ${flag} protection`, submitAction: 'draft',
+    expectedObservations, ...(expectedExecution ? { expectedExecution } : {}) });
+  demand(response.status === 403 && (response.body as any)?.success === false
+    && (response.body as any)?.code === (flag === 'frozen' ? 'FORM_FROZEN' : 'FORM_LOCKED'), `${flag} edit was not refused by its native lifecycle guard.`);
+  const after = await patientForm(r, state);
+  demand(after.observationSnapshotHash === before.observationSnapshotHash && after.lockStatus[flag] === true,
+    `Rejected ${flag} edit did not preserve native observations.`);
+}
+export async function runReviewAndSignature(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+  if (!state.adminToken || !state.formDataId || !state.qualification) return blocked(26, 35, 'no verified form or explicit synthetic signer');
+  const results: EvidenceResult[] = [], step = async (id: number, description: string, action: (r: StudyTransport) => Promise<unknown>) => {
+    results.push(await pqStep(state, id, description, action));
+  };
+  await step(26, 'Verify source data and read back the exact native SDV record', async r => {
+    expectStudySuccess(await r('PUT', `/sdv/${state.formDataId}/verify`, {}), 200);
+    const record = dataOf(await r('GET', `/sdv/${state.formDataId}`));
+    demand(record?.eventCrfId === state.formDataId && record.studySubjectId === state.subjectId
+      && record.sdvStatus === true && nativeId(record.sdvUpdateId), 'Native SDV identity/verifier is missing.');
+  });
+  await step(27, 'Sign the exact reviewed form and verify its native integrity proof', r => signForm(r, state));
+  await step(28, 'Read the current signature manifestation and content linkage', async r => {
+    const proof = await signatureProof(r, state), sig = proof.activeSignature;
+    demand(proof.signatureIntegrityValid === true && sig?.signatureId === state.signatureId
+      && sig.signerUsername === state.qualification!.username && sig.meaning === 'approval'
+      && typeof sig.signedAt === 'string' && Number.isFinite(Date.parse(sig.signedAt))
+      && typeof sig.contentHash === 'string' && /^[a-f0-9]{64}$/.test(sig.contentHash), 'Signature manifestation or content linkage is incomplete.');
+  });
+  await step(29, 'A material correction invalidates the old signature, then requires fresh reviewed signing', async r => {
+    demand(state.signatureId, 'No verified signature to invalidate.');
+    const old = state.signatureId;
+    await saveValues(r, state, { notes: 'Synthetic correction after signing' }, 'PQ signed record correction');
+    const invalid = await signatureProof(r, state);
+    demand(invalid.isSigned === false && invalid.activeSignature === null, 'Material correction left the old signature valid.');
+    await signForm(r, state); demand(state.signatureId !== old, 'Fresh signing reused the invalidated signature identity.');
+  });
+  await step(30, 'Freeze the signed native form and verify its readback', async r => {
+    expectStudySuccess(await r('POST', `/data-locks/freeze/${state.formDataId}`, { reason: 'Freeze synthetic qualification form', ...signature(state) }), 200);
+    demand((await patientForm(r, state)).lockStatus.frozen === true, 'Freeze was not persisted.');
+  });
+  await step(31, 'Frozen form rejects writes without changing values', r => rejectedLockedEdit(r, state, 'frozen'));
+  await step(32, 'Unfreeze by native signed workflow and verify readback', async r => {
+    expectStudySuccess(await r('POST', `/data-locks/freeze/${state.formDataId}/unfreeze`, { reason: 'Unfreeze synthetic qualification form', ...signature(state) }), 200);
+    demand((await patientForm(r, state)).lockStatus.frozen === false, 'Unfreeze was not persisted.');
+  });
+  await step(33, 'Lock the native form with its signed lifecycle workflow', async r => {
+    expectStudySuccess(await r('POST', '/data-locks', { eventCrfId: state.formDataId, reason: 'Lock synthetic qualification form', ...signature(state) }), 200);
+    demand((await patientForm(r, state)).lockStatus.locked === true, 'Lock was not persisted.');
+  });
+  await step(34, 'Locked form rejects writes without changing values', r => rejectedLockedEdit(r, state, 'locked'));
+  await step(35, 'Export exact native source rows and verify submitted patient values', async r => {
+    const snapshot = dataOf(await r('GET', `/data-cuts/raw-store-snapshot?studyId=${state.studyId}`));
+    demand(snapshot?.schemaVersion === 'edc-raw-store-snapshot/1' && snapshot.studyId === state.studyId
+      && snapshot.scope?.complete === true && snapshot.scope.nativeStudyId === state.studyId && Array.isArray(snapshot.tables), 'Native export is incomplete or wrong-scope.');
+    const table = snapshot.tables.find((t: any) => t.table === 'item_data');
+    demand(table && Array.isArray(table.rows) && table.count === table.rows.length
+      && state.values && Object.keys(state.values).length === Object.keys(state.formItems ?? {}).length, 'Native item_data export or expected field census is incomplete.');
+    const rows = table.rows.map((row: any) => JSON.parse(row.nativeJson)).filter((row: any) => row.event_crf_id === state.formDataId && row.deleted !== true);
+    for (const [name, value] of Object.entries(state.values ?? {})) {
+      const matches = rows.filter((row: any) => row.item_id === state.formItems![name]);
+      demand(matches.length === 1 && matches[0].value === String(value ?? ''), `Native export value differs at ${name}.`);
+    }
+  });
+  return results;
+}
 
-  const state: WorkflowState = {
-    adminToken: null,
+export async function runCleanupVerification(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
+  if (!state.adminToken || !state.formDataId) return blocked(36, 40, 'no verified native patient form');
+  const results: EvidenceResult[] = [], step = async (id: number, description: string, action: (r: StudyTransport) => Promise<unknown>) => {
+    results.push(await pqStep(state, id, description, action));
+  };
+  await step(36, 'Read scoped native audit entries for this workflow', async r => {
+    const rows = dataOf(await r('GET', `/audit/form/${state.formDataId}`));
+    demand(Array.isArray(rows) && rows.length > 0 && rows.some((row: any) => row.eventCrfId === state.formDataId
+      && row.studyId === state.studyId && nativeId(row.userId) && row.auditDate), 'Scoped native audit evidence is missing.');
+  });
+  await step(37, 'Verify the exact original/corrected weight, reason, actor and native visit in audit', async r => {
+    const rows = dataOf(await r('GET', `/audit/form/${state.formDataId}`));
+    demand(Array.isArray(rows) && rows.some((row: any) => row.itemId === state.formItems!.weight
+      && row.eventCrfId === state.formDataId && row.studyEventId === state.visitId
+      && row.oldValue === '75' && row.newValue === '70.5' && row.reasonForChange === 'PQ verified synthetic weight correction'
+      && nativeId(row.userId)), 'Exact weight correction audit evidence is missing.');
+  });
+  await step(38, 'Verify the exact retained native query remains closed', async r => {
+    demand(state.queryId, 'No verified native query.');
+    const query = dataOf(await r('GET', `/queries/${state.queryId}`));
+    demand(query?.discrepancyNoteId === state.queryId && query.eventCrfId === state.formDataId
+      && query.resolutionStatusId === 4, 'Retained query identity/state mismatch.');
+  });
+  await step(39, 'Verify the final signed native form remains integrity-checked', async r => {
+    const proof = await signatureProof(r, state);
+    demand(proof.isSigned === true && proof.signatureIntegrityValid === true && proof.integrityStatus === 'verified'
+      && proof.activeSignature?.signatureId === state.signatureId,
+      'The retained final signature is not verified.');
+  });
+  await step(40, 'Archive only this owned synthetic fixture and verify native retained state', async r => {
+    demand(state.studyWorkspace?.revision.content.execution.extensions.syntheticFixture === true
+      && state.studyWorkspace.summary.studyId === state.studyId, 'Only the owned synthetic qualification study may be archived.');
+    expectStudySuccess(await r('DELETE', `/studies/${state.studyId}`), 200);
+    const read = dataOf(await r('GET', `/studies/${state.studyId}`));
+    demand(read?.summary?.studyId === state.studyId && read.executionContext?.entityStatus?.id === 5,
+      'Synthetic archive was not confirmed by native study readback.');
+  });
+  return results;
+}
+
+export function createWorkflowState(baseUrl: string, adminToken: string | null = null): WorkflowState {
+  return {
+    adminToken,
     userId: null,
     orgId: null,
     studyId: null,
@@ -1018,15 +502,22 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
     signatureId: null,
     baseUrl,
   };
+}
 
-  // PQ-000 below is synthesised from the session so no token enters the evidence.
-  const loginResult = (await login(baseUrl, pqUsername, pqPassword, 'PQ-000')).session;
+export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = []): Promise<EvidenceResult[]> {
+  const { username: pqUsername, password: pqPassword } = pqCredentials();
+  const qualification = qualificationFlags.length ? {
+    ...qualificationOptions(qualificationFlags, baseUrl), username: pqUsername, password: pqPassword,
+    reason: 'Execute the explicitly requested synthetic software qualification fixture',
+  } : undefined;
+
+  const state = createWorkflowState(baseUrl);
+
+  const authentication = await login(baseUrl, pqUsername, pqPassword, 'PQ-000');
+  const loginResult = authentication.session;
 
   if (!loginResult) {
-    const loginEvidence = evidence(
-      'PQ-000', '/api/auth/login', 'POST', 0, null, false,
-      'Failed to authenticate — all PQ tests require authentication. Verify OQ_USERNAME/OQ_PASSWORD env vars.',
-    );
+    const loginEvidence = authentication.evidence;
     saveEvidence(outputDir, 'pq', [enrichResult(loginEvidence, {
       regulatoryRef: '21 CFR 11.10(d) — System access limited to authorized individuals',
       testDescription: 'Authenticate test user for PQ workflow execution',
@@ -1041,10 +532,7 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
 
   const allResults: EvidenceResult[] = [];
 
-  const loginSuccess = evidence(
-    'PQ-000', '/api/auth/login', 'POST', 200, { userId: state.userId, orgId: state.orgId }, true,
-    `Authenticated as user ${pqUsername} (userId=${state.userId}, orgId=${state.orgId})`,
-  );
+  const loginSuccess = authentication.evidence;
   allResults.push(enrichResult(loginSuccess, {
     regulatoryRef: '21 CFR 11.10(d) — System access limited to authorized individuals',
     testDescription: 'Authenticate test user for PQ workflow execution',
@@ -1052,20 +540,20 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   }));
 
   const suites: Array<(url: string, s: WorkflowState) => Promise<EvidenceResult[]>> = [
-    runStudySetup,
+    (url, current) => runStudySetup(url, current, qualification),
     runDataEntry,
     runReviewAndSignature,
     runCleanupVerification,
   ];
 
-  for (const suite of suites) {
+  for (const [suiteIndex, suite] of suites.entries()) {
     try {
       const results = await suite(baseUrl, state);
       allResults.push(...results);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       allResults.push(evidence(
-        'PQ-ERR', baseUrl, 'SUITE', 0, { error: msg }, false,
+        `PQ-ERR-${suiteIndex + 1}`, baseUrl, 'SUITE', 0, { error: msg }, false,
         `PQ test suite threw unexpected error: ${msg}`,
       ));
     }

@@ -22,7 +22,7 @@ export type {
 export type ExecutionChanges = Pick<StudyExecutionEditCommand, 'visits' | 'sites'>;
 
 export interface StudyResponse { status: number; body: unknown }
-export type StudyTransport = (method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown) => Promise<StudyResponse>;
+export type StudyTransport = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown) => Promise<StudyResponse>;
 export interface StudyActivationReview {
   username: string;
   password: string;
@@ -340,6 +340,84 @@ export function assertEnrollmentReady(workspace: StudyWorkspace): void {
 
 export class StudyDefinitionClient {
   constructor(private readonly transport: StudyTransport) {}
+
+  /** Native qualification uses returned numeric identities, then independent GETs.
+   * It never treats an HTTP success or a matching display label as custody. */
+  async createForm(studyId: number, input: { name: string; fields: Array<{ name: string; type: string; required: boolean; [key: string]: unknown }> }) {
+    check(nativeId(studyId), 'A verified native study is required for a qualification form.');
+    const created = expectStudySuccess(await this.transport('POST', '/forms', {
+      studyId, ...input, version: '1.0', status: 'published',
+    }), 201);
+    check(nativeId(created.crfId), 'Form creation did not return its native crfId.');
+    const metadata = expectStudySuccess(await this.transport('GET', `/forms/${created.crfId}/metadata`), 200).data;
+    check(record(metadata) && metadata.crf?.crfId === created.crfId
+      && metadata.crf.sourceStudyId === studyId && nativeId(metadata.version?.crfVersionId)
+      && Array.isArray(metadata.items), 'Form metadata belongs to a different or missing native form/version.');
+    const items: Record<string, number> = {};
+    for (const expected of input.fields) {
+      const matches = metadata.items.filter((item: any) => item.name === expected.name);
+      check(matches.length === 1 && nativeId(matches[0].itemId) && matches[0].type === expected.type
+        && matches[0].required === expected.required, `Form field ${expected.name} did not survive native readback.`);
+      for (const key of ['min', 'max', 'options']) if (key in expected) {
+        check(isDeepStrictEqual(matches[0][key], expected[key]), `Form field ${expected.name} lost ${key} in native readback.`);
+      }
+      items[expected.name] = matches[0].itemId;
+    }
+    check(metadata.items.length === input.fields.length && new Set(Object.values(items)).size === input.fields.length,
+      'Qualification form fields are missing, duplicated, or unexpected.');
+    return { crfId: created.crfId, crfVersionId: metadata.version.crfVersionId as number, items };
+  }
+
+  async enroll(workspace: StudyWorkspace, label: string, date: string) {
+    assertEnrollmentReady(workspace);
+    const studyId = workspace.summary.studyId;
+    const request = { studyId, label, enrollmentDate: date, enrollmentStatus: 'enrolled', autoScheduleVisits: false };
+    const result = expectStudySuccess(await this.transport('POST', '/subjects', request), 201).data;
+    check(record(result) && nativeId(result.studySubjectId), 'Enrollment did not return the native studySubjectId.');
+    const subject = await this.readSubject(result.studySubjectId, studyId, label, date);
+    return { subject, request };
+  }
+
+  async readSubject(studySubjectId: number, studyId: number, label: string, enrollmentDate: string) {
+    const subject = expectStudySuccess(await this.transport('GET', `/subjects/${studySubjectId}`), 200).data;
+    check(record(subject) && subject.studySubjectId === studySubjectId && subject.studyId === studyId
+      && subject.label === label && subject.enrollmentStatus === 'enrolled'
+      && typeof subject.enrollmentDate === 'string' && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(subject.enrollmentDate)
+      && subject.enrollmentDate.slice(0, 10) === enrollmentDate, 'Subject native readback differs from the enrollment.');
+    return subject;
+  }
+
+  async rejectDuplicateSubject(studySubjectId: number, request: { studyId: number; label: string; enrollmentDate: string; enrollmentStatus: string; autoScheduleVisits: boolean }) {
+    const response = await this.transport('POST', '/subjects', request);
+    check(response.status === 400 && record(response.body) && response.body.success === false
+      && typeof response.body.message === 'string' && response.body.message.includes('already exists'),
+      'Duplicate enrollment was not rejected by the native duplicate-label check.');
+    await this.readSubject(studySubjectId, request.studyId, request.label, request.enrollmentDate);
+    const page = expectStudySuccess(await this.transport('GET', `/subjects?studyId=${request.studyId}&limit=100&page=1`), 200);
+    check(Array.isArray(page.data) && record(page.pagination) && page.pagination.total === 1
+      && page.data.length === 1 && page.data[0].studySubjectId === studySubjectId,
+      'Duplicate rejection did not preserve the one-subject fixture census.');
+  }
+
+  async scheduleVisit(studySubjectId: number, studyEventDefinitionId: number, date: string) {
+    check(nativeId(studySubjectId) && nativeId(studyEventDefinitionId), 'Native subject and visit definition are required.');
+    const result = expectStudySuccess(await this.transport('POST', '/events/schedule', {
+      studySubjectId, studyEventDefinitionId, scheduledDate: date,
+    }), 201).data;
+    check(record(result) && nativeId(result.studyEventId), 'Scheduling did not return a native studyEventId.');
+    await this.readVisit(studySubjectId, result.studyEventId, studyEventDefinitionId, date);
+    return result.studyEventId as number;
+  }
+
+  async readVisit(studySubjectId: number, studyEventId: number, definitionId: number, date: string) {
+    const rows = expectStudySuccess(await this.transport('GET', `/events/subject/${studySubjectId}`), 200).data;
+    check(Array.isArray(rows), 'Subject visit readback is not an array.');
+    const matches = rows.filter(row => record(row) && row.studyEventId === studyEventId);
+    check(matches.length === 1 && matches[0].studySubjectId === studySubjectId
+      && matches[0].studyEventDefinitionId === definitionId && matches[0].scheduledDate?.slice(0, 10) === date
+      && matches[0].dateStart === null, 'Scheduled visit readback changed identity, date, or invented an actual visit date.');
+    return matches[0];
+  }
 
   async get(studyId: number): Promise<StudyWorkspace> {
     check(nativeId(studyId), 'A positive native study ID is required.');

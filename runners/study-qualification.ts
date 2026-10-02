@@ -1,5 +1,5 @@
 import { captureApiCall, type CaptureOptions, type EvidenceResult } from './evidence-capture';
-import { StudyDefinitionClient } from './study-definition-client';
+import { StudyDefinitionClient, type StudyTransport } from './study-definition-client';
 
 /** One qualification result includes all exact command/readback exchanges.
  * A rejected command, malformed success or mismatched readback fails the step. */
@@ -11,8 +11,18 @@ export async function captureStudyOperation<T>(
   operation: (client: StudyDefinitionClient) => Promise<T>,
   capture: (options: CaptureOptions) => Promise<EvidenceResult> = captureApiCall,
 ): Promise<{ evidence: EvidenceResult; value?: T }> {
+  return captureQualificationOperation(testCaseId, baseUrl, token, description,
+    transport => operation(new StudyDefinitionClient(transport)), capture);
+}
+
+/** One native qualification step retains every command and independent readback. */
+export async function captureQualificationOperation<T>(
+  testCaseId: string, baseUrl: string, token: string, description: string,
+  operation: (transport: StudyTransport) => Promise<T>,
+  capture: (options: CaptureOptions) => Promise<EvidenceResult> = captureApiCall,
+): Promise<{ evidence: EvidenceResult; value?: T }> {
   const exchanges: EvidenceResult[] = [];
-  const client = new StudyDefinitionClient(async (method, path, body) => {
+  const transport: StudyTransport = async (method, path, body) => {
     const exchange = await capture({
       testCaseId: `${testCaseId}-${exchanges.length + 1}`, baseUrl,
       method, url: `/api${path}`, body, headers: { Authorization: `Bearer ${token}` },
@@ -27,7 +37,7 @@ export async function captureStudyOperation<T>(
     }
     exchanges.push(exchange);
     return { status: exchange.responseStatus, body: exchange.responseBody };
-  });
+  };
   const result = (passed: boolean, notes: string): EvidenceResult => ({
     ...(exchanges[0] ?? {
       timestamp: new Date().toISOString(), method: 'CONTRACT', endpoint: '/api/studies',
@@ -36,7 +46,8 @@ export async function captureStudyOperation<T>(
     testCaseId, passed, notes, relatedEvidence: exchanges,
   });
   try {
-    const value = await operation(client);
+    const value = await operation(transport);
+    if (!exchanges.length || exchanges.some(exchange => exchange.captureError)) throw new Error('Qualification has no complete native exchanges.');
     return { value, evidence: result(true, `${description}; all ${exchanges.length} command/readback exchanges verified.`) };
   } catch (error) {
     return { evidence: result(false, `${description} failed: ${error instanceof Error ? error.message : 'Study contract failed.'}`) };

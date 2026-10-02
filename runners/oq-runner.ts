@@ -12,8 +12,10 @@ import {
   manualResult,
   saveEvidence,
 } from './evidence-capture';
-import { pendingStudy, readStudySummaryPage } from './study-definition-client';
+import { pendingStudy, readStudySummaryPage, type StudyActivationReview } from './study-definition-client';
 import { captureStudyOperation } from './study-qualification';
+import { runStudySetup, createWorkflowState } from './pq-runner';
+import { qualificationOptions } from './qualification-fixture';
 
 function validateStudyPage(status: number, body: unknown): { passed: boolean; notes: string } {
   try {
@@ -1588,7 +1590,7 @@ async function runComprehensiveAuditTests(baseUrl: string, token: string): Promi
 
 // ── Suite 11: Data Operations Deep Tests (OQ-146 → OQ-170) ──
 
-export async function runDeepDataOperationTests(baseUrl: string, token: string): Promise<EvidenceResult[]> {
+export async function runDeepDataOperationTests(baseUrl: string, token: string, qualification?: StudyActivationReview): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
   const h = authHeaders(token);
 
@@ -1598,8 +1600,12 @@ export async function runDeepDataOperationTests(baseUrl: string, token: string):
   // OQ-153 owns the fixture used by the readback tests. Never select study 1 or
   // the first user study to make a mutation test appear to pass.
   const content = pendingStudy(`DeepTest_${Date.now()}`, `DT${Date.now()}`, 'OQ deep test study');
-  const created = await captureStudyOperation('OQ-153', baseUrl, token, 'Create and read back the complete canonical draft',
-    client => client.create(content, 'Create synthetic OQ data-operation fixture'));
+  const state = createWorkflowState(baseUrl, token);
+  const workflow = qualification ? await runStudySetup(baseUrl, state, qualification) : undefined;
+  const created = workflow
+    ? { evidence: { ...workflow[0], testCaseId: 'OQ-153' }, value: state.studyWorkspace }
+    : await captureStudyOperation('OQ-153', baseUrl, token, 'Create and read back the complete canonical draft',
+      client => client.create(content, 'Create synthetic OQ data-operation fixture'));
   created.evidence.regulatoryRef = '§11.10(a)';
   created.evidence.testDescription = 'Verify canonical study creation preserves the complete submitted draft';
   created.evidence.acceptanceCriteria = 'HTTP 201 success=true and exact HTTP 200 revision readback; validation errors fail';
@@ -1627,7 +1633,14 @@ export async function runDeepDataOperationTests(baseUrl: string, token: string):
   { const r = await captureWithValidator({ testCaseId: 'OQ-152', method: 'GET', url: '/api/queries?status=open', baseUrl, headers: h }, (status) => ({ passed: status === 200 || status === 400, notes: `Queries with status filter: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/queries with status filter'; r.acceptanceCriteria = 'HTTP 200/400 for status-filtered queries'; results.push(r); }
 
   // OQ-154
-  results.push(manualResult('OQ-154', 'Blocked: enrollment requires a conformant fixture, signed release/application and reviewed lifecycle readiness. OQ-153 creates only a pending draft.'));
+  results.push(workflow ? { ...workflow[0], testCaseId: 'OQ-154',
+    testDescription: 'Qualify the owned synthetic study through signed release, reviewed activation and native enrollment/visit readbacks',
+    acceptanceCriteria: 'Every setup, activation, subject and planned-visit assertion passes; no manual result is a pass',
+    passed: workflow.length === 10 && workflow.every(result => result.passed),
+    notes: workflow.every(result => result.passed) ? 'All native synthetic qualification steps verified.'
+      : `Qualification incomplete: ${workflow.filter(result => !result.passed).map(result => result.testCaseId + ': ' + result.notes).join('; ')}`,
+    relatedEvidence: workflow,
+  } : manualResult('OQ-154', 'Blocked: explicit synthetic qualification is required for signed release, reviewed activation and enrollment.'));
 
   // OQ-155
   { const r = created.value
@@ -1787,8 +1800,10 @@ async function runSecurityValidationTests(
 
 // ── Main Runner ──
 
-export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
+export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = []): Promise<EvidenceResult[]> {
   const { username, password } = qualificationCredentials();
+  const qualification = qualificationFlags.length ? { ...qualificationOptions(qualificationFlags, baseUrl), username, password,
+    reason: 'Execute the explicitly requested synthetic operational qualification fixture' } : undefined;
   console.log(`\n  Running OQ tests (200+ cases) against ${baseUrl}...`);
 
   const allResults: EvidenceResult[] = [];
@@ -1838,7 +1853,7 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
     allResults.push(...compAuditResults);
     console.log(`  Suite 10 (Comprehensive Audit): ${compAuditResults.filter(r => r.passed).length}/${compAuditResults.length} passed`);
 
-    const deepDataResults = await runDeepDataOperationTests(baseUrl, auth.token);
+    const deepDataResults = await runDeepDataOperationTests(baseUrl, auth.token, qualification);
     allResults.push(...deepDataResults);
     console.log(`  Suite 11 (Deep Data Operations): ${deepDataResults.filter(r => r.passed).length}/${deepDataResults.length} passed`);
 
