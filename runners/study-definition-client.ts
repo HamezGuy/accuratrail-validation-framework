@@ -22,7 +22,7 @@ export type {
 export type ExecutionChanges = Pick<StudyExecutionEditCommand, 'visits' | 'sites'>;
 
 export interface StudyResponse { status: number; body: unknown }
-export type StudyTransport = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown) => Promise<StudyResponse>;
+export type StudyTransport = (method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown) => Promise<StudyResponse>;
 export interface StudyActivationReview {
   username: string;
   password: string;
@@ -430,7 +430,7 @@ export class StudyDefinitionClient {
     return actual;
   }
 
-  async create(content: StudyContent, reason: string): Promise<StudyWorkspace> {
+  async create(content: StudyContent, reason: string, retainCleanupCandidate?: (created: StudyWorkspace) => void): Promise<StudyWorkspace> {
     assertStudyContent(content);
     const expected = cloneStudy(content);
     const created = readStudyWorkspace(await this.transport('POST', '/studies', {
@@ -438,6 +438,9 @@ export class StudyDefinitionClient {
     } satisfies CreateStudyDefinitionCommand), 201);
     check(created.revision.state === 'draft' && isDeepStrictEqual(created.revision.content, expected),
       'Created study did not preserve the complete requested draft.');
+    // POST establishes a cleanup candidate; only the independent GET below
+    // grants workflow custody. Retain the candidate even if that GET fails.
+    retainCleanupCandidate?.(cloneStudy(created));
     return this.verify(created);
   }
 

@@ -18,6 +18,8 @@ export function qualificationCredentials(
 
 export interface LoginSession {
   token: string;
+  /** Kept only in memory for native refresh qualification; evidence is redacted. */
+  refreshToken?: string;
   /** Null when the login payload does not identify the user. */
   userId: number | null;
   /** First organisation identified by the payload, or null when absent. */
@@ -48,6 +50,7 @@ function readLoginSession(body: unknown): LoginSession | null {
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
   return {
     token,
+    ...(typeof payload.refreshToken === 'string' && payload.refreshToken.trim() ? { refreshToken: payload.refreshToken } : {}),
     userId: numericId(user.userId),
     orgId: numericId(org.id ?? org.organizationId),
   };

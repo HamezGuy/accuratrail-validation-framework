@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
 
 export interface EvidenceResult {
   testCaseId: string;
@@ -34,6 +35,8 @@ export interface CaptureOptions {
   headers?: Record<string, string>;
   baseUrl: string;
   timeoutMs?: number;
+  /** Downloads retain complete bytes/text rather than the diagnostic preview. */
+  responseFormat?: 'text' | 'binary';
 }
 
 /** Plain-object guard shared by every runner that inspects untyped API payloads. */
@@ -47,7 +50,7 @@ export function redactEvidenceSecrets(value: unknown): unknown {
   if (!isRecord(value) || value instanceof Date) return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
     key,
-    /^(?:password(?:hash)?|passwd|signaturepassword|secret|clientsecret|accesstoken|refreshtoken|token|apikey|authorization|cookie|setcookie)$/i
+    /^(?:(?:current|new|old|confirm|signature)?password(?:hash)?|passwd|secret|clientsecret|accesstoken|refreshtoken|token|apikey|authorization|cookie|setcookie)$/i
       .test(key.replace(/[-_]/g, ''))
       ? '[redacted]' : redactEvidenceSecrets(item),
   ]));
@@ -272,14 +275,18 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
     });
 
     const contentType = response.headers.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
+    if (opts.responseFormat === 'binary') {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      responseBody = { encoding: 'base64', byteLength: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'), content: bytes.toString('base64') };
+    } else if (contentType.includes('application/json')) {
       responseBody = await response.json() as unknown;
     } else {
       const text = await response.text();
-      responseBody = text.length > 2000 ? text.slice(0, 2000) + '... [truncated]' : text;
+      responseBody = opts.responseFormat !== 'text' && text.length > 2000 ? text.slice(0, 2000) + '... [truncated]' : text;
     }
 
-    passed = response.ok;
+    passed = response.ok && !(isRecord(responseBody) && responseBody.success === false);
     notes = passed ? 'Request successful' : `HTTP ${responseStatus} returned`;
   } catch (err: unknown) {
     durationMs = Date.now() - startTime;
@@ -311,8 +318,9 @@ export async function captureWithExpectedStatus(
   expectedStatus: number,
 ): Promise<EvidenceResult> {
   const result = await captureApiCall(opts);
-  if (result.captureError !== undefined) return result;
-  result.passed = result.responseStatus === expectedStatus;
+  if (result.captureError !== undefined || result.responseStatus === 0 || result.responseStatus >= 500) return result;
+  result.passed = result.responseStatus === expectedStatus
+    && !(expectedStatus < 400 && isRecord(result.responseBody) && result.responseBody.success === false);
   result.notes = result.passed
     ? `Expected ${expectedStatus}, got ${result.responseStatus} — PASS`
     : `Expected ${expectedStatus}, got ${result.responseStatus} — FAIL`;
@@ -324,7 +332,9 @@ export async function captureWithValidator(
   validator: (status: number, body: unknown) => { passed: boolean; notes: string },
 ): Promise<EvidenceResult> {
   const result = await captureApiCall(opts);
-  if (result.captureError !== undefined) return result;
+  if (result.captureError !== undefined || result.responseStatus === 0 || result.responseStatus >= 500) return result;
+  if (result.responseStatus >= 200 && result.responseStatus < 300
+    && isRecord(result.responseBody) && result.responseBody.success === false) return result;
   try {
     const validation = validator(result.responseStatus, result.responseBody);
     if (typeof validation.passed !== 'boolean' || typeof validation.notes !== 'string') {

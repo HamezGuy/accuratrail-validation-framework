@@ -4,6 +4,7 @@ import {
   captureWithValidator,
   isRecord,
   saveEvidence,
+  manualResult,
 } from './evidence-capture';
 
 function sleep(ms: number): Promise<void> {
@@ -33,31 +34,11 @@ async function testSqlInjection(baseUrl: string): Promise<EvidenceResult> {
   );
 }
 
-async function testXssInjection(baseUrl: string, token: string | null): Promise<EvidenceResult> {
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  return captureWithValidator(
-    {
-      testCaseId: 'SEC-002',
-      method: 'POST',
-      url: '/api/forms/data',
-      baseUrl,
-      headers,
-      body: { fieldValue: '<script>alert(1)</script>', formId: 1 },
-    },
-    (status, body) => {
-      const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
-      const reflected = bodyStr.includes('<script>alert(1)</script>');
-      if (status === 400 || status === 422) {
-        return { passed: true, notes: `XSS payload rejected by server (HTTP ${status})` };
-      }
-      if (reflected) {
-        return { passed: false, notes: 'XSS payload reflected in response — potential vulnerability' };
-      }
-      return { passed: true, notes: `XSS payload not reflected (HTTP ${status})` };
-    },
-  );
+export async function testXssInjection(baseUrl: string, token: string | null): Promise<EvidenceResult> {
+  // API echo suppression cannot prove browser output encoding, and the former
+  // /forms/data request was not a native save contract. Keep this obligation
+  // explicit until a reviewed synthetic form and rendered browser check exist.
+  return manualResult('SEC-002', 'Stored XSS requires saving a payload to an owned synthetic form, independent native readback, and rendered browser execution/encoding checks. An absent endpoint or unreflected API error is not evidence.');
 }
 
 async function testMissingAuth(baseUrl: string): Promise<EvidenceResult> {
@@ -123,12 +104,12 @@ async function testExpiredJwt(baseUrl: string): Promise<EvidenceResult> {
   );
 }
 
-async function testPathTraversal(baseUrl: string): Promise<EvidenceResult> {
+export async function testPathTraversal(baseUrl: string): Promise<EvidenceResult> {
   return captureWithValidator(
     {
       testCaseId: 'SEC-006',
       method: 'GET',
-      url: '/api/forms/../../etc/passwd',
+      url: '/api/forms/%2e%2e%2f%2e%2e%2fetc%2fpasswd',
       baseUrl,
     },
     (status, body) => {
@@ -138,8 +119,8 @@ async function testPathTraversal(baseUrl: string): Promise<EvidenceResult> {
         return { passed: false, notes: 'Path traversal succeeded — system file leaked' };
       }
       return {
-        passed: true,
-        notes: `Path traversal blocked — no sensitive content exposed (HTTP ${status})`,
+        passed: [400, 401, 403, 404].includes(status),
+        notes: `Traversal probe returned — no sensitive content exposed (HTTP ${status})`,
       };
     },
   );
@@ -165,13 +146,14 @@ async function testVerbTampering(baseUrl: string): Promise<EvidenceResult> {
   );
 }
 
-async function testCorsPreflight(baseUrl: string): Promise<EvidenceResult> {
+export async function testCorsPreflight(baseUrl: string): Promise<EvidenceResult> {
   const fullUrl = `${baseUrl.replace(/\/$/, '')}/api/studies`;
   const timestamp = new Date().toISOString();
 
   try {
     const response = await fetch(fullUrl, {
       method: 'OPTIONS',
+      signal: AbortSignal.timeout(30000),
       headers: {
         Origin: 'https://evil-origin.example.com',
         'Access-Control-Request-Method': 'GET',
@@ -189,7 +171,7 @@ async function testCorsPreflight(baseUrl: string): Promise<EvidenceResult> {
       method: 'OPTIONS',
       responseStatus: response.status,
       responseBody: { accessControlAllowOrigin: allowOrigin },
-      passed: !wildcardOrEvil,
+      passed: [200, 204, 403].includes(response.status) && !wildcardOrEvil,
       notes: wildcardOrEvil
         ? `CORS allows untrusted origin: ${allowOrigin}`
         : `CORS does not allow untrusted origin (allow-origin: ${allowOrigin || 'not set'})`,
@@ -209,7 +191,7 @@ async function testCorsPreflight(baseUrl: string): Promise<EvidenceResult> {
   }
 }
 
-async function testErrorLeakage(baseUrl: string): Promise<EvidenceResult> {
+export async function testErrorLeakage(baseUrl: string): Promise<EvidenceResult> {
   return captureWithValidator(
     {
       testCaseId: 'SEC-009',
@@ -232,7 +214,7 @@ async function testErrorLeakage(baseUrl: string): Promise<EvidenceResult> {
         };
       }
       return {
-        passed: !leaksInternal,
+        passed: false,
         notes: leaksInternal
           ? `HTTP ${status} response leaks sensitive data`
           : `HTTP ${status} response is clean of internal details`,
@@ -311,7 +293,7 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   result = await testXssInjection(baseUrl, token);
   result.regulatoryRef = '§11.10(d)';
   result.testDescription = 'XSS payload injection in form data';
-  result.acceptanceCriteria = 'Payload not reflected in response body';
+  result.acceptanceCriteria = 'Owned synthetic native persistence plus rendered browser encoding/execution evidence; missing observations fail';
   results.push(result);
   console.log(`  SEC-002 (XSS Injection): ${result.passed ? 'PASS' : 'FAIL'}`);
 

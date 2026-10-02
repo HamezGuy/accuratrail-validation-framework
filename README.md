@@ -99,6 +99,12 @@ for the separate protocol-extraction evaluation boundary.
 
 ## Native synthetic qualification
 
+OQ uses one fresh signed clinical fixture and separate disposable viewer accounts for lockout and password/session probes. It disables only those accounts, preserves the shared operator, and archives only its own synthetic study after the retention checks. Related evidence identifies shared PQ/OQ observations; those are not additional independent trials.
+
+Audit mutation probes must first read an owned native record and then confirm that refusal left its contents unchanged. They establish API refusal, not database-trigger enforcement. The audit integrity check calls the native recomputation API and requires a nonempty complete scan with no unverifiable records, truncation, breaks, or deferred gaps. Native service evidence is distinct from independent database verification.
+
+The CSV export checks every expected fixture value and native subject label. PDF checks retain full bytes, a SHA-256 hash and the PDF envelope from the owned form route; rendered signature/layout review remains separate. Audit CSV is compared with the independently read correction, actor and reason. ODM checks its owned study/subject identity and does not claim complete clinical item mapping. Server/transport errors, missing observations, invalid request refusals on positive checks, and manual steps cannot become automatic passes. Password expiry, rate limiting and other controls require their actual observations; run results can remain failed even when offline contract tests pass.
+
 The explicit mode connects OQ-154 and PQ-001 through PQ-040 to the existing signed study-definition workflow and the current native API. Use a local qualification environment with the official CORE validator, an authorized operator, and the immutable shared package already installed. Set `OQ_USERNAME` and `OQ_PASSWORD` through the environment (PQ-specific credentials are also supported). Run:
 
 ```powershell
@@ -106,7 +112,7 @@ npm run generate -- --pq --base-url http://localhost:3000 --synthetic-qualificat
 npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification
 ```
 
-Use the actual authorized API URL/port. This creates owned synthetic studies, native forms and observations, signed release/application/activation, enrollment and planned visits. PQ exercises field preservation, a signed query lifecycle, completion, stale-write refusal, SDV, signature invalidation/re-signing, signed freeze/unfreeze/lock, raw native value readback, and exact correction audit records. It soft-archives only its owned synthetic fixture after retention checks. OQ retains its fixture. Evidence contains native commands and separate readbacks; credentials are redacted.
+Use the actual authorized API URL/port. This creates owned synthetic studies, native forms and observations, signed release/application/activation, enrollment and planned visits. PQ exercises field preservation, a signed query lifecycle, completion, stale-write refusal, SDV, signature invalidation/re-signing, signed freeze/unfreeze/lock, raw native value readback, and exact correction audit records. It soft-archives only its owned synthetic fixture after retention checks. OQ also soft-archives its owned fixture after all suites, including when a suite fails. Cleanup retains the canonical creation receipt and reconciles the exact identity again if the first independent readback failed. Evidence contains native commands and separate readbacks; credentials are redacted.
 
 Missing conformance, governance or permission remains a failure. `--acknowledge-ungoverned` and `--acknowledge-incomplete` are explicit operator acknowledgments accepted only when the server permits them; the runner never adds these in response to a failure. A nonlocal target additionally requires `--allow-production-qualification`. Without `--synthetic-qualification`, setup remains a draft and dependent cases remain blocked.
 

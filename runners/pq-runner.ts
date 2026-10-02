@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { login, qualificationCredentials } from './auth';
 import {
   type EvidenceResult,
@@ -5,6 +6,7 @@ import {
   isRecord,
   manualResult,
   saveEvidence,
+  captureWithExpectedStatus,
 } from './evidence-capture';
 import { cloneStudy, pendingStudy, type StudyWorkspace, type StudyActivationReview, type StudyTransport, expectStudySuccess, nativeId } from './study-definition-client';
 import { captureStudyOperation, captureQualificationOperation } from './study-qualification';
@@ -39,6 +41,7 @@ export interface WorkflowState {
   signatureId: number | null;
   baseUrl: string;
   studyWorkspace?: StudyWorkspace;
+  createdStudyCleanupCandidate?: StudyWorkspace;
   formItems?: Record<string, number>;
   crfVersionId?: number;
   qualification?: StudyActivationReview;
@@ -59,7 +62,7 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState, quali
   }
 
   state.studyName = `PQ Validation Study ${Date.now()}`;
-  const protocolId = `PQ-PROTO-${Date.now()}`;
+  const protocolId = `PQ-PROTO-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
   // PQ-001: Create a new test study
   const initial = qualification ? syntheticStudyDefinition(protocolId)
@@ -76,7 +79,7 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState, quali
   }];
   if (!qualification) initial.selection = { versionId: 'pq-version', designId: 'pq-design' };
   const created = await captureStudyOperation('PQ-001', baseUrl, state.adminToken, 'Create and read back canonical draft',
-    client => client.create(initial, 'Create synthetic PQ study definition'));
+    client => client.create(initial, 'Create synthetic PQ study definition', candidate => { state.createdStudyCleanupCandidate = candidate; }));
   if (created.value) {
     state.studyWorkspace = created.value;
     state.studyId = created.value.summary.studyId;
@@ -219,10 +222,10 @@ function demand(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 const dataOf = (response: Awaited<ReturnType<StudyTransport>>, status = 200): any => expectStudySuccess(response, status).data;
-const reviewed = (snapshot: any) => ({ expectedExecution: snapshot.execution ?? null,
+export const reviewed = (snapshot: any) => ({ expectedExecution: snapshot.execution ?? null,
   expectedObservations: { contract: 'edc-form-observation-preconditions/1', snapshotHash: snapshot.observationSnapshotHash } });
 
-async function patientForm(request: StudyTransport, state: WorkflowState): Promise<any> {
+export async function patientForm(request: StudyTransport, state: WorkflowState): Promise<any> {
   if (!state.formDataId) {
     const forms = dataOf(await request('GET', `/events/instance/${state.visitId}/crfs`));
     demand(Array.isArray(forms), 'Native patient-form census is missing.');
@@ -444,8 +447,8 @@ export async function runReviewAndSignature(baseUrl: string, state: WorkflowStat
   return results;
 }
 
-export async function runCleanupVerification(baseUrl: string, state: WorkflowState): Promise<EvidenceResult[]> {
-  if (!state.adminToken || !state.formDataId) return blocked(36, 40, 'no verified native patient form');
+export async function runCleanupVerification(baseUrl: string, state: WorkflowState, archive = true): Promise<EvidenceResult[]> {
+  if (!state.adminToken || !state.formDataId) return [...blocked(36, 39, 'no verified native patient form'), ...(archive ? [await archiveOwnedStudy(state)] : [])];
   const results: EvidenceResult[] = [], step = async (id: number, description: string, action: (r: StudyTransport) => Promise<unknown>) => {
     results.push(await pqStep(state, id, description, action));
   };
@@ -473,15 +476,25 @@ export async function runCleanupVerification(baseUrl: string, state: WorkflowSta
       && proof.activeSignature?.signatureId === state.signatureId,
       'The retained final signature is not verified.');
   });
-  await step(40, 'Archive only this owned synthetic fixture and verify native retained state', async r => {
-    demand(state.studyWorkspace?.revision.content.execution.extensions.syntheticFixture === true
-      && state.studyWorkspace.summary.studyId === state.studyId, 'Only the owned synthetic qualification study may be archived.');
-    expectStudySuccess(await r('DELETE', `/studies/${state.studyId}`), 200);
-    const read = dataOf(await r('GET', `/studies/${state.studyId}`));
-    demand(read?.summary?.studyId === state.studyId && read.executionContext?.entityStatus?.id === 5,
+  if (archive) results.push(await archiveOwnedStudy(state));
+  return results;
+}
+
+export async function archiveOwnedStudy(state: WorkflowState): Promise<EvidenceResult> {
+  return pqStep(state, 40, 'Archive only this owned synthetic fixture and verify native retained state', async r => {
+    const owned = state.studyWorkspace ?? state.createdStudyCleanupCandidate;
+    const studyId = owned?.summary.studyId;
+    demand(owned?.revision.content.execution.extensions.syntheticFixture === true && nativeId(studyId)
+      && (!state.studyWorkspace || studyId === state.studyId), 'Only the owned synthetic qualification study may be archived.');
+    const before = dataOf(await r('GET', `/studies/${studyId}`));
+    demand(before?.summary?.studyId === studyId && before.summary.primaryIdentifier === owned.summary.primaryIdentifier
+      && before.revision?.content?.execution?.extensions?.syntheticFixture === true, 'Native archive prerequisite no longer matches the owned synthetic identity.');
+    expectStudySuccess(await r('DELETE', `/studies/${studyId}`), 200);
+    const read = dataOf(await r('GET', `/studies/${studyId}`));
+    demand(read?.summary?.studyId === studyId && read.summary.primaryIdentifier === owned.summary.primaryIdentifier
+      && read.revision?.content?.execution?.extensions?.syntheticFixture === true && read.executionContext?.entityStatus?.id === 5,
       'Synthetic archive was not confirmed by native study readback.');
   });
-  return results;
 }
 
 export function createWorkflowState(baseUrl: string, adminToken: string | null = null): WorkflowState {
@@ -543,9 +556,9 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
     (url, current) => runStudySetup(url, current, qualification),
     runDataEntry,
     runReviewAndSignature,
-    runCleanupVerification,
   ];
 
+  try {
   for (const [suiteIndex, suite] of suites.entries()) {
     try {
       const results = await suite(baseUrl, state);
@@ -559,6 +572,13 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
     }
   }
 
+  } finally {
+    try { allResults.push(...await runCleanupVerification(baseUrl, state)); }
+    catch { allResults.push(evidence('PQ-CLEANUP-ERROR', baseUrl, 'CONTRACT', 0, null, false, 'Unexpected cleanup exception; reconcile owned fixture before retrying.')); }
+    finally { allResults.push(await captureWithExpectedStatus({ testCaseId: 'PQ-LOGOUT', baseUrl, method: 'POST', url: '/api/auth/logout', headers: { Authorization: `Bearer ${state.adminToken}` } }, 200)); }
+  }
+  for (let id = 1; id <= 40; id++) { const testCaseId = `PQ-${String(id).padStart(3, '0')}`;
+    if (!allResults.some(row => row.testCaseId === testCaseId)) allResults.push({ ...manualResult(testCaseId, 'PQ case did not execute.'), method: 'CONTRACT' }); }
   allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
   saveEvidence(outputDir, 'pq', allResults);
   return allResults;
