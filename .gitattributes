@@ -1,2 +1,5 @@
+# Preserve the exact synthetic source bytes checked by qualification-fixture.ts.
+fixtures/synthetic-usdm4-core/** -text
+
 # PDF streams and cross-reference offsets require byte-for-byte preservation.
 *.pdf binary
