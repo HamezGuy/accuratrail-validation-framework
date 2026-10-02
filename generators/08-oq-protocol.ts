@@ -125,12 +125,12 @@ function authenticationCases(): OqTestCase[] {
       id: 'OQ-007', title: 'Device Fingerprint Tracking', requirement: 'URS-AUTH-006', cfr: '11.10(d)',
       riskLevel: 'Medium', preconditions: 'User account exists in the system',
       steps: [
-        'Login from device A with a specific User-Agent header.',
-        'Login from device B with a different User-Agent header.',
-        'Query session/device records for the user.',
-        'Verify both device fingerprints are tracked.',
+        'Login through the API with explicit x-device-fingerprint A and User-Agent A using an owned account.',
+        'Login with distinct x-device-fingerprint B and User-Agent B; retain the two exact session identities.',
+        'Use an authorized native read-only session observer scoped to that owned user and those two sessions; a successful verify response is not tracking evidence.',
+        'Verify both supplied fingerprints and User-Agents are retained under their exact sessions. The current UI sends no fingerprint header; hard binding is outside this case.',
       ],
-      expectedResult: 'Both device fingerprints recorded in system.',
+      expectedResult: 'Both supplied API fingerprints are retained in exact native session records. UI tracking and mismatch rejection are not qualified by this case.',
       evidence: 'See evidence/oq/OQ-007.json',
     },
     {
@@ -486,10 +486,10 @@ function esignatureCases(): OqTestCase[] {
       id: 'OQ-040', title: 'Signature Copy Prevention', requirement: 'URS-ESIG-008', cfr: '11.70',
       riskLevel: 'Critical', preconditions: 'Valid signature exists in the system',
       steps: [
-        'Attempt to apply the same signature payload to a different record/form.',
-        'Verify the system rejects the request.',
+        'Create an unused consent approval signature for owned subject A, then submit its exact investigatorSignatureId to distinct owned subject B without inline credentials.',
+        'Verify the specific wrong-context refusal and unchanged consent/signature histories for A and B, then use the same still-unused proof successfully on A and verify exact retained linkage.',
       ],
-      expectedResult: 'System rejects applying a signature to a record it was not created for.',
+      expectedResult: 'The supported consent boundary rejects the A-to-B copy, preserves both histories, and accepts the same valid proof only in its original context. This does not qualify every signature entity type.',
       evidence: 'See evidence/oq/OQ-040.json',
     },
     {

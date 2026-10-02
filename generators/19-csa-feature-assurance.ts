@@ -135,26 +135,26 @@ FEATURE_DATA.set('FEAT-004', {
 FEATURE_DATA.set('FEAT-005', {
   intendedUse:
     'Manages user sessions with configurable idle timeouts that automatically terminate inactive sessions, preventing ' +
-    'unauthorized access via unattended workstations. Implements device fingerprinting to bind sessions to specific ' +
-    'browsers and single-session enforcement per 21 CFR Part 11 §11.10(d).',
+    'unauthorized access via unattended workstations. Native password login allows concurrent independent sessions. ' +
+    'An optional API fingerprint header is recorded; mismatches alert without rejecting requests. The UI does not send this header.',
   analysisText:
     'High Process Risk because failure to terminate idle sessions at clinical sites could allow unauthorized ' +
     'individuals to access and modify regulated clinical records. Per CSA guidance, this foreseeably compromises ' +
     'data integrity when workstations in clinical environments are shared or accessible to non-authorized personnel.',
   conclusionText:
-    'The Session Management/Timeout feature is acceptable for its intended use. Idle timeout, device fingerprinting, ' +
-    'and single-session enforcement all function as specified, protecting against unauthorized workstation access ' +
-    'per 21 CFR Part 11 §11.10(d).',
+    'Qualification remains incomplete. Retained timeout and revocation results must be reviewed separately. ' +
+    'Device tracking needs exact native session evidence, while hard device binding and single-session exclusion ' +
+    'are not implemented; neither can be credited by the current fingerprint alert.',
   testType: 'Robust Scripted Testing (per CSA Guidance Table 1)',
   implFiles: [
     ['libreclinicaapi/src/middleware/auth.middleware.ts', 'JWT expiration enforcement and session validation on every request'],
-    ['ElectronicDataCaptureReal/src/app/services/auth/idle-timeout.service.ts', 'Client-side inactivity detection and forced logout'],
+    ['EDCProjectCompliant/src/app/services/auth/idle-timeout.service.ts', 'Client-side inactivity detection and forced logout'],
   ],
   testCases: [
-    ['OQ-087', 'Expired JWT is rejected after configured session timeout period'],
-    ['OQ-088', 'Frontend idle timeout triggers forced logout after configured inactivity'],
-    ['OQ-089', 'Device fingerprint mismatch causes immediate session invalidation'],
-    ['OQ-090', 'Concurrent session from a different device terminates the prior session'],
+    ['OQ-005', 'Retain actual session timeout evidence; incomplete/manual evidence is not a pass'],
+    ['OQ-007', 'Pending: exact native tracking of two supplied fingerprints; no UI or hard-binding claim'],
+    ['OQ-062', 'Logout revokes the exact issued session'],
+    ['URS-010 / URS-011', 'Unmet requested device binding and single-session exclusion; current API permits concurrent sessions'],
   ],
 });
 

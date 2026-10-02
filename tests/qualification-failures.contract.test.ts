@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { runAuthenticationTests, runPart11ComplianceTests, runDataOperationTests, runComprehensiveAuditTests, runSecurityValidationTests,
   runComprehensiveAuthTests, runComprehensiveRbacTests, captureAuditRefusal, captureNativeDownload, captureAuditDownload,
   captureSignaturePasswordRefusal, captureMissingChangeReason, runAccountLifecycleTests, nativeCase, runRateLimitTest,
-  captureOwnedUnlock, captureLifecycleAudit, captureSignatureAudit, type OwnedOqFixture } from '../runners/oq-runner';
+  captureOwnedUnlock, captureLifecycleAudit, captureSignatureAudit, captureSignatureCopyRefusal, type OwnedOqFixture } from '../runners/oq-runner';
 import { createWorkflowState, runStudySetup, archiveOwnedStudy } from '../runners/pq-runner';
 import { workspace } from './study-contract-fixtures';
 import { syntheticStudyDefinition } from '../runners/qualification-fixture';
@@ -128,6 +128,82 @@ function nativeForm(weight = '70.5', revision = 1) {
     execution: null, observationPreconditionContract: 'edc-form-observation-preconditions/1', observationSnapshotHash: `sha256:${String(revision).repeat(64)}`,
     formData: { item_103: weight }, data: [{ itemId: 103, itemDataId: 1103, value: weight }], lockStatus: { locked: false } };
 }
+
+for (const defect of ['none', 'missing-prerequisite', 'failed-prerequisite', 'not-owned', 'foreign-study', 'foreign-source',
+  'foreign-target', 'same-target', 'existing-history', 'invalid-proof', 'wrong-signer', 'wrong-proof-identity',
+  'unrelated-refusal', 'accepted-copy', 'copy-side-effect', 'changed-source-proof', 'positive-refused',
+  'wrong-positive-link', 'positive-not-retained', 'positive-changed-target', 'readback-unavailable'])
+  test(`consent copy qualification requires an unchanged wrong-context refusal and same-proof positive control: ${defect}`, async t => {
+    const fixture = reviewedFixture(), state = fixture.state, study = state.studyWorkspace!;
+    fixture.results = ['PQ-006', 'PQ-029'].map(id => prerequisite(id));
+    if (defect === 'missing-prerequisite') fixture.results.pop();
+    if (defect === 'failed-prerequisite') fixture.results[0].passed = false;
+    if (defect === 'not-owned') study.revision.content.execution.extensions.syntheticFixture = false;
+    study.summary.entityStatus = { id: 1, label: 'available' }; study.executionContext.entityStatus = { id: 1, label: 'available' };
+    study.executionContext.appliedDefinitionRevisionId = study.revision.revisionId;
+    study.executionContext.appliedApplicationId = '00000000-0000-4000-8000-000000000222';
+    study.executionContext.appliedExecutionConfiguration = structuredClone(study.revision.content.execution);
+    state.enrollmentRequest = { studyId: 42, label: state.subjectLabel, enrollmentDate: '2026-10-02', enrollmentStatus: 'enrolled', autoScheduleVisits: false };
+    const history: Record<number, any[]> = { 81: [], 82: [] };
+    const target = { studySubjectId: 82, studyId: 42, label: '', enrollmentDate: '2026-10-02', enrollmentStatus: 'enrolled' };
+    let signed = false, refused = false, positive = false, calls = 0, writes = 0;
+    const proof = (id: number) => ({ entityType: 'consent', entityId: id,
+      ...(id === 81 && signed ? { signatureId: defect === 'wrong-proof-identity' ? 501 : 500,
+        isSigned: true, state: 'signed', signatureIntegrityValid: defect !== 'invalid-proof', meaning: 'approval',
+        signedBy: defect === 'wrong-signer' ? 'someone-else' : 'operator', signedAt: '2026-10-02T12:00:00Z',
+        contentHashAlgorithm: 'sha256', contentHash: (refused && defect === 'changed-source-proof' ? 'b' : 'a').repeat(64) }
+        : { isSigned: false, state: 'unsigned' }) });
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      calls++; const p = new URL(url).pathname, method = init.method ?? 'GET', body = init.body ? JSON.parse(String(init.body)) : undefined;
+      if (method !== 'GET') writes++;
+      let status = 200, data: any, result: any;
+      if (p === '/api/studies/42') { data = structuredClone(study); if (defect === 'foreign-study') data.summary.studyId = 99; }
+      else if (p === '/api/subjects/81') data = { studySubjectId: 81, studyId: defect === 'foreign-source' ? 99 : 42,
+        label: state.subjectLabel, enrollmentDate: '2026-10-02', enrollmentStatus: 'enrolled' };
+      else if (p === '/api/subjects' && method === 'POST') {
+        assert.equal(body.studyId, 42); assert.equal(body.autoScheduleVisits, false); target.label = body.label;
+        data = { studySubjectId: defect === 'same-target' ? 81 : 82 }; status = 201;
+      } else if (p === '/api/subjects/82') data = { ...target, studyId: defect === 'foreign-target' ? 99 : 42 };
+      else if (p === '/api/esignature/sign') {
+        assert.equal(body.entityId, 81); assert.equal(body.entityType, 'consent'); assert.equal(body.password, 'private');
+        signed = true; data = { signatureId: 500 };
+      } else if (/^\/api\/esignature\/status\/consent\/(81|82)$/.test(p)) data = proof(Number(p.split('/').pop()));
+      else if (/^\/api\/esignature\/history\/consent\/(81|82)$/.test(p)) {
+        const id = Number(p.split('/').pop()); data = id === 81 && signed ? [{ signatureId: 500, entityType: 'consent', entityId: 81, isValid: true }] : [];
+      } else if (/^\/api\/consent\/subjects\/(81|82)\/consent$/.test(p)) {
+        const id = Number(p.split('/')[4]);
+        if (method === 'POST') {
+          assert.equal(body.investigatorSignatureId, 500); assert.equal('password' in body, false); assert.equal('signaturePassword' in body, false);
+          if (id === 82) {
+            assert.equal(positive, false, 'Wrong-context probe must precede consumption of the valid proof'); refused = true;
+            status = defect === 'unrelated-refusal' ? 404 : defect === 'accepted-copy' ? 200 : 403;
+            result = { success: status === 200, message: defect === 'unrelated-refusal' ? 'Route unavailable'
+              : 'The investigatorSignatureId is not a valid, unused signature for this consent subject and step' };
+            if (defect === 'copy-side-effect') history[82].push({ consentId: 600, studySubjectId: 82, investigatorSignatureId: 500 });
+          } else {
+            assert.equal(refused, true); positive = true;
+            data = { consentId: 601, studySubjectId: 81, investigatorSignatureId: defect === 'wrong-positive-link' ? 999 : 500, consentStatus: 'consented' };
+            if (defect === 'positive-refused') { status = 403; result = { success: false }; }
+            else if (defect !== 'positive-not-retained') history[81].push(data);
+            if (defect === 'positive-changed-target') history[82].push({ consentId: 602, studySubjectId: 82 });
+          }
+        } else {
+          data = history[id];
+          if (defect === 'existing-history' && id === 81 && !signed) data = [{ consentId: 599, studySubjectId: 81 }];
+          if (defect === 'readback-unavailable' && refused) { status = 503; result = { success: false }; }
+        }
+      } else assert.fail(`Unexpected or foreign request ${method} ${p}`);
+      return new Response(JSON.stringify(result ?? { success: true, data }), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const result = await captureSignatureCopyRefusal(baseUrl, 'operator', fixture);
+    assert.equal(result.passed, defect === 'none', result.notes);
+    assert.equal(JSON.stringify(result).includes('"private"'), false);
+    if (['missing-prerequisite', 'failed-prerequisite', 'not-owned'].includes(defect)) assert.equal(calls, 0);
+    if (['foreign-study', 'foreign-source', 'existing-history'].includes(defect)) assert.equal(writes, 0);
+    if (defect === 'none') { assert.equal(positive, true); assert.equal(history[81].length, 1); assert.equal(history[82].length, 0); }
+    if (['unrelated-refusal', 'accepted-copy', 'copy-side-effect', 'changed-source-proof', 'readback-unavailable'].includes(defect)) assert.equal(positive, false);
+    assert.equal((result.relatedEvidence ?? []).some(row => ['DELETE', 'PUT', 'PATCH'].includes(row.method)), false, 'Retain native history; do not erase a failed probe');
+  });
 
 for (const defect of ['none', 'foreign-history', 'missing-unlock-audit', 'wrong-unlock-actor', 'changed-values', 'restore-refused'])
   test(`signed owned unlock retains evidence and restores only unchanged owned values: ${defect}`, async t => {

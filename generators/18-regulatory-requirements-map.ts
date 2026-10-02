@@ -134,7 +134,7 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'JWT authentication', file: 'auth.middleware.ts', description: 'Token-based authentication verifying user identity on every API request' },
         { control: 'Role-based authorization', file: 'authorization.middleware.ts', description: 'RBAC with 6 defined roles and 42 granular permissions enforced at each endpoint' },
         { control: 'Account provisioning workflow', file: 'auth.service.ts', description: 'User account creation, activation, deactivation, and role assignment controlled by admins' },
-        { control: 'Session management', file: 'auth.service.ts', description: 'Single active session enforcement, device fingerprinting, configurable idle timeout' },
+        { control: 'Session management', file: 'auth.service.ts', description: 'Independent concurrent sessions, configurable idle timeout, optional API fingerprint tracking; no single-session enforcement' },
         { control: 'Request rate limiting', file: 'rateLimiter.middleware.ts', description: 'IP-based and user-based rate limiting to prevent brute-force and DoS attacks' },
         { control: 'Account lockout policy', file: 'auth.service.ts', description: 'Automatic account lockout after configurable consecutive failed login attempts' },
       ],
@@ -210,14 +210,14 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         'Use of device (e.g., terminal) checks to determine, as appropriate, the validity of ' +
         'the source of data input or operational instruction.',
       controls: [
-        { control: 'Device fingerprinting', file: 'auth.service.ts', description: 'Browser and device fingerprint captured at login and verified throughout session lifetime' },
-        { control: 'Session-device binding', file: 'auth.middleware.ts', description: 'JWT tokens bound to originating device; requests from different devices are rejected' },
+        { control: 'Device fingerprinting', file: 'auth.service.ts', description: 'Explicit API x-device-fingerprint is stored at login; UI header delivery is absent and native tracking qualification is pending' },
+        { control: 'Session-device binding', file: 'auth.middleware.ts', description: 'Not implemented: supplied fingerprint mismatch alerts but does not reject, and a missing header bypasses this optional check' },
         { control: 'CSRF protection', file: 'app.ts', description: 'Cross-Site Request Forgery tokens validated on all state-changing requests' },
         { control: 'CORS configuration', file: 'app.ts', description: 'Cross-Origin Resource Sharing restricted to authorized frontend domains only' },
         { control: 'Rate limiting per device', file: 'rateLimiter.middleware.ts', description: 'Per-IP and per-device rate limiting prevents automated attack tools from submitting data' },
       ],
       testCases: 'SEC-016 through SEC-020',
-      status: 'Compliant — Device fingerprinting, CSRF protection, CORS policy, and rate limiting validate input sources',
+      status: 'Pending device evidence — optional API fingerprint tracking is not enforced device binding; other source controls require their own retained results',
     },
     {
       id: '§11.10(i)',
@@ -407,7 +407,7 @@ function buildPart11SubpartC(): RegulatorySection[] {
       controls: [
         { control: 'First-sign full authentication', file: 'esignature.service.ts', description: 'First e-signature in a session requires full username + password re-authentication' },
         { control: 'Subsequent-sign password only', file: 'esignature.service.ts', description: 'Subsequent signatures within same continuous session require password re-entry only' },
-        { control: 'Session continuity tracking', file: 'auth.service.ts', description: 'Continuous session tracked via JWT and device fingerprint; break in session resets signing state' },
+        { control: 'Session continuity tracking', file: 'auth.service.ts', description: 'Session identity is tracked by JWT sid; the optional fingerprint alert is not signing authority or a signing-state reset' },
         { control: 'Idle timeout session break', file: 'auth.service.ts', description: 'Session idle timeout (30 minutes default) breaks continuity; next sign requires full re-auth' },
       ],
       testCases: 'OQ-079 through OQ-082',
@@ -475,7 +475,7 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Token blocklist on logout', file: 'auth.service.ts', description: 'Immediate session revocation capability; compromised JWT tokens added to server-side blocklist' },
         { control: 'Admin account deactivation', file: 'user.service.ts', description: 'Rapid account deactivation workflow for lost or stolen credentials via admin panel' },
         { control: 'Session revocation', file: 'auth.service.ts', description: 'All active sessions for a user can be revoked instantly by administrator action' },
-        { control: 'Device fingerprint invalidation', file: 'auth.service.ts', description: 'Device fingerprint cleared on compromise report; forces re-authentication from all devices' },
+        { control: 'Device fingerprint invalidation', file: 'auth.service.ts', description: 'Fingerprint mismatch does not revoke sessions; explicit account/session revocation requires separate evidence' },
         { control: 'Incident audit logging', file: 'audit.service.ts', description: 'All loss management actions logged in audit trail with reason and administrator identity' },
       ],
       testCases: 'SEC-030, SEC-031',
@@ -508,13 +508,13 @@ function buildPart11SubpartC(): RegulatorySection[] {
         'identification code or password information to ensure that they function properly and ' +
         'have not been altered in an unauthorized manner.',
       controls: [
-        { control: 'Device fingerprint verification', file: 'auth.service.ts', description: 'Device fingerprint validated on every authenticated request; altered fingerprints rejected' },
+        { control: 'Device fingerprint verification', file: 'auth.service.ts', description: 'Optional supplied fingerprint compared with the stored sid record; mismatch alerts without rejection' },
         { control: 'JWT integrity verification', file: 'auth.middleware.ts', description: 'Token cryptographic signature verified on every request; tampered tokens rejected immediately' },
-        { control: 'Session consistency checks', file: 'auth.middleware.ts', description: 'Session metadata (device, IP) checked for consistency throughout session lifetime' },
+        { control: 'Session consistency checks', file: 'auth.middleware.ts', description: 'Native session identity is checked; IP is recorded and optional fingerprint mismatch alerts do not enforce device/IP binding' },
         { control: 'Automated security testing', file: 'validation-framework/', description: 'IQ/OQ test cases verify authentication device behavior and tamper detection mechanisms' },
       ],
       testCases: 'SEC-036, SEC-037',
-      status: 'Compliant — Token integrity and device fingerprint verified on every request; automated testing validates',
+      status: 'Pending — token integrity evidence is separate; optional fingerprint tracking remains unqualified and does not reject mismatch',
     },
   ];
 }
@@ -732,13 +732,13 @@ function buildHIPAASections(): RegulatorySection[] {
       controls: [
         { control: 'Username/password authentication', file: 'auth.service.ts', description: 'Two-component authentication with unique username and bcrypt-hashed password' },
         { control: 'JWT token verification', file: 'auth.middleware.ts', description: 'Cryptographic signature verification on every API request ensures token authenticity' },
-        { control: 'Device fingerprinting', file: 'auth.service.ts', description: 'Browser/device fingerprint captured and verified to detect session hijacking' },
+        { control: 'Device fingerprinting', file: 'auth.service.ts', description: 'Explicit API fingerprint is retained when supplied; UI delivery is absent and mismatch handling only alerts' },
         { control: 'Re-authentication for sensitive actions', file: 'esignature.service.ts', description: 'Credential re-entry required for e-signatures and other high-risk operations' },
         { control: 'Failed authentication handling', file: 'auth.service.ts', description: 'Account lockout, delay injection, and alerting on repeated authentication failures' },
-        { control: 'Session token binding', file: 'auth.middleware.ts', description: 'JWT bound to device fingerprint and IP; mismatches invalidate token immediately' },
+        { control: 'Session token binding', file: 'auth.middleware.ts', description: 'Not implemented: JWT is associated with its sid, without enforced fingerprint/IP binding; fingerprint mismatch does not invalidate it' },
       ],
       testCases: 'OQ-001 through OQ-010, SEC-001 through SEC-005',
-      status: 'Compliant — Multi-factor authentication with device binding and re-authentication for sensitive actions',
+      status: 'Pending — password authentication and sensitive-action re-authentication have separate evidence; device binding is not implemented and fingerprint tracking is not a second authentication factor',
     },
     {
       id: '§164.312(e)(1)',

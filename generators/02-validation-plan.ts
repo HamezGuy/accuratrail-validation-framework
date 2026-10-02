@@ -185,7 +185,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Test subject enrollment, visit scheduling, and randomization\n';
   content += '- Test data export in all formats (PDF, CSV, XML, ODM)\n';
   content += '- Test backup and restore procedures\n';
-  content += '- Test session management, idle timeout, and concurrent session controls\n';
+  content += '- Test session management and idle timeout; record the supported concurrent-session behavior\n';
   content += '- Test encryption at rest and in transit\n';
   content += '- Boundary testing: empty inputs, maximum lengths, special characters, concurrent access\n';
   content += '- Negative testing: invalid credentials, unauthorized access, malformed requests\n\n';
@@ -217,7 +217,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['11.10(e)', 'Audit trails', 'Generation, content, immutability, export verified'],
     ['11.10(f)', 'Operational system checks', 'Sequencing, validation rules, workflow enforcement verified'],
     ['11.10(g)', 'Authority checks', 'Role-based authorization for all operations verified'],
-    ['11.10(h)', 'Device checks', 'Device fingerprinting, session binding verified'],
+    ['11.10(h)', 'Device checks', 'Optional API fingerprint tracking requires native session readback; hard device binding is not implemented'],
     ['11.10(i)', 'Training', 'Training records, role-based training modules verified'],
     ['11.10(j)', 'Documentation accountability', 'Policies, SOPs, change control verified'],
     ['11.10(k)(1)', 'Documentation controls — distribution', 'Controlled document distribution verified'],

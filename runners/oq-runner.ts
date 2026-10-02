@@ -14,7 +14,7 @@ import {
   redactEvidenceSecrets,
   saveEvidence,
 } from './evidence-capture';
-import { pendingStudy, readStudySummaryPage, expectStudySuccess, nativeId, type StudyActivationReview } from './study-definition-client';
+import { pendingStudy, readStudySummaryPage, expectStudySuccess, nativeId, StudyDefinitionClient, type StudyActivationReview } from './study-definition-client';
 import { captureStudyOperation, captureQualificationOperation } from './study-qualification';
 import { runStudySetup, createWorkflowState, runDataEntry, runReviewAndSignature, runCleanupVerification, patientForm, reviewed, type WorkflowState } from './pq-runner';
 import { qualificationOptions } from './qualification-fixture';
@@ -134,6 +134,75 @@ export async function captureSignatureAudit(baseUrl: string, token: string, fixt
           || manifest.signed_at !== proof.activeSignature.signedAt || manifest.content_hash !== proof.activeSignature.contentHash))
           throw new Error('Active proof does not match its actual audit manifestation.');
       }
+    })).evidence;
+}
+
+export async function captureSignatureCopyRefusal(baseUrl: string, token: string, fixture?: OwnedOqFixture): Promise<EvidenceResult> {
+  const prerequisite = nativeCase(fixture, ['PQ-006', 'PQ-029'], 'OQ-040');
+  if (!prerequisite.passed) return prerequisite;
+  return (await captureQualificationOperation('OQ-040', baseUrl, token,
+    'An unused native consent signature is refused on another owned subject, remains unchanged, and works on its original subject', async request => {
+      const state = fixture!.state, owned = state.studyWorkspace, enrollment = state.enrollmentRequest;
+      if (!state.qualification || !owned || owned.revision.content.execution.extensions.syntheticFixture !== true
+        || !nativeId(state.studyId) || owned.summary.studyId !== state.studyId || !nativeId(state.subjectId) || !enrollment)
+        throw new Error('No exact owned native study and enrollment prerequisite.');
+      const client = new StudyDefinitionClient(request), live = await client.verify(owned);
+      await client.readSubject(state.subjectId, state.studyId, state.subjectLabel, enrollment.enrollmentDate);
+      const history = async (subjectId: number) => {
+        const rows = expectStudySuccess(await request('GET', `/consent/subjects/${subjectId}/consent`), 200).data;
+        if (!Array.isArray(rows) || rows.some((row: any) => !nativeId(row?.consentId) || row.studySubjectId !== subjectId)
+          || new Set(rows.map((row: any) => row.consentId)).size !== rows.length) throw new Error('Consent history has missing, duplicate or foreign identities.');
+        return rows;
+      };
+      const snapshot = async (subjectId: number) => {
+        const proof = expectStudySuccess(await request('GET', `/esignature/status/consent/${subjectId}`), 200).data;
+        const signatures = expectStudySuccess(await request('GET', `/esignature/history/consent/${subjectId}`), 200).data;
+        if (!isRecord(proof) || proof.entityType !== 'consent' || proof.entityId !== subjectId || !Array.isArray(signatures)
+          || signatures.some((row: any) => !nativeId(row?.signatureId) || row.entityType !== 'consent' || row.entityId !== subjectId))
+          throw new Error('Consent signature readback has missing or foreign identity.');
+        return { proof, signatures, consents: await history(subjectId) };
+      };
+      const initial = await snapshot(state.subjectId);
+      if (initial.consents.length || initial.signatures.length || initial.proof.isSigned !== false || initial.proof.state !== 'unsigned')
+        throw new Error('The owned source subject already has consent/signature history; reconcile before rerunning.');
+      // Reuse canonical enrollment and keep this new subject under the existing
+      // owned-study archive lifecycle. Never remove a mistakenly accepted consent.
+      const target = await client.enroll(live, `OQ-COPY-${randomUUID().slice(0, 16)}`, enrollment.enrollmentDate);
+      const targetId = target.subject.studySubjectId;
+      if (targetId === state.subjectId) throw new Error('Copy target is not a distinct owned subject.');
+      const targetBefore = await snapshot(targetId);
+      if (targetBefore.consents.length || targetBefore.signatures.length || targetBefore.proof.isSigned !== false || targetBefore.proof.state !== 'unsigned')
+        throw new Error('New copy target has unexpected native history.');
+      const signed = expectStudySuccess(await request('POST', '/esignature/sign', {
+        entityType: 'consent', entityId: state.subjectId, username: state.qualification.username, password: state.qualification.password,
+        meaning: 'approval', reasonForSigning: 'Owned synthetic OQ signature-copy qualification',
+      }), 200).data;
+      if (!nativeId(signed?.signatureId)) throw new Error('Signing did not return a native audit identity.');
+      const sourceBefore = await snapshot(state.subjectId), proof = sourceBefore.proof;
+      if (proof.signatureId !== signed.signatureId || proof.isSigned !== true || proof.signatureIntegrityValid !== true
+        || proof.state !== 'signed' || proof.meaning !== 'approval' || proof.signedBy !== state.qualification.username
+        || typeof proof.signedAt !== 'string' || !Number.isFinite(Date.parse(proof.signedAt))
+        || proof.contentHashAlgorithm !== 'sha256' || typeof proof.contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(proof.contentHash)
+        || sourceBefore.consents.length || sourceBefore.signatures.length !== 1
+        || sourceBefore.signatures[0].signatureId !== signed.signatureId || sourceBefore.signatures[0].isValid !== true)
+        throw new Error('Fresh source consent signature is not an exact valid unused native proof.');
+      const body = { subjectName: 'Synthetic OQ consent participant', subjectSignatureData: { synthetic: true },
+        timeSpentReading: 42, pagesViewed: [1], acknowledgementsChecked: ['reviewed'], investigatorSignatureId: signed.signatureId };
+      // Wrong context FIRST: consuming the proof on A first would confound this
+      // test with the separate one-use rule. No inline password fallback is sent.
+      const refused = await request('POST', `/consent/subjects/${targetId}/consent`, body);
+      const sourceAfter = await snapshot(state.subjectId), targetAfter = await snapshot(targetId);
+      if (refused.status !== 403 || !isRecord(refused.body) || refused.body.success !== false
+        || refused.body.message !== 'The investigatorSignatureId is not a valid, unused signature for this consent subject and step'
+        || !isDeepStrictEqual(sourceAfter, sourceBefore) || !isDeepStrictEqual(targetAfter, targetBefore))
+        throw new Error('Exact wrong-subject refusal and unchanged native consent/signature histories were not both established.');
+      const accepted = expectStudySuccess(await request('POST', `/consent/subjects/${state.subjectId}/consent`, body), 200).data;
+      const positive = await snapshot(state.subjectId), finalTarget = await snapshot(targetId);
+      if (!nativeId(accepted?.consentId) || accepted.studySubjectId !== state.subjectId || accepted.investigatorSignatureId !== signed.signatureId
+        || positive.consents.length !== 1 || positive.consents[0].consentId !== accepted.consentId
+        || positive.consents[0].investigatorSignatureId !== signed.signatureId || positive.consents[0].consentStatus !== 'consented'
+        || !isDeepStrictEqual(positive.proof, sourceBefore.proof) || !isDeepStrictEqual(positive.signatures, sourceBefore.signatures)
+        || !isDeepStrictEqual(finalTarget, targetBefore)) throw new Error('Same-proof positive control or retained exact source/target linkage failed.');
     })).evidence;
 }
 
@@ -565,10 +634,10 @@ export async function runAuthenticationTests(
   }
 
   // OQ-007: Device fingerprint (manual)
-  results.push(manualResult('OQ-007', 'Device fingerprint requires multi-device test', {
+  results.push(manualResult('OQ-007', 'Native session readback for two explicit fingerprint headers is required. The current UI sends neither header; mismatch alerts do not reject a session.', {
     regulatoryRef: '§11.10(h)',
-    testDescription: 'Verify that device fingerprinting is active on login for session binding',
-    acceptanceCriteria: 'System captures device information for session binding',
+    testDescription: 'Verify optional API fingerprint tracking for two exact owned sessions; UI tracking remains unqualified',
+    acceptanceCriteria: 'Native session records retain each supplied x-device-fingerprint and User-Agent under its exact owned user/session identity; no hard-binding claim',
   }));
 
   // Never lock the operator who is needed by subsequent qualification suites.
@@ -920,7 +989,7 @@ async function runSignatureTests(baseUrl: string, token: string, fixture?: Owned
     results.push(r);
   }
 
-  // OQ-038 through OQ-040: Manual
+  // Printed manifestation requires separate rendered evidence.
   results.push(manualResult('OQ-038', 'Signature manifestation display requires UI/PDF verification', {
     regulatoryRef: '§11.50(b)',
     testDescription: 'Verify that e-signature manifestation is clearly displayed in human-readable form on screen and in printed/PDF output',
@@ -931,11 +1000,7 @@ async function runSignatureTests(baseUrl: string, token: string, fixture?: Owned
     testDescription: 'Verify that any change to a signed record invalidates or removes the existing e-signature',
     acceptanceCriteria: 'Modifying signed data clears the signature or blocks the modification',
   }));
-  results.push(manualResult('OQ-040', 'Signature copy prevention requires attempt to reassign signature', {
-    regulatoryRef: '§11.70(a)',
-    testDescription: 'Verify that e-signatures cannot be copied, excised, or transferred to falsify another record',
-    acceptanceCriteria: 'System prevents reuse or reassignment of an existing e-signature to a different record',
-  }));
+  results.push(await captureSignatureCopyRefusal(baseUrl, token, fixture));
 
   results.push(await captureSignaturePasswordRefusal(baseUrl, token, 'wrong', fixture));
 

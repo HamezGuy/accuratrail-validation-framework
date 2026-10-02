@@ -80,8 +80,8 @@ function buildDetailedRiskAnalyses(criticalFeatures: FeatureRisk[]): DetailedRis
       failureMode: 'Session management fails, leaving sessions active on unattended workstations indefinitely.',
       patientSafetyImpact: 'Unauthorized persons could access and modify clinical data through abandoned sessions, potentially altering treatment assignments or safety reports.',
       dataIntegrityImpact: 'Actions performed through hijacked sessions are attributed to the original user, creating false audit trail entries.',
-      mitigationControls: ['JWT expiration claim with configurable TTL', 'Frontend idle-timeout service with countdown warning', 'Server-side token validation on every request', 'Device fingerprint verification detects session transfer', 'Concurrent session prevention'],
-      residualRisk: 'Low — Server and client-side timeout enforcement with device binding.',
+      mitigationControls: ['JWT expiration claim with configurable TTL', 'Frontend idle-timeout service with countdown warning', 'Server-side token validation on every request', 'Optional fingerprint-header mismatch raises an alert; UI header delivery and rejection are not implemented', 'Independent concurrent sessions are allowed; prior-session exclusion is not a control'],
+      residualRisk: 'Pending reassessment — timeout evidence must be reviewed; enforced device binding and prior-session exclusion are absent.',
       csaClassification: 'High Process Risk',
       csaReasoning: 'Unattended session access could compromise safety data in clinical settings.',
     },
@@ -346,7 +346,7 @@ function buildDetailedRiskAnalyses(criticalFeatures: FeatureRisk[]): DetailedRis
 function buildCriticalMitigations(criticalFeatures: FeatureRisk[]): MitigationControl[] {
   const controlMap: Record<string, { controls: string; residualRisk: string }> = {
     'FEAT-001': {
-      controls: 'JWT middleware with configurable expiration; password complexity enforcement (min 8 chars, mixed case, digit, special); rate limiting on auth endpoints (rateLimiter.middleware.ts); configurable session idle timeout; account lockout after failed attempts; device fingerprinting',
+      controls: 'JWT middleware with configurable expiration; password complexity enforcement (min 8 chars, mixed case, digit, special); rate limiting on auth endpoints (rateLimiter.middleware.ts); configurable session idle timeout; account lockout after failed attempts; optional API fingerprint tracking (native proof pending)',
       residualRisk: 'Low — multi-layered authentication controls with monitoring',
     },
     'FEAT-002': {
@@ -362,8 +362,8 @@ function buildCriticalMitigations(criticalFeatures: FeatureRisk[]): MitigationCo
       residualRisk: 'Low — comprehensive RBAC with granular permissions',
     },
     'FEAT-005': {
-      controls: 'JWT expiration claim checked by auth.middleware.ts; frontend idle-timeout.service.ts triggers forced logout; concurrent session prevention; device fingerprint verification',
-      residualRisk: 'Low — server and client timeout enforcement',
+      controls: 'JWT expiration claim checked by auth.middleware.ts; frontend idle-timeout.service.ts triggers forced logout; independent concurrent sessions; optional fingerprint mismatch alert only (no rejection)',
+      residualRisk: 'Pending reassessment — timeout controls require retained evidence; fingerprint tracking does not establish device binding',
     },
     'FEAT-010': {
       controls: 'audit.middleware.ts applied to all mutation routes globally; atomic audit+data writes via pool.transaction(); acc_audit_log schema enforces NOT NULL on required fields; sequential IDs for gap detection',
