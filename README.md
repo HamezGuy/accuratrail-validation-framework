@@ -4,6 +4,9 @@ Programmatic generation of formal validation packages for regulatory compliance.
 
 ## Quick Start
 
+Use Node.js 20 or newer. PDF content qualification uses the pinned PDF.js parser;
+it does not require a browser in this runner.
+
 ```bash
 cd validation-framework
 npm install
@@ -103,7 +106,7 @@ OQ uses one fresh signed clinical fixture and separate disposable viewer account
 
 Audit mutation probes must first read an owned native record and then confirm that refusal left its contents unchanged. They establish API refusal, not database-trigger enforcement. The audit integrity check calls the native recomputation API and requires a nonempty complete scan with no unverifiable records, truncation, breaks, or deferred gaps. Native service evidence is distinct from independent database verification.
 
-The CSV export checks every expected fixture value and native subject label. PDF checks retain full bytes, a SHA-256 hash and the PDF envelope from the owned form route; rendered signature/layout review remains separate. Audit CSV is compared with the independently read correction, actor and reason. ODM checks its owned study/subject identity and does not claim complete clinical item mapping. Server/transport errors, missing observations, invalid request refusals on positive checks, and manual steps cannot become automatic passes. Password expiry, rate limiting and other controls require their actual observations; run results can remain failed even when offline contract tests pass.
+The CSV export checks every expected fixture value and native subject label. PDF checks explicitly request `outputFormat=pdf` with audit history and signatures, retain full bytes and their SHA-256 hash, and parse the document with pinned PDF.js in a bounded worker. They compare the complete owned scalar fixture's field census, displayed values and units, the subject label, current canonical signature manifestation, and the independently read correction's field, actor, old/new values and reason. Native form values and signature proof must remain unchanged across the download. A PDF-looking wrapper, HTML, missing text or wrong-scope source cannot pass. This verifies one owned form; rendered layout, full study/casebook coverage and independent clinical validation remain separate requirements. Parsing is capped at 25 MiB, 200 pages, one million text characters and 15 seconds, with worker cleanup. Audit CSV is compared with the independently read correction, actor and reason. ODM checks its owned study/subject identity and does not claim complete clinical item mapping. Server/transport errors, missing observations, invalid request refusals on positive checks, and manual steps cannot become automatic passes. Password expiry, rate limiting and other controls require their actual observations; run results can remain failed even when offline contract tests pass.
 
 The explicit mode connects OQ-154 and PQ-001 through PQ-040 to the existing signed study-definition workflow and the current native API. Use a local qualification environment with the official CORE validator, an authorized operator, and the immutable shared package already installed. Set `OQ_USERNAME` and `OQ_PASSWORD` through the environment (PQ-specific credentials are also supported). Run:
 

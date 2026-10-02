@@ -8,7 +8,7 @@ import { createWorkflowState, runStudySetup, archiveOwnedStudy } from '../runner
 import { workspace } from './study-contract-fixtures';
 import { syntheticStudyDefinition } from '../runners/qualification-fixture';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { testXssInjection, testPathTraversal, testCorsPreflight, testErrorLeakage } from '../runners/security-runner';
@@ -358,16 +358,100 @@ for (const defect of ['none', 'foreign', 'missing-item', 'wrong-value', 'duplica
   if (defect === 'none') assert.equal(result.responseBody, csv, 'Download evidence may not truncate Unicode or quoted records');
 });
 
-for (const invalid of [false, true]) test(`PDF download retains exact bytes and refuses a JSON substitute: ${invalid}`, async t => {
-  const bytes = invalid ? Buffer.from('{"success":true}') : Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(3000, 129), Buffer.from('\n%%EOF\n')]);
-  t.mock.method(globalThis, 'fetch', async (url: string) => new URL(url).pathname === '/api/forms/data/111'
-    ? new Response(JSON.stringify({ success: true, data: { eventCrfId: 111, studyId: 42 } }), { headers: { 'Content-Type': 'application/json' } })
-    : new Response(bytes, { headers: { 'Content-Type': invalid ? 'application/json' : 'application/pdf' } }));
-  const result = await captureNativeDownload('OQ-048', baseUrl, 'operator', 'pdf', ownedFixture());
-  assert.equal(result.passed, !invalid);
-  const body = result.responseBody as any;
-  assert.equal(body.byteLength, bytes.length); assert.equal(body.sha256, createHash('sha256').update(bytes).digest('hex'));
-  assert.deepEqual(Buffer.from(body.content, 'base64'), bytes);
+for (const defect of ['none', 'signed', 'signed-legacy', 'json', 'fake-envelope', 'empty', 'foreign-source', 'foreign-print', 'foreign-proof',
+  'missing-field', 'wrong-value', 'wrong-unit', 'duplicate-field', 'wrong-pdf-value', 'audit-missing', 'audit-foreign',
+  'audit-wrong-actor', 'audit-wrong-item', 'audit-wrong-visit', 'audit-no-actor-id', 'audit-duplicate',
+  'signer-missing-name', 'signer-missing-username', 'signer-no-id', 'signer-empty-meaning', 'signer-unverified',
+  'signer-wrong-algorithm', 'signer-wrong-scope', 'print-proof-missing', 'print-proof-actor-mismatch', 'proof-no-required', 'proof-foreign-entity',
+  ...['contract', 'entityType', 'entityId', 'studyId', 'studySubjectId', 'studyEventId', 'crfVersionId', 'isSigned',
+    'signatureRequired', 'state', 'integrityStatus', 'signatureIntegrityValid', 'signatureIntegrityReason', 'activeSignature',
+    'contentHashAlgorithm'].map(key => `projection-${key}`),
+  'false-signed', 'source-changed', 'proof-changed'])
+test(`PDF download parses owned content, audit and current proof: ${defect}`, async t => {
+  const fixture = reviewedFixture();
+  Object.assign(fixture.state, { formItems: { weight: 103, notes: 104 },
+    values: { weight: '70.5', notes: 'Synthetic software qualification only' } });
+  let reads = 0, proofReads = 0, downloaded = false;
+  const signature: any = { signatureId: 901, signerUserId: 77, signedBy: 'operator', signedByFullName: 'Owned Operator', signerUsername: 'operator',
+    hashAlgorithm: 'sha256', hashScope: defect === 'signed-legacy' ? null : 'entity',
+    signedAt: '2026-10-02T12:00:00.000Z', meaning: 'Approved', contentHash: 'a'.repeat(64), signatureScope: 'event-crf-item-values/1' };
+  const proof: any = { contract: 'edc-event-crf-signature-proof/1', entityType: 'event_crf', entityId: 111, studyId: 42,
+    studySubjectId: 81, studyEventId: 91, crfVersionId: 72, state: 'unsigned', isSigned: false,
+    signatureIntegrityValid: false, integrityStatus: 'unsigned', signatureRequired: true,
+    signatureIntegrityReason: 'No signature found for this form', activeSignature: null };
+  const signed = ['signed', 'signed-legacy', 'false-signed', 'print-proof-actor-mismatch'].includes(defect) || defect.startsWith('signer-');
+  if (signed) Object.assign(proof, { state: 'signed', isSigned: true, signatureIntegrityValid: true, integrityStatus: 'verified',
+    signatureIntegrityReason: null, contentHashAlgorithm: 'sha256', activeSignature: signature,
+    signedAt: signature.signedAt, signedBy: signature.signedBy, signedByFullName: signature.signedByFullName,
+    meaning: signature.meaning, contentHash: signature.contentHash });
+  if (defect === 'signer-missing-name') delete signature.signedByFullName;
+  if (defect === 'signer-missing-username') delete signature.signerUsername;
+  if (defect === 'signer-no-id') delete signature.signerUserId;
+  if (defect === 'signer-empty-meaning') signature.meaning = ' ';
+  if (defect === 'signer-unverified') proof.integrityStatus = 'unverified';
+  if (defect === 'signer-wrong-algorithm') signature.hashAlgorithm = 'md5';
+  if (defect === 'signer-wrong-scope') signature.hashScope = 'casebook';
+  if (defect === 'proof-no-required') delete proof.signatureRequired;
+  if (defect === 'proof-foreign-entity') proof.entityType = 'study_subject';
+  if (defect === 'foreign-proof') proof.studyId = 999;
+  const fields: any[] = [
+    { fieldId: 103, name: 'weight', label: 'Weight', type: 'number', value: '70.5', displayValue: '70.5', unit: 'kg' },
+    { fieldId: 104, name: 'notes', label: 'Notes', type: 'text', value: 'Synthetic software qualification only', displayValue: 'Synthetic software qualification only' },
+  ];
+  if (defect === 'missing-field') fields.pop();
+  if (defect === 'duplicate-field') fields[1] = fields[0];
+  if (defect === 'wrong-value') fields[0].value = '71.5';
+  if (defect === 'wrong-unit') fields[0].unit = 'lb';
+  let bytes = defect === 'json' ? Buffer.from('{"success":true}')
+    : defect === 'fake-envelope' ? Buffer.from('%PDF-1.7\nnot a PDF document\n%%EOF\n')
+    : readFileSync(path.join(__dirname, 'fixtures/pdf', defect === 'empty' ? 'empty-text.pdf' : signed && defect !== 'false-signed' ? 'signed-form.pdf' : 'owned-form.pdf'));
+  if (defect === 'wrong-pdf-value') {
+    const changed = Buffer.from(bytes.toString('latin1').replace(/70\.5/g, '71.5'), 'latin1');
+    assert.notDeepEqual(changed, bytes, 'The positive fixture must actually be changed.'); bytes = changed;
+  }
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    const u = new URL(url); let data: any;
+    if (u.pathname === '/api/forms/data/111') {
+      data = nativeForm(defect === 'source-changed' && ++reads > 1 ? '71.5' : '70.5');
+      data.formData.item_104 = 'Synthetic software qualification only';
+      if (defect === 'foreign-source') data.studySubjectId = 999;
+    } else if (u.pathname === '/api/print/forms/111/data') {
+      // Canonical print proof contains signer aliases the status HTTP DTO omits.
+      const printProof: any = { ...proof, ...(signed ? signature : {}) };
+      if (defect === 'print-proof-missing') delete printProof.signatureRequired;
+      if (defect === 'print-proof-actor-mismatch') printProof.activeSignature = { ...signature, signerUserId: 99 };
+      if (defect.startsWith('projection-')) {
+        const key = defect.slice('projection-'.length), value = printProof[key];
+        printProof[key] = typeof value === 'boolean' ? !value : typeof value === 'number' ? value + 1 : 'different';
+      }
+      data = { formId: defect === 'foreign-print' ? 222 : 111, subjectLabel: fixture.state.subjectLabel,
+        sections: [{ fields }], signatureProof: printProof };
+    } else if (u.pathname === '/api/esignature/status/event_crf/111') {
+      data = defect === 'proof-changed' && ++proofReads > 1 ? { ...proof, state: 'invalidated' } : proof;
+    } else if (u.pathname === '/api/audit/form/111') {
+      data = defect === 'audit-missing' ? [] : [{ auditId: 801, entityId: 1103, eventCrfId: 111,
+        itemId: defect === 'audit-wrong-item' ? 104 : 103, studyEventId: defect === 'audit-wrong-visit' ? 999 : 91,
+        ...(defect === 'audit-no-actor-id' ? {} : { userId: 77 }),
+        studyId: defect === 'audit-foreign' ? 999 : 42, entityName: 'Weight', userName: 'operator',
+        userFullName: defect === 'audit-wrong-actor' ? 'Foreign Operator' : 'Owned Operator',
+        oldValue: '75', newValue: '70.5', reasonForChange: 'PQ verified synthetic weight correction' }];
+      if (defect === 'audit-duplicate') data.push({ ...data[0], auditId: 802 });
+    } else {
+      assert.equal(u.pathname, '/api/print/forms/111/pdf');
+      assert.deepEqual([...u.searchParams], [['outputFormat', 'pdf'], ['includeAuditTrail', 'true'], ['includeSignatures', 'true']]);
+      downloaded = true;
+      return new Response(bytes, { headers: { 'Content-Type': defect === 'json' ? 'application/json' : 'application/pdf' } });
+    }
+    return new Response(JSON.stringify({ success: true, data }), { headers: { 'Content-Type': 'application/json' } });
+  });
+  const result = await captureNativeDownload('OQ-048', baseUrl, 'operator', 'pdf', fixture);
+  assert.equal(result.passed, ['none', 'signed', 'signed-legacy'].includes(defect), result.notes);
+  if (downloaded) {
+    const body = result.responseBody as any;
+    assert.equal(body.byteLength, bytes.length); assert.equal(body.sha256, createHash('sha256').update(bytes).digest('hex'));
+    assert.deepEqual(Buffer.from(body.content, 'base64'), bytes);
+  }
+  if (result.passed) assert.ok(result.relatedEvidence?.some(row => row.testCaseId === 'OQ-048-parsed-content' && row.passed));
 });
 
 for (const missing of [false, true]) test(`audit CSV requires the exact correction independently read from the native form: ${missing}`, async t => {

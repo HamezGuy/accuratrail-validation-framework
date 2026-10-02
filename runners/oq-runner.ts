@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 /**
  * OQ Runner — Operational Qualification test execution.
  * Executes the 205-case OQ catalog and retains unmet evidence as failures.
@@ -20,6 +20,7 @@ import { runStudySetup, createWorkflowState, runDataEntry, runReviewAndSignature
 import { qualificationOptions } from './qualification-fixture';
 import { isDeepStrictEqual } from 'node:util';
 import { testCorsPreflight, testPathTraversal } from './security-runner';
+import { normalizedPdfText, parsePdfEvidence, requirePrintedRow } from './pdf-evidence';
 
 export interface OwnedOqFixture { state: WorkflowState; setup: EvidenceResult[]; results: EvidenceResult[]; authUserId?: number; batchSdv?: EvidenceResult; reasonRefusal?: EvidenceResult }
 
@@ -434,6 +435,149 @@ function csvRows(text: string): string[][] {
   return rows;
 }
 
+async function captureOwnedPdfDownload(testCaseId: string, baseUrl: string, token: string,
+  fixture: OwnedOqFixture, read: EvidenceResult, native: Record<string, unknown>): Promise<EvidenceResult> {
+  const state = fixture.state, related = [read];
+  let result: EvidenceResult = { ...read, testCaseId, passed: false, relatedEvidence: related };
+  const get = async (suffix: string, url: string) => {
+    const row = await captureApiCall({ testCaseId: `${testCaseId}-${suffix}`, baseUrl, method: 'GET', url, headers: authHeaders(token) });
+    related.push(row);
+    if (!row.passed || row.responseStatus !== 200 || !isRecord(row.responseBody) || row.responseBody.success !== true || !row.responseBody.data)
+      throw new Error(`PDF ${suffix} readback is unavailable.`);
+    return row.responseBody.data;
+  };
+  try {
+    if (!nativeId(state.subjectId) || !nativeId(state.visitId) || !nativeId(state.formId) || !nativeId(state.crfVersionId)
+      || native.studySubjectId !== state.subjectId || native.studyEventId !== state.visitId
+      || native.crfId !== state.formId || native.crfVersionId !== state.crfVersionId
+      || native.observationPreconditionContract !== 'edc-form-observation-preconditions/1'
+      || !/^sha256:[a-f0-9]{64}$/.test(String(native.observationSnapshotHash))
+      || !isRecord(native.formData) || !state.formItems || !state.values || !Object.keys(state.values).length)
+      throw new Error('PDF prerequisite does not identify the complete owned form and expected values.');
+    const nativeValues = native.formData;
+    const printable = await get('print-data', `/api/print/forms/${state.formDataId}/data`);
+    if (!isRecord(printable) || printable.formId !== state.formDataId || printable.subjectLabel !== state.subjectLabel || !Array.isArray(printable.sections))
+      throw new Error('Printable form identity is not the owned form.');
+    const fields = printable.sections.flatMap(section => {
+      if (!isRecord(section) || !Array.isArray(section.fields)) throw new Error('Printable sections are incomplete.');
+      return section.fields;
+    });
+    if (fields.length !== Object.keys(state.formItems).length || fields.length !== Object.keys(state.values).length
+      || fields.some(field => !isRecord(field) || !nativeId(field.fieldId))
+      || new Set(fields.map(field => field.fieldId)).size !== fields.length)
+      throw new Error('Printable field census differs from the owned native fixture.');
+    const expectedRows = Object.entries(state.values).map(([name, value]) => {
+      const id = state.formItems![name], matches = fields.filter(field => field.fieldId === id);
+      const expected = String(value ?? '');
+      if (!nativeId(id) || matches.length !== 1 || nativeValues[`item_${id}`] !== expected)
+        throw new Error(`Native PDF source differs at ${name}.`);
+      const field = matches[0];
+      if (field.name !== name || String(field.value ?? '') !== expected || typeof field.label !== 'string' || !field.label.trim())
+        throw new Error(`Printable PDF source differs at ${name}.`);
+      let display = expected;
+      if (Array.isArray(field.options) && field.options.length) {
+        const options = field.options.filter((option: unknown) => isRecord(option) && option.value === expected);
+        if (options.length !== 1 || typeof options[0].label !== 'string') throw new Error(`Unresolved PDF option at ${name}.`);
+        display = options[0].label;
+      }
+      if (field.displayValue !== undefined && field.displayValue !== display) throw new Error(`Printable display value differs at ${name}.`);
+      if (!display || field.type === 'checkbox') throw new Error(`The scalar PDF qualification fixture cannot verify ${name}.`);
+      if (field.unit !== undefined && typeof field.unit !== 'string') throw new Error(`Invalid PDF unit at ${name}.`);
+      return { id, cells: [field.label, display, ...(field.unit ? [field.unit] : [])] };
+    });
+    const proof = await get('signature-before', `/api/esignature/status/event_crf/${state.formDataId}`);
+    if (!isRecord(proof) || proof.contract !== 'edc-event-crf-signature-proof/1' || proof.entityType !== 'event_crf' || proof.entityId !== state.formDataId
+      || proof.studyId !== state.studyId || proof.studySubjectId !== state.subjectId || proof.studyEventId !== state.visitId
+      || proof.crfVersionId !== state.crfVersionId || typeof proof.isSigned !== 'boolean'
+      || proof.isSigned !== proof.signatureIntegrityValid
+      || !['signed', 'unsigned', 'invalidated', 'unverified', 'inconsistent'].includes(String(proof.state))
+      || typeof proof.signatureRequired !== 'boolean' || (proof.state === 'signed') !== proof.isSigned
+      || proof.integrityStatus !== (proof.isSigned ? 'verified' : proof.state)
+      || (proof.isSigned ? proof.signatureIntegrityReason !== null : typeof proof.signatureIntegrityReason !== 'string' || !proof.signatureIntegrityReason.trim())
+      || (proof.isSigned ? proof.contentHashAlgorithm !== 'sha256' : proof.contentHashAlgorithm !== undefined))
+      throw new Error('Printable signature proof differs from the current owned native proof.');
+    // The status HTTP DTO intentionally omits redundant top-level signer aliases.
+    // Compare every canonical binding/status field and the entire active proof;
+    // presentation labels and those aliases are not a second signature authority.
+    const proofFields = ['contract', 'entityType', 'entityId', 'studyId', 'studySubjectId', 'studyEventId', 'crfVersionId',
+      'isSigned', 'signatureRequired', 'state', 'integrityStatus', 'signatureIntegrityValid', 'signatureIntegrityReason',
+      'activeSignature', 'contentHashAlgorithm'];
+    const printedProof = printable.signatureProof;
+    if (!isRecord(printedProof) || proofFields.some(key => !isDeepStrictEqual(printedProof[key], proof[key])))
+      throw new Error('Printable signature proof differs from the current owned native proof.');
+    const audit = await get('audit-before', `/api/audit/form/${state.formDataId}`);
+    if (!Array.isArray(audit) || !audit.length || audit.some(row => !isRecord(row)
+      || row.studyId !== state.studyId || row.eventCrfId !== state.formDataId || !nativeId(row.auditId)))
+      throw new Error('PDF audit source is empty or crosses the owned form scope.');
+    const corrections = audit.filter(row => row.itemId === state.formItems!.weight && row.studyEventId === state.visitId
+      && row.oldValue === '75' && row.newValue === '70.5' && row.reasonForChange === 'PQ verified synthetic weight correction'
+      && nativeId(row.entityId) && nativeId(row.userId));
+    const correction = corrections[0];
+    if (corrections.length !== 1 || !(correction.entityName || correction.itemName) || !(correction.userFullName || correction.userName))
+      throw new Error('PDF audit source lacks the exact owned correction, field and actor.');
+    result = await captureApiCall({ testCaseId, baseUrl, method: 'GET',
+      url: `/api/print/forms/${state.formDataId}/pdf?outputFormat=pdf&includeAuditTrail=true&includeSignatures=true`,
+      headers: authHeaders(token), responseFormat: 'binary' });
+    result.relatedEvidence = related;
+    const body = result.responseBody;
+    if (!result.passed || result.responseStatus !== 200 || !result.responseHeaders?.['content-type']?.startsWith('application/pdf')
+      || !isRecord(body) || body.encoding !== 'base64' || typeof body.content !== 'string')
+      throw new Error('Native print route did not return a PDF.');
+    const parsed = await parsePdfEvidence(Buffer.from(body.content, 'base64'));
+    const text = normalizedPdfText(parsed.text);
+    requirePrintedRow(text, ['Subject:', state.subjectLabel], 'the owned subject label');
+    // Limit field checks to the form body: an old value in the audit appendix cannot satisfy them.
+    const signatureAt = text.indexOf('Electronic signature');
+    if (signatureAt < 0) throw new Error('PDF signature section is absent.');
+    const fieldsAt = text.indexOf('Field Value Unit');
+    if (fieldsAt < 0 || fieldsAt >= signatureAt) throw new Error('PDF field table is absent.');
+    const formText = text.slice(fieldsAt, signatureAt);
+    for (const row of expectedRows) requirePrintedRow(formText, row.cells, `native field ${row.id}, its displayed value and unit`);
+    const appendixAt = text.indexOf('Form audit history', signatureAt);
+    if (appendixAt < 0) throw new Error('Requested PDF audit appendix is absent.');
+    const signatureText = text.slice(signatureAt, appendixAt);
+    if (proof.isSigned === true && proof.signatureIntegrityValid === true && isRecord(proof.activeSignature)) {
+      const signature = proof.activeSignature;
+      if (proof.integrityStatus !== 'verified' || !nativeId(signature.signatureId) || !nativeId(signature.signerUserId)
+        || [signature.signedByFullName, signature.signerUsername, signature.meaning].some(value => typeof value !== 'string' || !value.trim())
+        || signature.signedBy !== signature.signerUsername || signature.hashAlgorithm !== 'sha256'
+        || (signature.hashScope !== null && signature.hashScope !== 'entity')
+        || !/^[a-f0-9]{64}$/.test(String(signature.contentHash))
+        || signature.signatureScope !== 'event-crf-item-values/1' || typeof signature.signedAt !== 'string'
+        || !Number.isFinite(Date.parse(signature.signedAt))) throw new Error('Native signature attribution is malformed.');
+      for (const [label, value] of [['Signer:', `${signature.signedByFullName} (${signature.signerUsername})`],
+        ['Signed at:', signature.signedAt], ['Meaning:', signature.meaning], ['Signature record:', signature.signatureId],
+        ['SHA-256:', signature.contentHash]]) {
+        if (value === undefined || value === null) throw new Error('Native signature attribution is incomplete.');
+        requirePrintedRow(signatureText, [String(label), String(value)], 'canonical signature attribution');
+      }
+      if (!signatureText.includes('event-crf-item-values/1')) throw new Error('PDF signature scope is absent.');
+    } else {
+      if (typeof proof.state !== 'string' || proof.activeSignature !== null || proof.isSigned !== false)
+        throw new Error('Native unsigned signature state is ambiguous.');
+      requirePrintedRow(signatureText, ['Signature state:', proof.state], 'the current unverified signature state');
+      if (/Signer:|SHA-256:|Verified scope:/.test(signatureText)) throw new Error('Unsigned PDF asserts verified signature attribution.');
+    }
+    requirePrintedRow(text.slice(appendixAt), [String(correction.entityName || correction.itemName),
+      String(correction.userFullName || correction.userName), '75', '70.5', String(correction.reasonForChange)],
+    'the independently read correction, actor, old/new values and reason in the audit appendix');
+    const after = await get('form-after', `/api/forms/data/${state.formDataId}`);
+    const proofAfter = await get('signature-after', `/api/esignature/status/event_crf/${state.formDataId}`);
+    if (!isRecord(after) || after.eventCrfId !== native.eventCrfId || after.studyId !== native.studyId
+      || after.studySubjectId !== native.studySubjectId || after.studyEventId !== native.studyEventId
+      || after.crfId !== native.crfId || after.crfVersionId !== native.crfVersionId
+      || after.observationSnapshotHash !== native.observationSnapshotHash || !isDeepStrictEqual(after.formData, native.formData)
+      || !isDeepStrictEqual(proofAfter, proof)) throw new Error('Native source or proof changed during PDF qualification.');
+    related.push({ testCaseId: `${testCaseId}-parsed-content`, timestamp: new Date().toISOString(), endpoint: result.endpoint,
+      method: 'CONTRACT', responseStatus: 200, passed: true, responseBody: { pages: parsed.pages,
+        textSha256: createHash('sha256').update(text).digest('hex'), checkedFieldIds: expectedRows.map(row => row.id),
+        correctionAuditId: correction.auditId, signatureState: proof.state },
+      notes: 'Real PDF parser; complete owned scalar fixture fields, exact correction and current signature manifestation checked. Visual layout requires rendered review.' });
+    result.notes = 'Complete PDF bytes parsed; owned scalar field census/value/unit pairs, subject, canonical signature manifestation and exact audit correction verified against native reads. Source and proof stayed unchanged. Layout and full study/casebook coverage require separate rendered review.';
+  } catch (error) { result.passed = false; result.notes = error instanceof Error ? error.message : 'PDF content qualification failed.'; }
+  return result;
+}
+
 export async function captureNativeDownload(testCaseId: string, baseUrl: string, token: string,
   format: 'csv' | 'pdf' | 'odm', fixture?: OwnedOqFixture): Promise<EvidenceResult> {
   const state = fixture?.state;
@@ -444,21 +588,16 @@ export async function captureNativeDownload(testCaseId: string, baseUrl: string,
   const data = isRecord(read.responseBody) ? read.responseBody.data : null;
   if (!read.passed || !isRecord(data) || data.eventCrfId !== state.formDataId || data.studyId !== state.studyId)
     return { ...read, testCaseId, passed: false, notes: 'Download prerequisite native form identity was not verified.', relatedEvidence: [read] };
-  const result = await captureApiCall({ testCaseId, baseUrl, method: format === 'pdf' ? 'GET' : 'POST',
-    url: format === 'pdf' ? `/api/print/forms/${state.formDataId}/pdf` : format === 'odm' ? '/api/export/cdisc' : '/api/export/execute',
-    headers: authHeaders(token), responseFormat: format === 'pdf' ? 'binary' : 'text',
-    ...(format === 'pdf' ? {} : { body: { datasetConfig: { studyOID: state.studyWorkspace.summary.oid }, ...(format === 'csv' ? { format: 'csv' } : {}) } }) });
+  if (format === 'pdf') return captureOwnedPdfDownload(testCaseId, baseUrl, token, fixture!, read, data);
+  const result = await captureApiCall({ testCaseId, baseUrl, method: 'POST',
+    url: format === 'odm' ? '/api/export/cdisc' : '/api/export/execute',
+    headers: authHeaders(token), responseFormat: 'text',
+    body: { datasetConfig: { studyOID: state.studyWorkspace.summary.oid }, ...(format === 'csv' ? { format: 'csv' } : {}) } });
   result.relatedEvidence = [read];
   try {
     if (!result.passed || result.responseStatus !== 200) throw new Error(`Download failed with HTTP ${result.responseStatus}.`);
     const mime = result.responseHeaders?.['content-type'] ?? '';
-    if (format === 'pdf') {
-      const body = result.responseBody;
-      if (!mime.startsWith('application/pdf') || !isRecord(body) || body.encoding !== 'base64' || typeof body.content !== 'string') throw new Error('Native print route did not return a PDF.');
-      const bytes = Buffer.from(body.content, 'base64');
-      if (bytes.length < 20 || !bytes.subarray(0, 5).equals(Buffer.from('%PDF-')) || !bytes.subarray(-1024).includes(Buffer.from('%%EOF'))) throw new Error('Downloaded PDF has no complete PDF envelope.');
-      result.notes = 'Complete PDF bytes retained from the verified owned form route; visual layout and signature manifestation require rendered review.';
-    } else if (format === 'csv') {
+    if (format === 'csv') {
       if (!mime.startsWith('text/csv') || typeof result.responseBody !== 'string') throw new Error('Native export did not return CSV.');
       const rows = csvRows(result.responseBody), header = rows.shift() ?? [];
       const subject = header.indexOf('SubjectID'), item = header.indexOf('ItemName'), value = header.indexOf('ItemValue');

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "21 CFR Part 11 programmatic validation package generator for AccuraTrial EDC",
   "private": true,
+  "engines": { "node": ">=20" },
   "scripts": {
     "generate": "ts-node generate.ts",
     "generate:docs": "ts-node generate.ts --docs-only",
@@ -11,12 +12,13 @@
     "generate:pq": "ts-node generate.ts --pq",
     "generate:all": "ts-node generate.ts --all",
     "typecheck": "tsc --noEmit",
-    "test:contracts": "node --require ts-node/register --test tests/qualification-cli.contract.test.ts tests/study-definition.contract.test.ts tests/study-execution-removal.contract.test.ts tests/study-runners.contract.test.ts tests/evidence.contract.test.ts tests/pq-workflow.contract.test.ts tests/qualification-failures.contract.test.ts",
+    "test:contracts": "node --require ts-node/register --test tests/qualification-cli.contract.test.ts tests/study-definition.contract.test.ts tests/study-execution-removal.contract.test.ts tests/study-runners.contract.test.ts tests/evidence.contract.test.ts tests/pq-workflow.contract.test.ts tests/qualification-failures.contract.test.ts tests/pdf-evidence.contract.test.ts",
     "test:benchmark": "node --require ts-node/register --test tests/benchmark-evidence.contract.test.ts"
   },
   "dependencies": {
     "@accura-trial/shared-types": "file:vendor/accura-trial-shared-types-0.2.0.caa1131ed7a50ca7.tgz",
-    "glob": "^10.3.0"
+    "glob": "^10.3.0",
+    "pdfjs-dist": "4.10.38"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
