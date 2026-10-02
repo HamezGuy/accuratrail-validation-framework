@@ -24,7 +24,7 @@ export interface EvidenceResult {
   relatedEvidence?: EvidenceResult[];
 }
 
-export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark'] as const;
+export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'] as const;
 export type EvidenceCategory = typeof EVIDENCE_CATEGORIES[number];
 
 export interface CaptureOptions {
@@ -37,6 +37,10 @@ export interface CaptureOptions {
   timeoutMs?: number;
   /** Downloads retain complete bytes/text rather than the diagnostic preview. */
   responseFormat?: 'text' | 'binary';
+  /** Scoped authority readers must not forward credentials through redirects. */
+  redirect?: 'error';
+  /** Optional wire-body limit for potentially large evidence attachments. */
+  maxResponseBytes?: number;
 }
 
 /** Plain-object guard shared by every runner that inspects untyped API payloads. */
@@ -244,6 +248,7 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
   const timestamp = new Date().toISOString();
   const fetchOpts: RequestInit = {
     method: opts.method,
+    ...(opts.redirect ? { redirect: opts.redirect } : {}),
     headers: {
       'Content-Type': 'application/json',
       ...(opts.headers ?? {}),
@@ -275,7 +280,30 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
     });
 
     const contentType = response.headers.get('content-type') ?? '';
-    if (opts.responseFormat === 'binary') {
+    if (opts.maxResponseBytes !== undefined) {
+      if (!Number.isSafeInteger(opts.maxResponseBytes) || opts.maxResponseBytes <= 0) throw new Error('Invalid response byte limit');
+      const reader = response.body?.getReader();
+      const chunks: Buffer[] = [];
+      let length = 0;
+      if (reader) {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            length += chunk.value.byteLength;
+            if (length > opts.maxResponseBytes) {
+              await reader.cancel();
+              throw new Error('Response exceeds evidence byte limit');
+            }
+            chunks.push(Buffer.from(chunk.value));
+          }
+        } finally { reader.releaseLock(); }
+      }
+      const bytes = Buffer.concat(chunks);
+      responseBody = opts.responseFormat === 'binary'
+        ? { encoding: 'base64', byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), content: bytes.toString('base64') }
+        : contentType.includes('application/json') ? JSON.parse(bytes.toString('utf8')) : bytes.toString('utf8');
+    } else if (opts.responseFormat === 'binary') {
       const bytes = Buffer.from(await response.arrayBuffer());
       responseBody = { encoding: 'base64', byteLength: bytes.length,
         sha256: createHash('sha256').update(bytes).digest('hex'), content: bytes.toString('base64') };

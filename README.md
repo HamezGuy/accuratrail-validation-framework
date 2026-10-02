@@ -59,7 +59,7 @@ output/2026-05-02_v1.0/
 - **collectors/** — Read-only codebase introspection (routes, services, migrations, SOPs, tests)
 - **generators/** — Document generators producing formal markdown from collector data
 - **runners/** — Live test executors for IQ/OQ/PQ evidence capture
-- **runners/benchmark-evidence.ts** — Offline import of reconstructed CommandCenter benchmark evidence, using its existing scorer without recalculating competing metrics
+- **runners/benchmark-evidence.ts** — Offline reconstructed CommandCenter evidence and scoped read-only native P13 attachment, preserving each authoritative evaluator's metrics
 - **templates/** — Editable document header/footer templates
 
 ## Updating
@@ -99,6 +99,15 @@ exercise the adapter against the real scorer fixture, including tampered,
 missing, mismatched-evaluator, and blocked-gate cases. This checks the adapter;
 it is not a product benchmark. See [P13 evidence attachment contract](docs/p13-evidence-attachment.md)
 for the separate protocol-extraction evaluation boundary.
+
+`--p13-plan C:/qualification/p13-plan.json` attaches a scoped native P13 terminal
+record using three authenticated GETs and an explicit expected identity/census
+plan. It preserves source refs, native metric statuses and available denominators;
+it does not execute models or independently re-score the native record. Use a new
+`--version` for each attachment. Failed, incomplete and vacuous evidence produces
+a nonzero exit; `--docs-only` skips retrieval. See the linked P13 contract for the
+strict plan fields, token environment variable, local/nonlocal target controls
+and remaining native/independent-validation requirements.
 
 ## Native synthetic qualification
 

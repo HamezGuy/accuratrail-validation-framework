@@ -96,6 +96,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   const oqStats = tryLoadEvidence(outputDir, 'oq');
   const pqStats = tryLoadEvidence(outputDir, 'pq');
   const benchmarkStats = tryLoadEvidence(outputDir, 'benchmark');
+  const p13Stats = tryLoadEvidence(outputDir, 'p13');
   const evidenceMap = loadRunnerEvidence(outputDir);
 
   const toc = tableOfContents([
@@ -261,6 +262,11 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ? 'No reconstructed benchmark evidence is attached. Benchmark performance remains unmeasured in this package.\n\n'
     : `${benchmarkStats.pass} of ${benchmarkStats.total} benchmark evidence checks passed; ${benchmarkStats.fail} failed or remain unexecuted. See **evidence/benchmark/benchmark-execution-report.md** and **20-test-execution-records.md**.\n\n`;
   content += 'These checks preserve the benchmark evaluator and gate results. They do not establish independent clinical validation, SURPASS target attainment, IL extraction performance, or regulatory certification. Their pass rate is not a clinical accuracy measure.\n\n';
+  content += section(3, 'Supplemental Native P13 Evidence');
+  content += p13Stats.total === 0
+    ? 'No scoped native P13 attachment is present; protocol evaluation remains unmeasured in this package.\n\n'
+    : `${p13Stats.pass} of ${p13Stats.total} P13 attachment checks passed; ${p13Stats.fail} failed or remain unexecuted. See **evidence/p13/p13-execution-report.md** and **20-test-execution-records.md**. Native statuses, source references and available denominators are retained separately from clinical operations metrics.\n\n`;
+  content += 'P13 attachment checks do not invoke a model or independently re-score the native record. Their pass rate is not clinical accuracy, independent validation, or SURPASS attainment. Parser denominator counts may not be exposed by the native contract.\n\n';
   content += hr();
 
   // Section 6: Part 11 Compliance Verification

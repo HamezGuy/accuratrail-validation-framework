@@ -82,3 +82,23 @@ test('synthetic qualification switches reach each selected runner without inferr
   assert.match(explicit.output, /QUALIFICATION_FLAGS --synthetic-qualification,--allow-production-qualification,--acknowledge-ungoverned/);
   assert.doesNotMatch(explicit.output, /acknowledge-incomplete/);
 });
+
+test('P13-only collection is explicit, refreshes reports and propagates incomplete native evidence', () => {
+  for (const scenario of ['pass', 'failed-result']) {
+    const result = runCli(scenario, ['--p13-plan', 'scoped-plan.json']);
+    assert.match(result.output, /OFFLINE_P13 scoped-plan.json external=false/);
+    assert.match(result.output, /test-execution-records \(refreshed\)/);
+    assert.equal(result.status, scenario === 'pass' ? 0 : 1, result.output);
+    assert.doesNotMatch(result.output, /OFFLINE_RUNNER |OFFLINE_BENCHMARK/);
+  }
+  const external = runCli('pass', ['--p13-plan', 'scoped-plan.json', '--allow-production-qualification']);
+  assert.match(external.output, /external=true/);
+  assert.equal(external.status, 0, external.output);
+});
+
+test('P13 docs-only performs no retrieval and a missing plan argument fails', () => {
+  const result = runCli('throw', ['--docs-only', '--p13-plan', 'scoped-plan.json']);
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, /OFFLINE_P13/);
+  assert.equal(runCli('pass', ['--p13-plan']).status, 1);
+});

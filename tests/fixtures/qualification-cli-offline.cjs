@@ -38,6 +38,10 @@ Module._load = function (request, parent, isMain) {
     }
     if (request.startsWith('./runners/')) {
       if (request === './runners/benchmark-evidence') return {
+        async importP13BenchmarkEvidence(_outputDir, options) {
+          console.log(`OFFLINE_P13 ${options.planFile} external=${options.allowProductionQualification}`);
+          return [{ testCaseId: 'P13-NATIVE-ATTACHMENT', passed: scenario === 'pass' }];
+        },
         async importBenchmarkEvidence(_outputDir, options) {
           console.log(`OFFLINE_BENCHMARK ${options.runDir}`);
           return [{ testCaseId: 'BENCHMARK-RECONSTRUCTION', passed: scenario === 'pass' }];

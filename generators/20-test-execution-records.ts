@@ -36,6 +36,7 @@ const CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   dr: 'Disaster Recovery Testing',
   performance: 'Performance Testing',
   benchmark: 'Synthetic Benchmark Evidence (Engineering Scope)',
+  p13: 'Native P13 Evidence Attachment (Engineering Scope)',
 };
 
 function safeJsonExcerpt(body: unknown, maxLength: number = 500): string {
@@ -57,6 +58,8 @@ function deriveProcedureSteps(record: EvidenceRecord): string[] {
   const steps: string[] = [];
   if (record.method === 'OFFLINE') {
     steps.push(`Reconstruct retained benchmark artifacts in ${record.endpoint}; no product or API request is sent`);
+  } else if (record.method === 'ATTACHMENT') {
+    steps.push(`Retrieve the three scoped native P13 records using the explicit attachment plan ${record.endpoint}; compare pinned identities and retain native metric statuses`);
   } else if (record.method && record.endpoint) {
     steps.push(`Send ${record.method} request to ${record.endpoint}`);
   }

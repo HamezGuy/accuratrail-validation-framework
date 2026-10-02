@@ -17,6 +17,7 @@ interface CliArgs {
   baseUrl: string;
   benchmarkRun?: string;
   benchmarkEvaluatorRoot?: string;
+  p13Plan?: string;
   qualificationFlags: string[];
 }
 
@@ -81,10 +82,12 @@ function parseArgs(): CliArgs {
         args.baseUrl = argv[i];
         break;
       case '--benchmark-run':
+      case '--p13-plan':
       case '--benchmark-evaluator-root': {
         const value = argv[++i];
         if (!value || value.startsWith('--')) throw new Error(`${arg} requires a path`);
         if (arg === '--benchmark-run') args.benchmarkRun = value;
+        else if (arg === '--p13-plan') args.p13Plan = value;
         else args.benchmarkEvaluatorRoot = value;
         break;
       }
@@ -258,7 +261,7 @@ async function main(): Promise<void> {
   console.log('');
 
   // Phase 3: Run test runners if requested
-  if (!args.docsOnly && (args.benchmarkRun || args.runIq || args.runOq || args.runPq || args.runSecurity || args.runDr || args.runPerf)) {
+  if (!args.docsOnly && (args.p13Plan || args.benchmarkRun || args.runIq || args.runOq || args.runPq || args.runSecurity || args.runDr || args.runPerf)) {
     console.log('--- Test Runners ---');
 
     if (args.benchmarkRun) {
@@ -277,6 +280,24 @@ async function main(): Promise<void> {
       } catch (error) {
         runnersFailed++;
         console.error(`  [FAIL] Benchmark evidence: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (args.p13Plan) {
+      try {
+        const { importP13BenchmarkEvidence } = require('./runners/benchmark-evidence') as typeof import('./runners/benchmark-evidence');
+        const results = await importP13BenchmarkEvidence(outputDir, { planFile: args.p13Plan,
+          allowProductionQualification: args.qualificationFlags.includes('--allow-production-qualification') });
+        if (failedRunnerCases(results).length) {
+          runnersFailed++;
+          console.error('  [FAIL] P13 attachment or native metrics incomplete/failed; see retained P13 evidence.');
+        } else {
+          runnersPassed++;
+          console.log('  [OK] P13 native evidence attached; engineering scope only.');
+        }
+      } catch (error) {
+        runnersFailed++;
+        console.error(`  [FAIL] P13 evidence: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -376,7 +397,7 @@ function generateMasterEvidenceIndex(outputDir: string): void {
   const evidenceBase = path.join(outputDir, 'evidence');
   if (!fs.existsSync(evidenceBase)) return;
 
-  const categories = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark'];
+  const categories = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'];
   const lines: string[] = [
     '# Master Test Execution Evidence Index',
     '',
