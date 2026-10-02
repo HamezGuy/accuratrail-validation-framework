@@ -15,6 +15,8 @@ interface CliArgs {
   only?: string;
   version?: string;
   baseUrl: string;
+  benchmarkRun?: string;
+  benchmarkEvaluatorRoot?: string;
 }
 
 function parseArgs(): CliArgs {
@@ -76,11 +78,20 @@ function parseArgs(): CliArgs {
         i++;
         args.baseUrl = argv[i];
         break;
+      case '--benchmark-run':
+      case '--benchmark-evaluator-root': {
+        const value = argv[++i];
+        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a path`);
+        if (arg === '--benchmark-run') args.benchmarkRun = value;
+        else args.benchmarkEvaluatorRoot = value;
+        break;
+      }
       default:
         console.warn(`  [WARN] Unknown argument: ${arg}`);
     }
   }
 
+  if (args.benchmarkEvaluatorRoot && !args.benchmarkRun) throw new Error('--benchmark-evaluator-root requires --benchmark-run');
   return args;
 }
 
@@ -239,8 +250,27 @@ async function main(): Promise<void> {
   console.log('');
 
   // Phase 3: Run test runners if requested
-  if (!args.docsOnly && (args.runIq || args.runOq || args.runPq || args.runSecurity || args.runDr || args.runPerf)) {
+  if (!args.docsOnly && (args.benchmarkRun || args.runIq || args.runOq || args.runPq || args.runSecurity || args.runDr || args.runPerf)) {
     console.log('--- Test Runners ---');
+
+    if (args.benchmarkRun) {
+      try {
+        const { importBenchmarkEvidence } = require('./runners/benchmark-evidence') as typeof import('./runners/benchmark-evidence');
+        const results = await importBenchmarkEvidence(outputDir, {
+          runDir: args.benchmarkRun, evaluatorRoot: args.benchmarkEvaluatorRoot,
+        });
+        if (failedRunnerCases(results).length) {
+          runnersFailed++;
+          console.error('  [FAIL] Benchmark reconstruction or local engineering gates; see retained benchmark evidence.');
+        } else {
+          runnersPassed++;
+          console.log('  [OK] Benchmark reconstructed; synthetic engineering scope only.');
+        }
+      } catch (error) {
+        runnersFailed++;
+        console.error(`  [FAIL] Benchmark evidence: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
 
     const runners: { flag: boolean; name: string; file: string }[] = [
       { flag: args.runIq, name: 'IQ Runner', file: './runners/iq-runner' },
@@ -338,7 +368,7 @@ function generateMasterEvidenceIndex(outputDir: string): void {
   const evidenceBase = path.join(outputDir, 'evidence');
   if (!fs.existsSync(evidenceBase)) return;
 
-  const categories = ['iq', 'oq', 'pq', 'security', 'dr', 'performance'];
+  const categories = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark'];
   const lines: string[] = [
     '# Master Test Execution Evidence Index',
     '',

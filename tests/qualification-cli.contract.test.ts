@@ -57,3 +57,21 @@ test('docs-only does not import or execute a live runner even with --all', () =>
   assert.doesNotMatch(result.output, /OFFLINE_RUNNER /);
   assert.equal(result.status, 0, result.output);
 });
+
+test('explicit benchmark-only evidence refreshes reports and propagates failure', () => {
+  for (const scenario of ['pass', 'failed-result']) {
+    const result = runCli(scenario, ['--benchmark-run', 'offline-fixture']);
+    assert.match(result.output, /OFFLINE_BENCHMARK offline-fixture/);
+    assert.match(result.output, /test-execution-records \(refreshed\)/);
+    assert.equal(result.status, scenario === 'pass' ? 0 : 1, result.output);
+    assert.doesNotMatch(result.output, /OFFLINE_RUNNER /);
+  }
+});
+
+test('docs-only does not import benchmark evidence or silently consume missing path arguments', () => {
+  const result = runCli('throw', ['--docs-only', '--benchmark-run', 'offline-fixture']);
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, /OFFLINE_BENCHMARK/);
+  assert.equal(runCli('pass', ['--benchmark-run']).status, 1);
+  assert.equal(runCli('pass', ['--benchmark-evaluator-root', 'archived-evaluator']).status, 1);
+});

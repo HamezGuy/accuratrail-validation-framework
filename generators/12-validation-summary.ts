@@ -95,6 +95,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   const iqStats = tryLoadEvidence(outputDir, 'iq');
   const oqStats = tryLoadEvidence(outputDir, 'oq');
   const pqStats = tryLoadEvidence(outputDir, 'pq');
+  const benchmarkStats = tryLoadEvidence(outputDir, 'benchmark');
   const evidenceMap = loadRunnerEvidence(outputDir);
 
   const toc = tableOfContents([
@@ -255,6 +256,11 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   } else {
     content += '**Overall:** [To be completed after test execution]\n\n';
   }
+  content += section(3, 'Supplemental Synthetic Benchmark Evidence');
+  content += benchmarkStats.total === 0
+    ? 'No reconstructed benchmark evidence is attached. Benchmark performance remains unmeasured in this package.\n\n'
+    : `${benchmarkStats.pass} of ${benchmarkStats.total} benchmark evidence checks passed; ${benchmarkStats.fail} failed or remain unexecuted. See **evidence/benchmark/benchmark-execution-report.md** and **20-test-execution-records.md**.\n\n`;
+  content += 'These checks preserve the benchmark evaluator and gate results. They do not establish independent clinical validation, SURPASS target attainment, IL extraction performance, or regulatory certification. Their pass rate is not a clinical accuracy measure.\n\n';
   content += hr();
 
   // Section 6: Part 11 Compliance Verification

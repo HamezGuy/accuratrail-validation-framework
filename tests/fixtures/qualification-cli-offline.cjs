@@ -37,6 +37,12 @@ Module._load = function (request, parent, isMain) {
       };
     }
     if (request.startsWith('./runners/')) {
+      if (request === './runners/benchmark-evidence') return {
+        async importBenchmarkEvidence(_outputDir, options) {
+          console.log(`OFFLINE_BENCHMARK ${options.runDir}`);
+          return [{ testCaseId: 'BENCHMARK-RECONSTRUCTION', passed: scenario === 'pass' }];
+        },
+      };
       return {
         async run(_outputDir, baseUrl) {
           if (baseUrl !== 'https://qualification.invalid') throw new Error('Unexpected test target');

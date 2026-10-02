@@ -35,6 +35,7 @@ const CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   security: 'Security Testing',
   dr: 'Disaster Recovery Testing',
   performance: 'Performance Testing',
+  benchmark: 'Synthetic Benchmark Evidence (Engineering Scope)',
 };
 
 function safeJsonExcerpt(body: unknown, maxLength: number = 500): string {
@@ -54,7 +55,9 @@ function deriveStatus(record: EvidenceRecord): PassFail {
 
 function deriveProcedureSteps(record: EvidenceRecord): string[] {
   const steps: string[] = [];
-  if (record.method && record.endpoint) {
+  if (record.method === 'OFFLINE') {
+    steps.push(`Reconstruct retained benchmark artifacts in ${record.endpoint}; no product or API request is sent`);
+  } else if (record.method && record.endpoint) {
     steps.push(`Send ${record.method} request to ${record.endpoint}`);
   }
   if (record.acceptanceCriteria) {

@@ -23,7 +23,7 @@ export interface EvidenceResult {
   relatedEvidence?: EvidenceResult[];
 }
 
-export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance'] as const;
+export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark'] as const;
 export type EvidenceCategory = typeof EVIDENCE_CATEGORIES[number];
 
 export interface CaptureOptions {
