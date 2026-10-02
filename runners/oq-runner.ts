@@ -11,6 +11,7 @@ import {
   captureWithValidator,
   isRecord,
   manualResult,
+  redactEvidenceSecrets,
   saveEvidence,
 } from './evidence-capture';
 import { pendingStudy, readStudySummaryPage, expectStudySuccess, nativeId, type StudyActivationReview } from './study-definition-client';
@@ -22,11 +23,14 @@ import { testCorsPreflight, testPathTraversal } from './security-runner';
 
 export interface OwnedOqFixture { state: WorkflowState; setup: EvidenceResult[]; results: EvidenceResult[]; authUserId?: number; batchSdv?: EvidenceResult; reasonRefusal?: EvidenceResult }
 
-function nativeCase(fixture: OwnedOqFixture | undefined, sourceId: string, testCaseId: string): EvidenceResult {
-  const source = fixture?.results.find(row => row.testCaseId === sourceId);
-  return source ? { ...source, testCaseId, relatedEvidence: [source],
-    notes: `${source.notes} Shared native evidence ${sourceId}; not a second independent trial.` }
-    : { ...manualResult(testCaseId, `No native ${sourceId} prerequisite evidence.`), method: 'CONTRACT' };
+export function nativeCase(fixture: OwnedOqFixture | undefined, sourceId: string | string[], testCaseId: string): EvidenceResult {
+  const ids = Array.isArray(sourceId) ? sourceId : [sourceId];
+  const sources = ids.map(id => id === 'OQ-061' ? fixture?.reasonRefusal : fixture?.results.find(row => row.testCaseId === id));
+  const present = sources.filter((row): row is EvidenceResult => row !== undefined);
+  if (present.length !== ids.length) return { ...manualResult(testCaseId, `Missing native prerequisite evidence: ${ids.filter((_, i) => !sources[i]).join(', ')}.`),
+    method: 'CONTRACT', relatedEvidence: present };
+  return { ...present[0], testCaseId, passed: present.every(row => row.passed && !row.captureError && row.method !== 'MANUAL'),
+    relatedEvidence: present, notes: `Shared native evidence ${ids.join(' + ')}; every prerequisite is required. ${present.map(row => row.notes).join(' ')} Not independent repeated trials.` };
 }
 
 export async function captureMissingChangeReason(baseUrl: string, state: WorkflowState): Promise<EvidenceResult> {
@@ -94,6 +98,45 @@ export async function captureSignaturePasswordRefusal(baseUrl: string, token: st
     })).evidence;
 }
 
+export async function captureSignatureAudit(baseUrl: string, token: string, fixture?: OwnedOqFixture): Promise<EvidenceResult> {
+  return (await captureQualificationOperation('OQ-042', baseUrl, token,
+    'Each signature created by this owned workflow has its exact native audit manifestation', async request => {
+      const state = fixture?.state;
+      if (!state?.qualification || !nativeId(state.signatureId)) throw new Error('No owned signature fixture.');
+      await patientForm(request, state);
+      const proof = expectStudySuccess(await request('GET', `/esignature/status/eventCrf/${state.formDataId}`), 200).data;
+      if (proof?.contract !== 'edc-event-crf-signature-proof/1' || proof.entityId !== state.formDataId || proof.studyId !== state.studyId
+        || proof.studySubjectId !== state.subjectId || proof.studyEventId !== state.visitId || proof.isSigned !== true
+        || proof.signatureIntegrityValid !== true || proof.activeSignature?.signatureId !== state.signatureId)
+        throw new Error('Current native signature identity/integrity differs.');
+      const signatures = ['PQ-027', 'PQ-029'].flatMap(id => {
+        const step = fixture!.results.find(row => row.testCaseId === id);
+        if (!step?.passed) throw new Error(`Missing successful ${id} signature prerequisite.`);
+        return (step.relatedEvidence ?? []).filter(row => row.endpoint.endsWith('/api/esignature/sign') && row.responseStatus === 200)
+          .map(row => expectStudySuccess({ status: row.responseStatus, body: row.responseBody }, 200).data?.signatureId);
+      });
+      if (signatures.length !== 2 || !signatures.every(nativeId) || new Set(signatures).size !== 2 || !signatures.includes(state.signatureId))
+        throw new Error('Both distinct signing operations were not retained.');
+      const rows = expectStudySuccess(await request('GET', `/audit/form/${state.formDataId}`), 200).data;
+      if (!Array.isArray(rows)) throw new Error('Native signature audit is not an array.');
+      for (const signatureId of signatures) {
+        const matches = rows.filter((row: any) => row.auditId === signatureId);
+        if (matches.length !== 1) throw new Error('Signature audit identity is absent or duplicated.');
+        const row = matches[0], manifest = typeof row.newValue === 'string' ? JSON.parse(row.newValue) : null;
+        if (row.studyId !== state.studyId || row.eventCrfId !== state.formDataId || row.studyEventId !== state.visitId
+          || !nativeId(row.userId) || row.userId !== proof.activeSignature.signerUserId || !Number.isFinite(Date.parse(row.auditDate)) || !isRecord(manifest)
+          || manifest.type !== 'electronic_signature' || !['eventCrf', 'event_crf'].includes(String(manifest.entity_type))
+          || manifest.entity_id !== state.formDataId || manifest.signed_by !== state.qualification.username || manifest.meaning !== 'approval'
+          || typeof manifest.signed_at !== 'string' || !Number.isFinite(Date.parse(manifest.signed_at))
+          || manifest.hash_algorithm !== 'sha256' || typeof manifest.content_hash !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.content_hash))
+          throw new Error('Signature audit actor, scope, time, meaning or content binding differs.');
+        if (signatureId === state.signatureId && (row.userId !== proof.activeSignature.signerUserId
+          || manifest.signed_at !== proof.activeSignature.signedAt || manifest.content_hash !== proof.activeSignature.contentHash))
+          throw new Error('Active proof does not match its actual audit manifestation.');
+      }
+    })).evidence;
+}
+
 async function qualifyBatchSdv(baseUrl: string, state: WorkflowState): Promise<EvidenceResult> {
   return (await captureQualificationOperation('OQ-194', baseUrl, state.adminToken ?? '',
     'Batch SDV updates the owned native form and preserves exact subject custody', async request => {
@@ -140,6 +183,89 @@ async function disableAuthFixture(testCaseId: string, baseUrl: string, token: st
       if (read?.userId !== fixture.userId || read.userName !== fixture.body.username || read.enabled !== false)
         throw new Error('Owned fixture deactivation was not verified.');
     })).evidence;
+}
+
+/** Role/status probes own their account; the operator and pre-existing users are never changed. */
+export async function runAccountLifecycleTests(baseUrl: string, token: string, syntheticMode = false): Promise<EvidenceResult[]> {
+  const results: EvidenceResult[] = [];
+  if (!syntheticMode) return ['OQ-021', 'OQ-022'].map(id => ({ ...manualResult(id,
+    'Explicit synthetic qualification is required for owned account lifecycle testing.'), method: 'CONTRACT' }));
+  const created = await createAuthFixture('OQ-ACCOUNT-FIXTURE', baseUrl, token);
+  results.push(created.evidence);
+  const fixture = created.value;
+  let viewer: Awaited<ReturnType<typeof login>>['session'] = null;
+  let disabled = false;
+  try {
+    if (!fixture) return results;
+    const related: EvidenceResult[] = [];
+    const signIn = async (id: string) => {
+      const result = await login(baseUrl, fixture.body.username, fixture.body.password, id);
+      related.push(result.evidence);
+      if (!result.session || result.session.userId !== fixture.userId) throw new Error('Owned account login identity was not verified.');
+      return result.session;
+    };
+    const probe = async (id: string, bearer: string, path: string, validate: (response: { status: number; body: unknown }) => boolean) => {
+      const captured = await captureQualificationOperation(id, baseUrl, bearer, 'Verify the owned account native authority response', async request => {
+        if (!validate(await request('GET', path))) throw new Error('Expected owned account authority outcome was not observed.');
+      });
+      related.push(captured.evidence);
+      if (!captured.evidence.passed) throw new Error(captured.evidence.notes);
+    };
+    const refused = (r: { status: number; body: unknown }) => r.status === 401 && isRecord(r.body) && r.body.success === false
+      && isRecord(r.body.error) && ['TOKEN_REVOKED', 'SESSION_REVOKED', 'SESSION_NOT_ACTIVE', 'ACCOUNT_INACTIVE'].includes(String(r.body.error.code));
+    const identity = (role: string) => (r: { status: number; body: unknown }) => r.status === 200 && isRecord(r.body) && r.body.success === true
+      && isRecord(r.body.data) && r.body.data.userId === fixture.userId && r.body.data.username === fixture.body.username && r.body.data.role === role;
+    const changed = await captureQualificationOperation('OQ-021', baseUrl, token,
+      'Downgrading the owned account revokes its privileged session and fresh login carries only the current viewer role', async request => {
+        const read = async (role: string) => {
+          const data = expectStudySuccess(await request('GET', `/users/${fixture.userId}`), 200).data;
+          if (data?.userId !== fixture.userId || data.userName !== fixture.body.username || data.enabled !== true || data.platformRole !== role)
+            throw new Error('Refusing a lifecycle mutation without exact owned account identity and role.');
+        };
+        await read('viewer');
+        expectStudySuccess(await request('PUT', `/users/${fixture.userId}`, { role: 'data_manager' }), 200);
+        await read('data_manager');
+        const privileged = await signIn('OQ-021-privileged-login');
+        await probe('OQ-021-privileged-identity', privileged.token, '/auth/verify', identity('data_manager'));
+        await probe('OQ-021-privileged-access', privileged.token, `/users/${fixture.userId}`, r => r.status === 200
+          && isRecord(r.body) && r.body.success === true && isRecord(r.body.data) && r.body.data.userId === fixture.userId && r.body.data.userName === fixture.body.username);
+        await read('data_manager');
+        expectStudySuccess(await request('PUT', `/users/${fixture.userId}`, { role: 'viewer' }), 200);
+        await read('viewer');
+        await probe('OQ-021-revoked-session', privileged.token, '/auth/verify', refused);
+        viewer = await signIn('OQ-021-viewer-login');
+        await probe('OQ-021-current-identity', viewer.token, '/auth/verify', identity('viewer'));
+        await probe('OQ-021-current-refusal', viewer.token, `/users/${fixture.userId}`, r => r.status === 403
+          && isRecord(r.body) && r.body.success === false && isRecord(r.body.error) && r.body.error.code === 'FORBIDDEN');
+      });
+    changed.evidence.relatedEvidence = [...changed.evidence.relatedEvidence ?? [], ...related];
+    results.push(changed.evidence);
+    related.length = 0;
+    const deactivated = await captureQualificationOperation('OQ-022', baseUrl, token,
+      'Deactivating the exact owned account refuses both its admitted session and its known correct credentials', async request => {
+        if (!viewer || !changed.evidence.passed) throw new Error('No verified current viewer session for the deactivation baseline.');
+        await probe('OQ-022-before', viewer.token, '/auth/verify', identity('viewer'));
+        const cleanup = await disableAuthFixture('OQ-022-disable', baseUrl, token, fixture);
+        related.push(cleanup);
+        if (!cleanup.passed) throw new Error('Owned account deactivation was not confirmed.');
+        // Keep cleanup armed until both refusals are verified: a defective login
+        // may issue another session even after the disabled readback succeeded.
+        await probe('OQ-022-session-refusal', viewer.token, '/auth/verify', refused);
+        const loginAttempt = await request('POST', '/auth/login', { username: fixture.body.username, password: fixture.body.password });
+        if (loginAttempt.status !== 401 || !isRecord(loginAttempt.body) || loginAttempt.body.success !== false
+          || loginAttempt.body.message !== 'User account is disabled') throw new Error('Disabled account did not refuse its known correct password as disabled.');
+        disabled = true;
+      });
+    deactivated.evidence.relatedEvidence = [...deactivated.evidence.relatedEvidence ?? [], ...related];
+    results.push(redactEvidenceSecrets(deactivated.evidence) as EvidenceResult);
+  } finally {
+    if (created.cleanupTarget && !disabled) results.push(await disableAuthFixture('OQ-ACCOUNT-CLEANUP', baseUrl, token, created.cleanupTarget));
+    else if (!created.cleanupTarget) results.push({ ...manualResult('OQ-ACCOUNT-CLEANUP',
+      'Account creation has no verified native ID; reconcile the unique username before retrying.'), method: 'CONTRACT' });
+    for (const id of ['OQ-021', 'OQ-022']) if (!results.some(row => row.testCaseId === id)) results.push({ ...manualResult(id,
+      'Owned account lifecycle prerequisite failed; no passing outcome inferred.'), method: 'CONTRACT' });
+  }
+  return results;
 }
 
 async function weakPasswordRefusal(testCaseId: string, baseUrl: string, username: string, password: string): Promise<EvidenceResult> {
@@ -308,8 +434,52 @@ export async function captureAuditDownload(testCaseId: string, baseUrl: string, 
 
 // ── Suite 1: Authentication Tests (OQ-001 → OQ-010) ──
 
+/** Final destructive quota probe. Never resets or bypasses a shared caller bucket. */
+export async function runRateLimitTest(baseUrl: string): Promise<EvidenceResult> {
+  const exchanges: EvidenceResult[] = [], started = Date.now(), deadline = started + 60_000;
+  const username = `oq_absent_${randomUUID().replace(/-/g, '')}`, password = randomBytes(24).toString('base64url') + '!aA1';
+  let notes = 'No authoritative rate-limit boundary observed.', passed = false;
+  const integerHeader = (row: EvidenceResult, name: string) => {
+    const text = row.responseHeaders?.[name];
+    return typeof text === 'string' && /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : null;
+  };
+  try {
+    let limit: number | null = null, remaining: number | null = null, budget = 1;
+    for (let i = 0; i < budget; i++) {
+      if (Date.now() >= deadline) throw new Error('The 60-second quota qualification budget expired.');
+      const row = await captureApiCall({ testCaseId: `OQ-008-${i + 1}`, method: 'POST', url: '/api/auth/login', baseUrl,
+        body: { username, password }, timeoutMs: Math.min(5000, deadline - Date.now()) });
+      row.requestBody = { username, password: '[redacted]' }; exchanges.push(row);
+      if (row.captureError) throw new Error('Rate-limit probe transport failed.');
+      const observedLimit = integerHeader(row, 'ratelimit-limit'), observedRemaining = integerHeader(row, 'ratelimit-remaining');
+      if (observedLimit === null || observedLimit < 1 || observedLimit > 500 || observedRemaining === null
+        || observedRemaining > observedLimit) throw new Error('Missing/invalid authoritative quota headers or limit exceeds the 500-request policy ceiling.');
+      if (i === 0) {
+        if (observedRemaining >= observedLimit) throw new Error('The initial quota header did not account for the observed request.');
+        if (row.responseStatus !== 401 || !isRecord(row.responseBody) || row.responseBody.success !== false
+          || row.responseBody.message !== 'Invalid username or password') throw new Error('No unthrottled native login-refusal baseline; a previously exhausted bucket cannot qualify this run.');
+        limit = observedLimit; remaining = observedRemaining; budget = observedRemaining + 2;
+      } else if (observedLimit !== limit || observedRemaining > remaining!) throw new Error('Quota policy/window changed during the bounded probe.');
+      remaining = observedRemaining;
+      if (row.responseStatus === 429) {
+        if (remaining !== 0 || (integerHeader(row, 'retry-after') ?? 0) < 1 || !isRecord(row.responseBody) || row.responseBody.success !== false
+          || row.responseBody.message !== 'Too many login attempts. Account temporarily locked. Please try again after 15 minutes.')
+          throw new Error('429 did not match the native login rate-limit contract.');
+        passed = true; notes = `Observed native quota ${limit}, then HTTP429 with zero remaining and Retry-After; ${exchanges.length} bounded attempts. No reset was performed; the shared caller bucket may remain throttled.`; break;
+      }
+      if (row.responseStatus !== 401 || !isRecord(row.responseBody) || row.responseBody.success !== false
+        || row.responseBody.message !== 'Invalid username or password') throw new Error('Unexpected response during quota qualification.');
+    }
+    if (!passed) throw new Error('No native429 within the reported remaining quota plus one boundary request.');
+  } catch (error) { notes = error instanceof Error ? error.message : 'Rate-limit qualification failed.'; }
+  return { ...(exchanges[exchanges.length - 1] ?? manualResult('OQ-008', notes)), testCaseId: 'OQ-008',
+    passed, notes, relatedEvidence: exchanges, regulatoryRef: '§11.300(d)',
+    testDescription: 'After all other operations, observe the native authentication quota without resetting any shared IP bucket',
+    acceptanceCriteria: 'Unthrottled native401 baseline, authoritative limit<=500, then exact native429 within remaining+1 requests and60seconds' };
+}
+
 export async function runAuthenticationTests(
-  baseUrl: string, username: string, password: string, syntheticMode = false,
+  baseUrl: string, username: string, password: string, syntheticMode = false, deferRateLimit = false,
 ): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
 
@@ -401,29 +571,6 @@ export async function runAuthenticationTests(
     acceptanceCriteria: 'System captures device information for session binding',
   }));
 
-  // OQ-008: Rate limiting
-  {
-    let got429 = false;
-    let lastResult: EvidenceResult | null = null;
-    for (let i = 0; i < 12; i++) {
-      lastResult = await captureApiCall({
-        testCaseId: 'OQ-008', method: 'POST', url: '/api/auth/login', baseUrl,
-        body: { username: 'ratelimit_probe', password: 'x' },
-      });
-      if (lastResult.responseStatus === 429) { got429 = true; break; }
-    }
-    if (lastResult) {
-      lastResult.passed = got429 && !lastResult.captureError;
-      lastResult.notes = got429
-        ? 'Rate limiting confirmed — received 429'
-        : 'All 12 requests succeeded; rate limit threshold may be higher';
-      lastResult.regulatoryRef = '§11.300(d)';
-      lastResult.testDescription = 'Verify that rate limiting prevents brute force login attempts';
-      lastResult.acceptanceCriteria = 'HTTP 429 returned after excessive login attempts';
-    }
-    results.push(lastResult!);
-  }
-
   // Never lock the operator who is needed by subsequent qualification suites.
   if (fixture && operator.session) results.push((await captureQualificationOperation('OQ-009', baseUrl, operator.session.token,
     'Observe native lockout on the dedicated synthetic viewer account', async request => {
@@ -482,7 +629,9 @@ export async function runAuthenticationTests(
     else if (attemptedCreation) results.push({ ...manualResult('OQ-AUTH-CLEANUP', 'Creation has no verified native ID; cleanup is unresolved. Reconcile the unique username in OQ-AUTH-FIXTURE before retrying.'), method: 'CONTRACT' });
     if (operator.session) results.push(await captureWithExpectedStatus({ testCaseId: 'OQ-AUTH-LOGOUT', method: 'POST', url: '/api/auth/logout', baseUrl, headers: authHeaders(operator.session.token) }, 200));
   }
-  for (let id = 1; id <= 10; id++) { const testCaseId = `OQ-${String(id).padStart(3, '0')}`;
+  // Exhausting the shared caller bucket is always last, after owned cleanup/logout.
+  if (!deferRateLimit) results.push(await runRateLimitTest(baseUrl));
+  for (let id = 1; id <= 10; id++) { if (id === 8 && deferRateLimit) continue; const testCaseId = `OQ-${String(id).padStart(3, '0')}`;
     if (!results.some(row => row.testCaseId === testCaseId)) results.push({ ...manualResult(testCaseId, 'Authentication suite did not execute this case.'), method: 'CONTRACT' }); }
 
 
@@ -588,19 +737,7 @@ async function runAccessControlTests(baseUrl: string, token: string, fixture?: O
     results.push(r);
   }
 
-  // OQ-021: Role change (manual)
-  results.push(manualResult('OQ-021', 'Role change effectiveness requires multi-user test', {
-    regulatoryRef: '§11.10(d)',
-    testDescription: 'Verify that role changes take effect immediately and restrict access accordingly',
-    acceptanceCriteria: 'User loses access to endpoints after role downgrade',
-  }));
-
-  // OQ-022: User deactivation (manual)
-  results.push(manualResult('OQ-022', 'User deactivation requires admin + target user accounts', {
-    regulatoryRef: '§11.10(d)',
-    testDescription: 'Verify that deactivated users cannot authenticate or access system resources',
-    acceptanceCriteria: 'Deactivated user receives HTTP 401/403 on login and API access',
-  }));
+  results.push(...await runAccountLifecycleTests(baseUrl, token, !!fixture?.state.qualification));
 
   return results;
 }
@@ -802,12 +939,7 @@ async function runSignatureTests(baseUrl: string, token: string, fixture?: Owned
 
   results.push(await captureSignaturePasswordRefusal(baseUrl, token, 'wrong', fixture));
 
-  // OQ-042: Manual
-  results.push(manualResult('OQ-042', 'Signature audit entry verification integrated with OQ-023 audit trail test', {
-    regulatoryRef: '§11.100(a)',
-    testDescription: 'Verify that every e-signature event is recorded in the audit trail with signer identity, timestamp, and meaning',
-    acceptanceCriteria: 'Audit trail contains entry for each signature action including who signed and when',
-  }));
+  results.push(await captureSignatureAudit(baseUrl, token, fixture));
 
   return results;
 }
@@ -846,12 +978,7 @@ export async function runDataOperationTests(baseUrl: string, token: string, fixt
     results.push(r);
   }
 
-  // OQ-046: Manual
-  results.push(manualResult('OQ-046', 'Data correction reason requirement tested in PQ-010', {
-    regulatoryRef: '§11.10(e)',
-    testDescription: 'Verify that data corrections require a documented reason before the system accepts the change',
-    acceptanceCriteria: 'System rejects data correction when reason field is empty or missing',
-  }));
+  results.push(nativeCase(fixture, ['OQ-061', 'PQ-037'], 'OQ-046'));
 
   // OQ-047: Native CSV download
   results.push(await captureNativeDownload('OQ-047', baseUrl, token ?? '', 'csv', fixture));
@@ -885,26 +1012,76 @@ export async function runDataOperationTests(baseUrl: string, token: string, fixt
 
 // ── Suite 6: Data Lock Tests (OQ-051 → OQ-055) ──
 
-async function runDataLockTests(baseUrl: string, token: string, fixture?: OwnedOqFixture): Promise<EvidenceResult[]> {
+export async function captureOwnedUnlock(baseUrl: string, token: string, fixture?: OwnedOqFixture): Promise<EvidenceResult> {
+  const state = fixture?.state, reason = `Owned OQ unlock ${randomUUID()}`;
+  let restore = false, beforeValues: unknown;
+  const operation = await captureQualificationOperation('OQ-053', baseUrl, token,
+    'Authorized signed unlock changes only the owned form and records the exact reason and actor', async request => {
+      if (!state?.qualification || !nativeCase(fixture, ['PQ-033', 'PQ-034'], 'OQ-052').passed) throw new Error('No verified owned locked-form prerequisite.');
+      const authority = expectStudySuccess(await request('GET', '/auth/verify'), 200).data;
+      if (!nativeId(authority?.userId) || authority.username !== state.qualification.username || !['admin', 'data_manager'].includes(authority.role))
+        throw new Error('The unlock operator identity/role was not established.');
+      const before = await patientForm(request, state); beforeValues = before.formData;
+      if (before.lockStatus.locked !== true) throw new Error('Owned form is not locked.');
+      const history = expectStudySuccess(await request('GET', `/data-locks/history/${state.formDataId}`), 200).data;
+      if (!Array.isArray(history) || history.some((row: any) => row.entityType !== 'event_crf' || row.entityId !== state.formDataId || !nativeId(row.lockId)))
+        throw new Error('Pre-unlock history has wrong native scope or identity.');
+      restore = true;
+      expectStudySuccess(await request('POST', `/data-locks/${state.formDataId}/unlock`, { reason,
+        signatureUsername: state.qualification.username, signaturePassword: state.qualification.password }), 200);
+      const after = await patientForm(request, state);
+      if (after.lockStatus.locked !== false || !isDeepStrictEqual(after.formData, beforeValues)) throw new Error('Native unlock did not preserve the owned values.');
+      const rows = expectStudySuccess(await request('GET', `/data-locks/history/${state.formDataId}`), 200).data;
+      if (!Array.isArray(rows) || !rows.some((row: any) => row.entityType === 'event_crf' && row.entityId === state.formDataId
+        && nativeId(row.lockId) && !history.some((old: any) => old.lockId === row.lockId) && row.action === 'unlock'
+        && row.performedBy === authority.userId && Number.isFinite(Date.parse(row.performedAt)) && row.reason === reason))
+        throw new Error('New native unlock audit lacks the exact owned identity, actor, time or reason.');
+    });
+  if (restore && state?.qualification) {
+    const restoration = await captureQualificationOperation('OQ-053-restore', baseUrl, token,
+      'Restore the owned form lock after the unlock probe and verify unchanged values', async request => {
+        const current = await patientForm(request, state);
+        if (!isDeepStrictEqual(current.formData, beforeValues)) throw new Error('Owned values changed; refusing to mask this with a relock.');
+        if (current.lockStatus.locked !== true) expectStudySuccess(await request('POST', '/data-locks', { eventCrfId: state.formDataId,
+          reason: 'Restore owned lock after OQ unlock qualification', signatureUsername: state.qualification!.username,
+          signaturePassword: state.qualification!.password }), 200);
+        const restored = await patientForm(request, state);
+        if (restored.lockStatus.locked !== true || !isDeepStrictEqual(restored.formData, beforeValues)) throw new Error('Owned lock restoration was not verified.');
+      });
+    operation.evidence.relatedEvidence = [...operation.evidence.relatedEvidence ?? [], restoration.evidence];
+    operation.evidence.passed = operation.evidence.passed && restoration.evidence.passed;
+    if (!restoration.evidence.passed) operation.evidence.notes += ` Restoration also failed: ${restoration.evidence.notes}`;
+  }
+  return operation.evidence;
+}
+
+export async function captureLifecycleAudit(baseUrl: string, token: string, fixture?: OwnedOqFixture): Promise<EvidenceResult> {
+  return (await captureQualificationOperation('OQ-055', baseUrl, token,
+    'Owned freeze, unfreeze and lock operations each retain their exact requested reason, actor and timestamp', async request => {
+      const state = fixture?.state;
+      if (!state?.qualification || !nativeCase(fixture, ['PQ-030', 'PQ-032', 'PQ-033'], 'OQ-055-prerequisites').passed)
+        throw new Error('No complete owned lifecycle prerequisites.');
+      await patientForm(request, state);
+      const authority = expectStudySuccess(await request('GET', '/auth/verify'), 200).data;
+      if (!nativeId(authority?.userId) || authority.username !== state.qualification.username) throw new Error('Native lifecycle actor identity differs.');
+      const rows = expectStudySuccess(await request('GET', `/data-locks/history/${state.formDataId}`), 200).data;
+      if (!Array.isArray(rows) || rows.some((row: any) => row.entityType !== 'event_crf' || row.entityId !== state.formDataId || !nativeId(row.lockId)))
+        throw new Error('Lifecycle audit is empty, malformed or crosses native scope.');
+      for (const [action, reason] of [['freeze', 'Freeze synthetic qualification form'], ['unfreeze', 'Unfreeze synthetic qualification form'], ['lock', 'Lock synthetic qualification form']]) {
+        if (!rows.some((row: any) => row.action === action && row.reason === reason && row.performedBy === authority.userId
+          && Number.isFinite(Date.parse(row.performedAt)))) throw new Error(`Native ${action} audit lacks the exact requested reason, actor or timestamp.`);
+      }
+    })).evidence;
+}
+
+export async function runDataLockTests(baseUrl: string, token: string, fixture?: OwnedOqFixture): Promise<EvidenceResult[]> {
   const results: EvidenceResult[] = [];
   const h = authHeaders(token);
 
-  // OQ-051 through OQ-053: Manual
-  results.push(manualResult('OQ-051', 'Freeze test requires unfrozen casebook with complete data', {
-    regulatoryRef: '§11.10(a)',
-    testDescription: 'Verify that a casebook can be frozen to prevent further data entry while preserving read access',
-    acceptanceCriteria: 'Casebook status changes to frozen and subsequent data entry attempts are rejected',
-  }));
-  results.push(manualResult('OQ-052', 'Lock test requires frozen casebook', {
-    regulatoryRef: '§11.10(a)',
-    testDescription: 'Verify that a frozen casebook can be locked to prevent all modifications including administrative changes',
-    acceptanceCriteria: 'Locked casebook rejects all write operations and status changes',
-  }));
-  results.push(manualResult('OQ-053', 'Unlock request requires locked casebook', {
-    regulatoryRef: '§11.10(a)',
-    testDescription: 'Verify that unlocking a casebook requires authorized role and generates an audit trail entry',
-    acceptanceCriteria: 'Unlock operation requires admin authorization and creates audit record',
-  }));
+  results.push(nativeCase(fixture, ['PQ-030', 'PQ-031'], 'OQ-051'));
+  results.push(nativeCase(fixture, ['PQ-033', 'PQ-034'], 'OQ-052'));
+  const unlock = await captureOwnedUnlock(baseUrl, token, fixture);
+  results.push(unlock);
 
   // OQ-054: Data locks endpoint
   {
@@ -918,12 +1095,9 @@ async function runDataLockTests(baseUrl: string, token: string, fixture?: OwnedO
     results.push(r);
   }
 
-  // OQ-055: Manual
-  results.push(manualResult('OQ-055', 'Lock/freeze audit tested via OQ-023 audit trail verification', {
-    regulatoryRef: '§11.10(e)',
-    testDescription: 'Verify that all lock and freeze operations generate audit trail entries with operator, timestamp, and reason',
-    acceptanceCriteria: 'Audit trail contains entries for every lock/unlock/freeze/unfreeze action',
-  }));
+  const lifecycle = await captureLifecycleAudit(baseUrl, token, fixture);
+  results.push({ ...lifecycle, passed: lifecycle.passed && unlock.passed, relatedEvidence: [...lifecycle.relatedEvidence ?? [], unlock],
+    notes: `${lifecycle.notes} Also requires the separately retained signed unlock and restoration evidence.` });
 
   return results;
 }
@@ -1908,7 +2082,7 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
 
   const allResults: EvidenceResult[] = [];
 
-  const authResults = await runAuthenticationTests(baseUrl, username, password, !!qualification);
+  const authResults = await runAuthenticationTests(baseUrl, username, password, !!qualification, true);
   allResults.push(...authResults);
   console.log(`  Suite 1 (Authentication): ${authResults.filter(r => r.passed).length}/${authResults.length} passed`);
 
@@ -2012,6 +2186,7 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
     });
   }
 
+  allResults.push(await runRateLimitTest(baseUrl));
   for (let id = 1; id <= 205; id++) { const testCaseId = `OQ-${String(id).padStart(3, '0')}`; if (!allResults.some(row => row.testCaseId === testCaseId)) allResults.push({ ...manualResult(testCaseId, 'This OQ case did not execute.'), method: 'CONTRACT' }); }
   allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
 

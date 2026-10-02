@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runAuthenticationTests, runPart11ComplianceTests, runDataOperationTests, runComprehensiveAuditTests, runSecurityValidationTests,
   runComprehensiveAuthTests, runComprehensiveRbacTests, captureAuditRefusal, captureNativeDownload, captureAuditDownload,
-  captureSignaturePasswordRefusal, captureMissingChangeReason, type OwnedOqFixture } from '../runners/oq-runner';
+  captureSignaturePasswordRefusal, captureMissingChangeReason, runAccountLifecycleTests, nativeCase, runRateLimitTest,
+  captureOwnedUnlock, captureLifecycleAudit, captureSignatureAudit, type OwnedOqFixture } from '../runners/oq-runner';
 import { createWorkflowState, runStudySetup, archiveOwnedStudy } from '../runners/pq-runner';
 import { workspace } from './study-contract-fixtures';
 import { syntheticStudyDefinition } from '../runners/qualification-fixture';
@@ -14,6 +15,92 @@ import { testXssInjection, testPathTraversal, testCorsPreflight, testErrorLeakag
 import { captureWithValidator, captureWithExpectedStatus, redactEvidenceSecrets } from '../runners/evidence-capture';
 
 const baseUrl = 'https://qualification.invalid';
+
+const prerequisite = (testCaseId: string, passed = true) => ({ testCaseId, timestamp: '2026-10-02T12:00:00Z',
+  method: 'POST', endpoint: baseUrl + '/api/owned', responseStatus: 200, responseBody: { success: true }, passed, notes: 'Retained native fixture result' });
+
+for (const ids of [['PQ-030', 'PQ-031'], ['PQ-033', 'PQ-034'], ['OQ-061', 'PQ-037']])
+  for (const defect of ['none', 'missing', 'failed', 'transport']) test(`combined OQ evidence requires every prerequisite ${ids.join('+')}/${defect}`, () => {
+    const fixture = ownedFixture();
+    fixture.results = ids.filter(id => id !== 'OQ-061').map(id => prerequisite(id));
+    fixture.reasonRefusal = prerequisite('OQ-061');
+    const last = fixture.results[fixture.results.length - 1];
+    if (defect === 'missing') fixture.results.pop();
+    if (defect === 'failed') last.passed = false;
+    if (defect === 'transport') (last as any).captureError = 'Readback failed';
+    assert.equal(nativeCase(fixture, ids, 'OQ-TEST').passed, defect === 'none');
+  });
+
+test('account lifecycle does not create or mutate users without explicit synthetic scope', async t => {
+  t.mock.method(globalThis, 'fetch', async () => { assert.fail('No native request is authorized'); });
+  const rows = await runAccountLifecycleTests(baseUrl, 'operator');
+  assert.deepEqual(rows.map(row => [row.testCaseId, row.passed]), [['OQ-021', false], ['OQ-022', false]]);
+});
+
+for (const defect of ['none', 'foreign-identity', 'role-not-persisted', 'old-role-session-valid', 'fresh-role-stale',
+  'viewer-still-privileged', 'disabled-session-valid', 'disabled-login-valid', 'cleanup-refused'])
+  test(`owned account role/deactivation qualification retains genuine refusals and cleanup: ${defect}`, async t => {
+    let user: any, version = 0, password = '', changes = 0, reads = 0;
+    const sessions: string[] = [];
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      assert.ok(url.startsWith(baseUrl + '/api/'));
+      const p = new URL(url).pathname, method = init.method ?? 'GET', body = init.body ? JSON.parse(String(init.body)) : undefined;
+      const bearer = new Headers(init.headers).get('authorization')?.replace('Bearer ', '');
+      let status = 200, result: any = { success: true };
+      if (p === '/api/users' && method === 'POST') {
+        assert.match(body.username, /^oq_probe_/); assert.equal(body.role, 'viewer'); password = body.password;
+        user = { userId: 77, userName: body.username, email: body.email, enabled: true, platformRole: 'viewer' };
+        status = 201; result = { success: true, userId: 77 };
+      } else if (p === '/api/users/77' && method === 'GET') {
+        if (bearer === 'operator') { reads++; result = { success: true, data: { ...user, ...(defect === 'foreign-identity' ? { userName: 'operator' } : {}) } }; }
+        else if (user.platformRole === 'viewer' && defect !== 'viewer-still-privileged') { status = 403; result = { success: false, error: { code: 'FORBIDDEN' } }; }
+        else result = { success: true, data: { ...user } };
+      } else if (p === '/api/users/77' && method === 'PUT') {
+        assert.equal(bearer, 'operator'); assert.notEqual(defect, 'foreign-identity'); changes++;
+        if (body.enabled === false && defect === 'cleanup-refused') { status = 503; result = { success: false }; }
+        else { version++; if (body.role && defect !== 'role-not-persisted') user.platformRole = body.role; if (body.enabled === false) user.enabled = false; }
+      } else if (p === '/api/auth/login') {
+        assert.equal(body.username, user.userName); assert.equal(body.password, password);
+        if (!user.enabled && defect !== 'disabled-login-valid') { status = 401; result = { success: false, message: 'User account is disabled' }; }
+        else { const accessToken = `owned-session-${version}`; sessions.push(accessToken); result = { success: true, accessToken, user: { userId: 77 } }; }
+      } else if (p === '/api/auth/verify') {
+        const stale = bearer !== `owned-session-${version}`;
+        const wronglyAccept = user.enabled ? defect === 'old-role-session-valid' : defect === 'disabled-session-valid';
+        if (stale && !wronglyAccept) { status = 401; result = { success: false, error: { code: 'TOKEN_REVOKED' } }; }
+        else result = { success: true, data: { userId: 77, username: user.userName,
+          role: defect === 'fresh-role-stale' && user.platformRole === 'viewer' ? 'data_manager' : user.platformRole } };
+      } else assert.fail(`Unexpected or foreign request ${method} ${p}`);
+      return new Response(JSON.stringify(result), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const rows = await runAccountLifecycleTests(baseUrl, 'operator', true);
+    assert.equal(rows.every(row => row.passed), defect === 'none', rows.map(row => row.notes).join('\n'));
+    assert.equal(user.enabled, defect === 'foreign-identity' || defect === 'cleanup-refused');
+    if (defect === 'foreign-identity') assert.equal(changes, 0);
+    if (defect === 'disabled-login-valid') assert.equal(changes, 4, 'Revoke any session unexpectedly issued after deactivation');
+    assert.ok(reads > 0);
+    assert.equal(JSON.stringify(rows).includes(password), false);
+    for (const bearer of sessions) assert.equal(JSON.stringify(rows).includes(bearer), false);
+  });
+
+for (const defect of ['none', 'missing-headers', 'already-throttled', 'false-success', 'policy-changed', 'over-ceiling', 'never-throttled'])
+  test(`rate-limit qualification follows actual quota headers and refuses false evidence: ${defect}`, async t => {
+    let count = 0, username = '';
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      assert.equal(url, baseUrl + '/api/auth/login'); count++;
+      const sent = JSON.parse(String(init.body)); if (!username) username = sent.username;
+      assert.equal(sent.username, username); assert.match(username, /^oq_absent_/);
+      const limit = defect === 'over-ceiling' ? 501 : defect === 'policy-changed' && count > 1 ? 4 : 3;
+      const throttled = defect === 'already-throttled' || count > 3 && defect !== 'never-throttled';
+      return new Response(JSON.stringify({ success: defect === 'false-success', message: throttled
+        ? 'Too many login attempts. Account temporarily locked. Please try again after 15 minutes.' : 'Invalid username or password' }),
+      { status: throttled ? 429 : 401, headers: { 'Content-Type': 'application/json', ...(defect === 'missing-headers' ? {} : {
+        'RateLimit-Limit': String(limit), 'RateLimit-Remaining': String(Math.max(0, 3 - count)), ...(throttled ? { 'Retry-After': '800' } : {}) }) } });
+    });
+    const result = await runRateLimitTest(baseUrl);
+    assert.equal(result.passed, defect === 'none');
+    assert.equal(count <= 4, true);
+    if (defect === 'none') assert.equal(result.relatedEvidence?.length, 4);
+  });
 
 test('retained password-change evidence redacts native current/new password fields without losing revision identity', () => {
   assert.deepEqual(redactEvidenceSecrets({ requestBody: { currentPassword: 'private-current', newPassword: 'private-new',
@@ -41,6 +128,80 @@ function nativeForm(weight = '70.5', revision = 1) {
     execution: null, observationPreconditionContract: 'edc-form-observation-preconditions/1', observationSnapshotHash: `sha256:${String(revision).repeat(64)}`,
     formData: { item_103: weight }, data: [{ itemId: 103, itemDataId: 1103, value: weight }], lockStatus: { locked: false } };
 }
+
+for (const defect of ['none', 'foreign-history', 'missing-unlock-audit', 'wrong-unlock-actor', 'changed-values', 'restore-refused'])
+  test(`signed owned unlock retains evidence and restores only unchanged owned values: ${defect}`, async t => {
+    const fixture = reviewedFixture(); fixture.results = ['PQ-033', 'PQ-034'].map(id => prerequisite(id));
+    let locked = true, weight = '70.5', unlocks = 0, relocks = 0;
+    const rows: any[] = [{ lockId: 701, entityType: 'event_crf', entityId: defect === 'foreign-history' ? 999 : 111,
+      action: 'lock', performedBy: 7, performedAt: '2026-10-02T12:00:00Z', reason: 'Lock synthetic qualification form' }];
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      assert.ok(url.startsWith(baseUrl + '/api/')); const p = new URL(url).pathname;
+      const sent = init.body ? JSON.parse(String(init.body)) : undefined;
+      let status = 200, data: any, result: any;
+      if (p === '/api/auth/verify') data = { userId: 7, username: 'operator', role: 'admin' };
+      else if (p === '/api/forms/data/111') data = { ...nativeForm(weight), lockStatus: { locked, frozen: false } };
+      else if (p === '/api/data-locks/history/111') data = rows;
+      else if (p === '/api/data-locks/111/unlock') {
+        assert.equal(init.method, 'POST'); assert.equal(sent.signaturePassword, 'private'); assert.match(sent.reason, /^Owned OQ unlock /);
+        unlocks++; locked = false; if (defect === 'changed-values') weight = '95';
+        if (defect !== 'missing-unlock-audit') rows.push({ lockId: 702, entityType: 'event_crf', entityId: 111,
+          action: 'unlock', performedBy: defect === 'wrong-unlock-actor' ? 8 : 7, performedAt: '2026-10-02T12:01:00Z', reason: sent.reason });
+      } else if (p === '/api/data-locks') {
+        assert.equal(init.method, 'POST'); assert.equal(sent.eventCrfId, 111); assert.equal(sent.signaturePassword, 'private'); relocks++;
+        if (defect === 'restore-refused') { status = 503; result = { success: false }; } else locked = true;
+      } else assert.fail(`Unexpected native path ${p}`);
+      return new Response(JSON.stringify(result ?? { success: true, ...(data === undefined ? {} : { data }) }), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const result = await captureOwnedUnlock(baseUrl, 'operator', fixture);
+    assert.equal(result.passed, defect === 'none', result.notes);
+    assert.equal(unlocks, defect === 'foreign-history' ? 0 : 1);
+    assert.equal(relocks, ['foreign-history', 'changed-values'].includes(defect) ? 0 : 1);
+    assert.equal(locked, !['changed-values', 'restore-refused'].includes(defect));
+    assert.equal(JSON.stringify(result).includes('"private"'), false);
+    if (defect === 'restore-refused') assert.match(result.notes, /Restoration also failed/);
+  });
+
+for (const defect of ['none', 'missing-freeze-reason', 'missing-action', 'foreign', 'wrong-actor', 'bad-time', 'failed-prerequisite'])
+  test(`lifecycle audit proves each exact governed operation including required freeze reason: ${defect}`, async t => {
+    const fixture = reviewedFixture(); fixture.results = ['PQ-030', 'PQ-032', 'PQ-033'].map(id => prerequisite(id));
+    if (defect === 'failed-prerequisite') fixture.results[0].passed = false;
+    const rows = ['freeze', 'unfreeze', 'lock'].map((action, i) => ({ lockId: 701 + i, entityType: 'event_crf',
+      entityId: defect === 'foreign' ? 999 : 111, action, performedBy: defect === 'wrong-actor' ? 99 : 7,
+      performedAt: defect === 'bad-time' ? 'not-a-time' : '2026-10-02T12:00:00Z',
+      reason: defect === 'missing-freeze-reason' && action === 'freeze' ? undefined : `${action[0].toUpperCase() + action.slice(1)} synthetic qualification form` }));
+    if (defect === 'missing-action') rows.pop();
+    t.mock.method(globalThis, 'fetch', async (url: string) => {
+      const p = new URL(url).pathname;
+      assert.ok(['/api/forms/data/111', '/api/auth/verify', '/api/data-locks/history/111'].includes(p));
+      return new Response(JSON.stringify({ success: true, data: p === '/api/forms/data/111' ? nativeForm()
+        : p === '/api/auth/verify' ? { userId: 7, username: 'operator' } : rows }), { headers: { 'Content-Type': 'application/json' } });
+    });
+    assert.equal((await captureLifecycleAudit(baseUrl, 'operator', fixture)).passed, defect === 'none');
+  });
+
+for (const defect of ['none', 'missing-old', 'wrong-scope', 'wrong-actor', 'wrong-old-actor', 'wrong-hash', 'duplicate', 'missing-prerequisite'])
+  test(`signature audit links both real workflow signatures to their exact manifest: ${defect}`, async t => {
+    const fixture = reviewedFixture(); fixture.state.signatureId = 222;
+    fixture.results = ['PQ-027', 'PQ-029'].map((id, i) => ({ ...prerequisite(id), relatedEvidence: [{ ...prerequisite(id + '-sign'),
+      endpoint: baseUrl + '/api/esignature/sign', responseBody: { success: true, data: { signatureId: 221 + i } } }] }));
+    if (defect === 'missing-prerequisite') fixture.results.pop();
+    const contentHash = 'a'.repeat(64), signedAt = '2026-10-02T12:00:00Z';
+    const rows = [221, 222].map(auditId => ({ auditId, userId: defect === 'wrong-actor' || defect === 'wrong-old-actor' && auditId === 221 ? 8 : 7,
+      studyId: 42, eventCrfId: defect === 'wrong-scope' ? 999 : 111, studyEventId: 91, auditDate: signedAt,
+      newValue: JSON.stringify({ type: 'electronic_signature', entity_type: 'event_crf', entity_id: 111, signed_by: 'operator',
+        meaning: 'approval', signed_at: signedAt, content_hash: defect === 'wrong-hash' ? 'b'.repeat(64) : contentHash, hash_algorithm: 'sha256' }) }));
+    if (defect === 'missing-old') rows.shift(); if (defect === 'duplicate') rows.push(rows[0]);
+    t.mock.method(globalThis, 'fetch', async (url: string) => {
+      const p = new URL(url).pathname;
+      assert.ok(['/api/forms/data/111', '/api/esignature/status/eventCrf/111', '/api/audit/form/111'].includes(p));
+      return new Response(JSON.stringify({ success: true, data: p === '/api/forms/data/111' ? nativeForm()
+        : p === '/api/audit/form/111' ? rows : { contract: 'edc-event-crf-signature-proof/1', entityId: 111, studyId: 42,
+          studySubjectId: 81, studyEventId: 91, isSigned: true, signatureIntegrityValid: true,
+          activeSignature: { signatureId: 222, signerUserId: 7, signedAt, contentHash } } }), { headers: { 'Content-Type': 'application/json' } });
+    });
+    assert.equal((await captureSignatureAudit(baseUrl, 'operator', fixture)).passed, defect === 'none');
+  });
 for (const mode of ['missing', 'wrong'] as const) for (const defect of ['none', 'unrelated-refusal', 'changed-signature'])
   test(`signature password refusal uses the native contract and exact retained proof: ${mode}/${defect}`, async t => {
     const fixture = reviewedFixture(); let attempts = 0, proofs = 0, positiveCredentials = 0;
@@ -217,7 +378,8 @@ test('an unexpected OQ suite error still archives only its owned study, closes i
   assert.equal(results.find((row: any) => row.testCaseId === 'OQ-RUN-LOGOUT').passed, true);
   assert.equal(results.filter((row: any) => /^OQ-\d{3}$/.test(row.testCaseId)).length, 205);
   assert.equal(calls.filter(route => route.startsWith('DELETE ')).join(), 'DELETE /api/studies/42');
-  assert.equal(calls.at(-1), 'POST /api/auth/logout');
+  assert.equal(calls.at(-1), 'POST /api/auth/login', 'Quota probe runs only after all cleanup and logout');
+  assert.equal(calls.at(-2), 'POST /api/auth/logout');
   assert.equal(results.find((row: any) => row.testCaseId === 'OQ-NATIVE-RETENTION').relatedEvidence.find((row: any) => row.testCaseId === 'PQ-040').passed, true);
 });
 
