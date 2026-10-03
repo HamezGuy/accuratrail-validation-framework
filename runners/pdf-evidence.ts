@@ -115,10 +115,13 @@ export async function parsePdfEvidence(bytes: Buffer): Promise<ParsedPdf> {
 
 export const normalizedPdfText = (text: string): string => text.normalize('NFC').replace(/\s+/gu, ' ').trim();
 
-/** A value must appear beside its field label, not somewhere in a date or audit row. */
+/** A value must appear beside its field label, not somewhere in a date or audit row.
+ * A required marker may stand apart ("Label * value") or abut its label
+ * ("Label* value", as the layout join keeps it); either way the cells stay
+ * separated by whitespace. */
 export function requirePrintedRow(text: string, cells: string[], description: string): void {
   const escape = (value: string) => normalizedPdfText(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = cells.map(escape).join('\\s+(?:\\*\\s*)?(?:○\\s*)?');
+  const pattern = cells.map(escape).join('(?:\\s+(?:\\*\\s*)?|\\*\\s+)(?:○\\s*)?');
   if (!cells.length || cells.some(cell => !normalizedPdfText(cell))
     || !new RegExp(`(?:^|\\s)${pattern}(?=\\s|$)`, 'u').test(normalizedPdfText(text))) {
     throw new Error(`PDF does not preserve ${description}.`);

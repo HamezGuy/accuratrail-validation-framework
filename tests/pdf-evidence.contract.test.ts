@@ -169,6 +169,18 @@ test('a visible gap, a line end or a new line is still a space', () => {
   assert.equal(joinPdfTextItems([{ str: undefined }, item('only', 50, 20)]), 'only');
 });
 
+test('a required marker abutting its label still prints beside its value', () => {
+  // The marker is its own item, abutting the label; the value sits in the next column.
+  const text = joinPdfTextItems([item('Synthetic initials', 50, 80), item('*', 130, 4), item('ÄÖ', 200, 12)]);
+  assert.equal(text, 'Synthetic initials* ÄÖ');
+  requirePrintedRow(text, ['Synthetic initials', 'ÄÖ'], 'a required field with an abutting marker');
+  requirePrintedRow('Synthetic initials * ÄÖ', ['Synthetic initials', 'ÄÖ'], 'a required field with a spaced marker');
+  requirePrintedRow('Synthetic gender* ○ Other', ['Synthetic gender', 'Other'], 'a required choice with an abutting marker');
+  for (const run of ['Synthetic initialsÄÖ', 'Synthetic initials*ÄÖ', 'Synthetic initials** ÄÖ']) {
+    assert.throws(() => requirePrintedRow(run, ['Synthetic initials', 'ÄÖ'], 'cells run together'), /PDF does not preserve/);
+  }
+});
+
 test('empty labels/cells cannot turn any document into passing row evidence', async () => {
   const { text } = await owned;
   for (const cells of [[], [''], ['  ', '70.5'], ['Weight', '']]) {
