@@ -1550,6 +1550,132 @@ export async function runPart11ComplianceTests(
   return results;
 }
 
+const SESSION_REFUSALS = ['TOKEN_REVOKED', 'SESSION_REVOKED', 'SESSION_NOT_ACTIVE'];
+
+/** Unverified claims of an issued access token. The API verifies tokens; a case
+ * reads only the session ID it was issued under. */
+function tokenClaims(token: string): Record<string, unknown> | null {
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
+    return isRecord(claims) ? claims : null;
+  } catch { return null; }
+}
+
+const sessionRefused = (exchange: EvidenceResult): boolean => exchange.responseStatus === 401
+  && isRecord(exchange.responseBody) && exchange.responseBody.success === false && isRecord(exchange.responseBody.error)
+  && SESSION_REFUSALS.includes(String(exchange.responseBody.error.code));
+
+/** A case assembled from several exchanges made with different credentials:
+ * every retained step is redacted, and the case passes only with a note that
+ * says what was established. */
+function multiStepCase(testCaseId: string, steps: EvidenceResult[], fields: Pick<EvidenceResult, 'regulatoryRef' | 'testDescription' | 'acceptanceCriteria'>) {
+  return (passed: boolean, notes: string): EvidenceResult => {
+    const retained = redactEvidenceSecrets(steps) as EvidenceResult[];
+    return { ...(retained[0] ?? manualResult(testCaseId, notes)), ...fields, testCaseId, passed, notes, relatedEvidence: retained };
+  };
+}
+
+/** OQ-072 (URS-011; owner decision 2026-10-02: "Keep multiple devices; verify
+ * each session independently"): two sessions of the owned account are usable
+ * together, logout and refresh act only on their own session, and the chained
+ * login and logout audit rows name the exact session. */
+export async function captureIndependentSessions(baseUrl: string, operatorToken: string,
+  account: { userId: number; username: string; password: string }): Promise<EvidenceResult> {
+  const steps: EvidenceResult[] = [];
+  const outcome = multiStepCase('OQ-072', steps, { regulatoryRef: '21 CFR 11.10(d)',
+    testDescription: 'Independent sessions (devices) of one owned account',
+    acceptanceCriteria: 'Both sessions are usable together; logout and refresh act only on their own session; the login and logout audit rows carry the exact session ID' });
+  const call = async (step: string, method: 'GET' | 'POST', url: string, token: string | null, body?: unknown) => {
+    const exchange = await captureApiCall({ testCaseId: `OQ-072-${step}`, baseUrl, method, url,
+      ...(token ? { headers: authHeaders(token) } : {}), ...(body === undefined ? {} : { body }) });
+    steps.push(exchange);
+    return exchange;
+  };
+  const usable = async (step: string, token: string) => (await call(step, 'GET', '/api/auth/verify', token)).responseStatus === 200;
+  const a = await login(baseUrl, account.username, account.password, 'OQ-072-login-a'); steps.push(a.evidence);
+  const b = await login(baseUrl, account.username, account.password, 'OQ-072-login-b'); steps.push(b.evidence);
+  const sidA = a.session ? tokenClaims(a.session.token)?.sid : undefined;
+  const sidB = b.session ? tokenClaims(b.session.token)?.sid : undefined;
+  if (!a.session || !b.session?.refreshToken || typeof sidA !== 'string' || typeof sidB !== 'string' || !sidA || sidA === sidB)
+    return outcome(false, 'Two logins of the owned account did not issue two distinct sessions with a refresh token.');
+  if (!await usable('verify-a', a.session.token) || !await usable('verify-b', b.session.token))
+    return outcome(false, 'A second login ended or blocked the first session of the same account.');
+  const logout = await call('logout-a', 'POST', '/api/auth/logout', a.session.token);
+  if (logout.responseStatus !== 200 || !isRecord(logout.responseBody) || logout.responseBody.success !== true)
+    return outcome(false, 'Session A logout was not acknowledged.');
+  if (!sessionRefused(await call('verify-a-after-logout', 'GET', '/api/auth/verify', a.session.token)))
+    return outcome(false, 'The logged-out session A was not refused with a native session refusal.');
+  if (!await usable('verify-b-after-logout', b.session.token)) return outcome(false, 'Logging out session A ended session B.');
+  const refreshed = await call('refresh-b', 'POST', '/api/auth/refresh', null, { refreshToken: b.session.refreshToken });
+  const replacement = isRecord(refreshed.responseBody) && refreshed.responseBody.success === true ? refreshed.responseBody.accessToken : null;
+  if (refreshed.responseStatus !== 200 || typeof replacement !== 'string' || tokenClaims(replacement)?.sid !== sidB)
+    return outcome(false, 'Refreshing session B did not issue a replacement access token for the same session.');
+  if (!await usable('verify-b-replacement', replacement)) return outcome(false, 'The refreshed session B token is not usable.');
+  if (!sessionRefused(await call('verify-a-after-refresh', 'GET', '/api/auth/verify', a.session.token)))
+    return outcome(false, 'Refreshing session B revived the logged-out session A.');
+  // The account is created by this suite, so every row for it belongs to this run.
+  const audit = await call('audit', 'GET', `/api/audit?userId=${account.userId}&eventType=${encodeURIComponent('User Log')}&limit=200`, operatorToken);
+  const rows = getEntries(audit.responseBody) ?? [];
+  const exactlyOne = (event: string, sid: string) => rows.filter(row => row.eventTypeName === event && row.sessionId === sid
+    && row.userId === account.userId && row.auditTable === 'user_account' && row.entityId === account.userId).length === 1;
+  if (audit.responseStatus !== 200 || !exactlyOne('User Login', sidA) || !exactlyOne('User Login', sidB) || !exactlyOne('User Logout', sidA)
+    || rows.some(row => row.eventTypeName === 'User Logout' && row.sessionId === sidB))
+    return outcome(false, 'The login and logout audit rows do not each identify their exact session.');
+  const close = await call('logout-b', 'POST', '/api/auth/logout', replacement);
+  if (close.responseStatus !== 200 || !isRecord(close.responseBody) || close.responseBody.success !== true)
+    return outcome(false, 'Session B could not be ended after the case; its cleanup is unresolved.');
+  return outcome(true, 'Two sessions of the owned account were usable together; logging out A left B usable, refreshing B kept its '
+    + 'session ID and did not revive A, and the login rows of both sessions and the logout row of A carried their exact session ID.');
+}
+
+/** OQ-071 (URS-AUTH-016, 21 CFR 11.300(b)): a password change refuses the
+ * current password and any of the last five with HTTP 400 PASSWORD_REUSED and
+ * accepts a new one. An accepted change revokes the account's sessions, so each
+ * step signs in with the password the account then has. It runs last on the
+ * owned account: history makes the original password unrecoverable. */
+export async function capturePasswordHistory(baseUrl: string, account: { username: string; password: string }): Promise<EvidenceResult> {
+  const steps: EvidenceResult[] = [];
+  const outcome = multiStepCase('OQ-071', steps, { regulatoryRef: '21 CFR 11.300(b)',
+    testDescription: 'Password history enforcement on an owned account',
+    acceptanceCriteria: 'The current password and a password from the last five are refused with HTTP 400 PASSWORD_REUSED without changing the password; a new password is accepted and signs in' });
+  const signIn = async (step: string, password: string) => {
+    const result = await login(baseUrl, account.username, password, `OQ-071-${step}`);
+    steps.push(result.evidence);
+    return result.session?.token ?? null;
+  };
+  const change = async (step: string, token: string, currentPassword: string, newPassword: string) => {
+    const exchange = await captureApiCall({ testCaseId: `OQ-071-${step}`, baseUrl, method: 'POST', url: '/api/auth/change-password',
+      headers: authHeaders(token), body: { currentPassword, newPassword } });
+    steps.push(exchange);
+    return exchange;
+  };
+  const accepted = (exchange: EvidenceResult) => exchange.responseStatus === 200 && isRecord(exchange.responseBody)
+    && exchange.responseBody.success === true && isRecord(exchange.responseBody.data) && exchange.responseBody.data.reauthenticationRequired === true;
+  const reused = (exchange: EvidenceResult) => exchange.responseStatus === 400 && isRecord(exchange.responseBody)
+    && exchange.responseBody.success === false && exchange.responseBody.error === 'PASSWORD_REUSED';
+  const fresh = () => randomBytes(24).toString('base64url') + '!aA1';
+  const [first, second, third] = [fresh(), fresh(), fresh()];
+  const original = await signIn('login-original', account.password);
+  if (!original) return outcome(false, 'The owned account did not sign in with its original password.');
+  if (!accepted(await change('change-1', original, account.password, first)))
+    return outcome(false, 'The first password change (this case\'s own precondition) was not accepted.');
+  const afterFirst = await signIn('login-1', first);
+  if (!afterFirst) return outcome(false, 'The changed password does not sign in.');
+  if (!reused(await change('reuse-current', afterFirst, first, first)))
+    return outcome(false, 'Reusing the current password was not refused with HTTP 400 PASSWORD_REUSED.');
+  // Accepting this change with the same current password proves the refusal changed nothing.
+  if (!accepted(await change('change-2', afterFirst, first, second))) return outcome(false, 'A new password was not accepted after the refusal.');
+  const afterSecond = await signIn('login-2', second);
+  if (!afterSecond) return outcome(false, 'The second changed password does not sign in.');
+  if (!reused(await change('reuse-history', afterSecond, second, first)))
+    return outcome(false, 'A password from the last five was not refused with HTTP 400 PASSWORD_REUSED.');
+  if (!accepted(await change('change-3', afterSecond, second, third)))
+    return outcome(false, 'A genuinely new password was not accepted after the history refusal.');
+  if (!await signIn('login-3', third)) return outcome(false, 'The accepted new password does not sign in.');
+  return outcome(true, 'The current password and a password from the last five were each refused with HTTP 400 PASSWORD_REUSED '
+    + 'without changing the password, and genuinely new passwords were accepted and signed in.');
+}
+
 // ── Suite 8: Comprehensive Authentication Tests (OQ-076 → OQ-095) ──
 
 export async function runComprehensiveAuthTests(
@@ -1809,6 +1935,10 @@ export async function runComprehensiveAuthTests(
     r.acceptanceCriteria = 'HTTP 401 for forged JWT with invalid signature';
     results.push(r);
   }
+
+  // OQ-072, then OQ-071: OQ-071 changes the owned password, so it runs last.
+  results.push(await captureIndependentSessions(baseUrl, operatorToken, { userId: fixture.userId, username, password }));
+  results.push(await capturePasswordHistory(baseUrl, { username, password }));
 
   } catch (error) { results.push({ ...manualResult('OQ-PASSWORD-EXECUTION', 'Unexpected owned password-suite exception; retained steps identify completed operations.'), method: 'CONTRACT' }); }
   finally { results.push(await disableAuthFixture('OQ-PASSWORD-CLEANUP', baseUrl, operatorToken, fixture)); }

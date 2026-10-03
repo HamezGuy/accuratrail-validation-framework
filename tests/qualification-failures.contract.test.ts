@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { runAuthenticationTests, runPart11ComplianceTests, runDataOperationTests, runComprehensiveAuditTests, runSecurityValidationTests,
   runComprehensiveAuthTests, runComprehensiveRbacTests, captureAuditRefusal, captureNativeDownload, captureAuditDownload,
   captureSignaturePasswordRefusal, captureMissingChangeReason, runAccountLifecycleTests, nativeCase, runRateLimitTest,
-  captureOwnedUnlock, captureLifecycleAudit, captureSignatureAudit, captureSignatureCopyRefusal, type OwnedOqFixture } from '../runners/oq-runner';
+  captureOwnedUnlock, captureLifecycleAudit, captureSignatureAudit, captureSignatureCopyRefusal, captureIndependentSessions,
+  capturePasswordHistory, type OwnedOqFixture } from '../runners/oq-runner';
 import { createWorkflowState, runStudySetup, archiveOwnedStudy } from '../runners/pq-runner';
 import { workspace } from './study-contract-fixtures';
 import { syntheticStudyDefinition } from '../runners/qualification-fixture';
@@ -62,6 +63,100 @@ for (const defect of ['none', 'logout-unavailable', 'logout-false', 'still-activ
     }
     const retained = JSON.stringify(redactEvidenceSecrets(result));
     assert.ok(!retained.includes('OwnedPassword42!') && !retained.includes('issued-probe'));
+  });
+
+const sessionToken = (sid: string, serial: number) =>
+  `e30.${Buffer.from(JSON.stringify({ userId: 77, role: 'viewer', sid, n: serial })).toString('base64url')}.signature`;
+for (const defect of ['none', 'same-session', 'login-ends-other', 'logout-ends-all', 'refresh-new-session', 'refresh-revives',
+  'audit-without-session', 'logout-unaudited', 'wrong-refusal'])
+  test(`OQ-072 verifies each owned session independently: ${defect}`, async t => {
+    const sessions = new Map<string, { active: boolean; access: string; refresh: string }>();
+    const audit: Array<Record<string, unknown>> = [];
+    let serial = 0;
+    const issue = (sid: string) => {
+      const access = sessionToken(sid, ++serial), refresh = `refresh-${sid}-${serial}`;
+      sessions.set(sid, { active: true, access, refresh });
+      return { access, refresh };
+    };
+    const bySecret = (secret: string | null) => [...sessions.entries()].find(([, s]) => s.access === secret || s.refresh === secret);
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      const target = new URL(url), p = target.pathname, bearer = new Headers(init.headers).get('authorization')?.replace('Bearer ', '') ?? null;
+      let status = 200, body: any = { success: true };
+      if (p === '/api/auth/login') {
+        assert.deepEqual(JSON.parse(String(init.body)), { username: 'owned', password: 'OwnedPassword42!' });
+        const sid = defect === 'same-session' ? 'sid-shared' : `sid-${serial + 1}`;
+        if (defect === 'login-ends-other') for (const s of sessions.values()) s.active = false;
+        const { access, refresh } = issue(sid);
+        audit.push({ eventTypeName: 'User Login', sessionId: sid, userId: 77, auditTable: 'user_account', entityId: 77 });
+        body = { success: true, accessToken: access, refreshToken: refresh, user: { userId: 77 } };
+      } else if (p === '/api/auth/verify') {
+        const found = bySecret(bearer);
+        if (found?.[1].active && found[1].access === bearer) body = { success: true, data: { userId: 77 } };
+        else { status = 401; body = { success: false, error: { code: defect === 'wrong-refusal' ? 'INVALID_TOKEN' : 'SESSION_REVOKED' } }; }
+      } else if (p === '/api/auth/logout') {
+        const found = bySecret(bearer); assert.ok(found, 'Logout must name an issued session');
+        if (defect === 'logout-ends-all') for (const s of sessions.values()) s.active = false; else found[1].active = false;
+        if (defect !== 'logout-unaudited') audit.push({ eventTypeName: 'User Logout', sessionId: found[0], userId: 77, auditTable: 'user_account', entityId: 77 });
+      } else if (p === '/api/auth/refresh') {
+        assert.equal(bearer, null);
+        const found = bySecret(JSON.parse(String(init.body)).refreshToken);
+        if (!found?.[1].active) { status = 401; body = { success: false }; }
+        else {
+          if (defect === 'refresh-revives') for (const s of sessions.values()) s.active = true;
+          const { access, refresh } = issue(defect === 'refresh-new-session' ? `sid-new-${serial}` : found[0]);
+          body = { success: true, accessToken: access, refreshToken: refresh };
+        }
+      } else if (p === '/api/audit') {
+        assert.equal(bearer, 'operator-session');
+        assert.equal(target.searchParams.get('userId'), '77');
+        assert.equal(target.searchParams.get('eventType'), 'User Log');
+        body = { success: true, data: audit.map(row => defect === 'audit-without-session' ? { ...row, sessionId: null } : row) };
+      } else assert.fail(`Unexpected operation ${p}`);
+      return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const result = await captureIndependentSessions(baseUrl, 'operator-session', { userId: 77, username: 'owned', password: 'OwnedPassword42!' });
+    assert.equal(result.testCaseId, 'OQ-072');
+    assert.equal(result.passed, defect === 'none', result.notes);
+    if (defect === 'none') assert.ok([...sessions.values()].every(s => !s.active), 'The case ends both of its sessions');
+    const retained = JSON.stringify(result);
+    assert.ok(!retained.includes('OwnedPassword42!') && !retained.includes('refresh-sid') && !/e30\.[A-Za-z0-9_-]+\.signature/.test(retained));
+  });
+
+for (const defect of ['none', 'current-accepted', 'history-ignored', 'wrong-code', 'change-not-applied', 'refusal-changes-password'])
+  test(`OQ-071 enforces password history on the owned account: ${defect}`, async t => {
+    let current = 'OwnedPassword42!', live = new Set<string>(), serial = 0;
+    const history: string[] = [], submitted = new Set<string>();
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      const p = new URL(url).pathname, bearer = new Headers(init.headers).get('authorization')?.replace('Bearer ', '') ?? null;
+      const request = init.body ? JSON.parse(String(init.body)) : {};
+      let status = 200, body: any = { success: true };
+      if (p === '/api/auth/login') {
+        assert.equal(request.username, 'owned');
+        if (request.password !== current) { status = 401; body = { success: false }; }
+        else { const token = `owned-session-${++serial}`; live.add(token); body = { success: true, accessToken: token, user: { userId: 77 } }; }
+      } else if (p === '/api/auth/change-password') {
+        assert.ok(bearer && live.has(bearer), 'Each change uses a live session of the owned account');
+        submitted.add(request.newPassword);
+        const refuse = () => { status = 400; body = { success: false, error: defect === 'wrong-code' ? 'PASSWORD_POLICY_VIOLATION' : 'PASSWORD_REUSED' }; };
+        const accept = () => {
+          if (defect !== 'change-not-applied') { history.push(request.newPassword); current = request.newPassword; }
+          live = new Set();
+          body = { success: true, data: { reauthenticationRequired: true } };
+        };
+        if (request.currentPassword !== current) { status = 400; body = { success: false, error: 'CURRENT_PASSWORD_INCORRECT' }; }
+        else if (request.newPassword === current) { if (defect === 'current-accepted') accept(); else refuse(); }
+        else if (history.slice(-5).includes(request.newPassword) && defect !== 'history-ignored') {
+          refuse(); if (defect === 'refusal-changes-password') current = request.newPassword;
+        } else accept();
+      } else assert.fail(`Unexpected operation ${p}`);
+      return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const result = await capturePasswordHistory(baseUrl, { username: 'owned', password: 'OwnedPassword42!' });
+    assert.equal(result.testCaseId, 'OQ-071');
+    assert.equal(result.passed, defect === 'none', result.notes);
+    const retained = JSON.stringify(result);
+    for (const secret of ['OwnedPassword42!', ...submitted]) assert.ok(!retained.includes(secret), 'No password is retained');
+    assert.ok(!retained.includes('owned-session-'), 'No session token is retained');
   });
 
 test('OQ operator claim and password-age probes release their sessions while preserving the caller session', async t => {
@@ -569,7 +664,9 @@ test('password change probes use only an owned viewer and disable it afterward',
     return new Response(JSON.stringify(result), { status, headers: { 'Content-Type': 'application/json' } });
   });
   const result = await runComprehensiveAuthTests(baseUrl, 'operator', 'operator-secret', 'operator-session', true);
-  assert.equal(changes.length, 3);
+  // OQ-091, OQ-092, OQ-093 and the first change of OQ-071, which this double refuses.
+  assert.equal(changes.length, 4);
+  assert.equal(result.find(row => row.testCaseId === 'OQ-071')!.passed, false);
   assert.ok(changes.every(row => new Headers(row.headers).get('authorization') === 'Bearer ' + access()));
   assert.ok(changes.every(row => row.body.currentPassword !== 'operator-secret'));
   for (const id of ['OQ-087', 'OQ-091', 'OQ-092', 'OQ-093', 'OQ-PASSWORD-CLEANUP']) assert.equal(result.find(row => row.testCaseId === id)!.passed, true, id);

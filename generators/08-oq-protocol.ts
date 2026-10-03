@@ -872,14 +872,14 @@ function part11ComplianceCases(): OqTestCase[] {
     },
     {
       id: 'OQ-071', title: 'Password History Enforcement', requirement: 'URS-AUTH-016', cfr: '11.300(b)',
-      riskLevel: 'Critical', preconditions: 'User account with at least one prior password change',
+      riskLevel: 'Critical', preconditions: 'Owned synthetic account; the runner makes the first password change itself, and each accepted change requires signing in again',
       steps: [
-        'PUT /api/auth/change-password with the current password as the new password.',
-        'Verify response is rejected (400) — cannot reuse current password.',
-        'PUT /api/auth/change-password with a previously used password (within last 5).',
-        'Verify response is rejected (400) — password history check.',
-        'PUT /api/auth/change-password with a genuinely new password.',
-        'Verify response is accepted (200).',
+        'POST /api/auth/change-password with the current password as the new password.',
+        'Verify response is rejected (400 PASSWORD_REUSED) — cannot reuse current password.',
+        'POST /api/auth/change-password with a previously used password (within last 5).',
+        'Verify response is rejected (400 PASSWORD_REUSED) — password history check.',
+        'POST /api/auth/change-password with a genuinely new password.',
+        'Verify response is accepted (200) and the new password signs in.',
       ],
       expectedResult: 'System rejects reuse of last 5 passwords; accepts new unique passwords.',
       evidence: 'See evidence/oq/OQ-071.json',
@@ -888,8 +888,8 @@ function part11ComplianceCases(): OqTestCase[] {
       id: 'OQ-072', title: 'Independent Multi-Device Sessions', requirement: 'URS-AUTH-017', cfr: '11.10(d)',
       riskLevel: 'High',
       preconditions: 'Owned synthetic user account with no other active session. Policy (owner decision 2026-10-02): ' +
-        '"Keep multiple devices; verify each session independently." Not implemented by the current runner, which records a ' +
-        'failing "did not execute" placeholder for OQ-072; runner case OQ-094 executes the two-session check in step 3.',
+        '"Keep multiple devices; verify each session independently." The audit rows of step 6 are the chained login and logout ' +
+        'rows of the owned account; the legacy login-history table has no session column.',
       steps: [
         'Login as the user from device A — obtain JWT-A (session A).',
         'Login as the same user from device B — obtain JWT-B (session B).',

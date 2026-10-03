@@ -243,13 +243,15 @@ test('CSA records without retained evidence state no conclusion and invent no te
   const undocumented = featureRecord(content, 'FEAT-060');
   assert.match(subsection(undocumented, 'Conclusion'), /No assurance conclusion/);
   assert.match(subsection(undocumented, 'Issues Found'), /Not assessed: no retained evidence/);
-  const unimplemented = content.split('\n').filter(line => /OQ-07[1-5]\b/.test(line));
-  assert.ok(unimplemented.length > 0, 'unimplemented OQ-071..OQ-075 stay visible as gaps');
-  for (const line of unimplemented) {
-    assert.match(line, /not implemented/);
-    assert.match(line, /Gap — no executed case mapped; not qualified/);
-  }
-  assert.doesNotMatch(content, /\| OQ-07[1-5] \|/, 'an unimplemented case is never a mapped test');
+  // OQ-071 (password history) and OQ-072 (independent sessions) are mapped only
+  // to the controls they test, and without evidence they are not executed.
+  assert.match(caseRow(featureRecord(content, 'FEAT-003'), 'OQ-071'), /Not executed — no retained evidence/);
+  assert.match(caseRow(featureRecord(content, 'FEAT-005'), 'OQ-072'), /Not executed — no retained evidence/);
+  // Where the original plan cited them for hash provenance, the activity stays a gap.
+  const misplanned = content.split('\n').filter(line => /OQ-07[12], planned here/.test(line));
+  assert.equal(misplanned.length, 2);
+  for (const line of misplanned) assert.match(line, /Gap — no executed case mapped; not qualified/);
+  assert.doesNotMatch(content, /\| OQ-07[3-5] \|/, 'an unimplemented case is never a mapped test');
 });
 
 test('CSA conclusion for fully passing mapped evidence cites the observed run without establishing approval', t => {
@@ -291,7 +293,7 @@ test('partial and manual mapped evidence leave the feature without an assurance 
   const directory = workspace(t);
   saveEvidence(directory, 'pq', [observed('PQ-033'), observed('PQ-034')]);
   saveEvidence(directory, 'oq', [
-    ...['OQ-010', 'OQ-021', 'OQ-022', 'OQ-062', 'OQ-087', 'OQ-094'].map(id => observed(id)),
+    ...['OQ-010', 'OQ-021', 'OQ-022', 'OQ-062', 'OQ-072', 'OQ-087', 'OQ-094'].map(id => observed(id)),
     manualResult('OQ-007', 'Synthetic manual fingerprint readback is outstanding'),
   ]);
   const content = csaRecord(directory);

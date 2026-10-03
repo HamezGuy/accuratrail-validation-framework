@@ -109,6 +109,13 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
     + 'with HTTP 400 (REASON_REQUIRED, FORM_REASON_REQUIRED or REASON_FOR_CHANGE_REQUIRED) and the form must be unchanged.' },
   'OQ-062': { check: exactLogout },
   'OQ-067': { check: formPdf },
+  'OQ-071': { check: 'Synthetic fixture only: on the owned password-suite account, after one accepted change, changing to the current '
+    + 'password and then to the previous password must each be refused with HTTP 400 PASSWORD_REUSED, a following change with the '
+    + 'same current password must be accepted (the refusal changed nothing), and the final new password must sign in.' },
+  'OQ-072': { check: 'Synthetic fixture only: two logins of the owned account must issue distinct session IDs that both verify; after '
+    + 'logout of A, A must get a native session refusal (401) while B verifies; refreshing B must return a usable token with B\'s '
+    + 'session ID while A stays refused; the owned account\'s chained audit must hold exactly one User Login row for each session and '
+    + 'one User Logout row for A only, each carrying its session ID.' },
   'OQ-085': { check: 'Synthetic fixture only: login of the owned account must return success=true, a non-empty accessToken and '
     + 'user.userId equal to the owned account.' },
   'OQ-086': { check: 'Synthetic fixture only: the decoded access-token exp must lie more than 0 and at most 24 hours ahead '
