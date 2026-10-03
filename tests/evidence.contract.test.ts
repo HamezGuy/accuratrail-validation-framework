@@ -180,6 +180,24 @@ test('automatic PQ corrections cannot satisfy manual backup, recovery or regulat
   assert.ok(row); assert.match(row, /Pending/); assert.doesNotMatch(row, /\bPASS\b/);
 });
 
+test('the regulatory map reports evidence-derived verification and never concludes compliance or risk acceptance', t => {
+  const directory = workspace(t);
+  saveEvidence(directory, 'pq', ['PQ-028', 'PQ-029', 'PQ-039'].map(id => result({ testCaseId: id })));
+  saveEvidence(directory, 'oq', [result({ testCaseId: 'OQ-048' }), result({ testCaseId: 'OQ-067' }), result({ testCaseId: 'OQ-042' })]);
+  generateRegulatoryMap(directory, directory);
+  const map = fs.readFileSync(path.join(directory, '18-regulatory-requirements-map.md'), 'utf8');
+  const block = (id: string) => { const start = map.indexOf(`## ${id} —`); assert.ok(start >= 0, id); return map.slice(start, map.indexOf('\n---', start)); };
+  assert.match(block('§11.70'), /\*\*Verification in this record:\*\* PASS — every mapped case passed/);
+  assert.match(block('§11.70'), /\*\*Mapped cases:\*\* PQ-029, PQ-039, OQ-042/);
+  assert.match(block('§11.10(a)'), /\*\*Verification in this record:\*\* Pending — no executed case verifies this section/);
+  assert.match(block('§11.30'), /Not verified by this record — no executed runner case is mapped/);
+  assert.doesNotMatch(map, /Compliance Status:|\*\*Compliant:\*\*|demonstrates compliance|Assessment Confidence Level/);
+  assert.doesNotMatch(map, /\| Compliant \||OQ-069 through OQ-074|OQ-087 through OQ-090/);
+  assert.match(map, /\*\*Compliance determination:\*\* none is made by this generated document/);
+  assert.doesNotMatch(map, /\| Yes(?: — with monitoring)? \|/);
+  assert.equal((map.match(/Pending risk-owner approval/g) ?? []).length, 8);
+});
+
 test('validation summary sections cite only cases that verify them and never conclude compliance', async t => {
   const directory = workspace(t);
   saveEvidence(directory, 'pq', ['PQ-028', 'PQ-029', 'PQ-039'].map(id => result({ testCaseId: id })));

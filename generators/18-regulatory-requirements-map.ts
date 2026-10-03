@@ -10,6 +10,8 @@ import {
   hr,
   riskBadge,
 } from './helpers/markdown-writer';
+import { loadRunnerEvidence, type RunnerResult } from './helpers/evidence-linker';
+import { complianceMappingFor, deriveComplianceStatus } from './helpers/compliance-mapping';
 
 const DOC_DATE = SYSTEM_INFO.buildDate;
 
@@ -24,7 +26,7 @@ interface RegulatorySection {
   title: string;
   regulatoryText: string;
   controls: RegulatoryControl[];
-  testCases: string;
+  /** What source review says the controls do: a design claim, never a verification result. */
   status: string;
   riskLevel: 'Critical' | 'High' | 'Medium' | 'Low';
 }
@@ -45,27 +47,43 @@ function controlTable(controls: RegulatoryControl[]): string {
   );
 }
 
-function regulatoryBlock(s: RegulatorySection): string {
+/** A section's verification is the retained state of the executed runner cases
+ * mapped to it (the mapping the validation summary uses); a section without
+ * one is not verified by this record. */
+function verification(s: RegulatorySection, evidence: Map<string, RunnerResult>): { status: string; cases: string } {
+  const mapping = complianceMappingFor(s.id);
+  if (!mapping) return { status: 'Not verified by this record — no executed runner case is mapped to this section', cases: '—' };
+  return { status: deriveComplianceStatus(mapping, evidence),
+    cases: mapping.testCaseIds.length ? `${mapping.testCaseIds.join(', ')} — ${mapping.evidenceRef}` : mapping.evidenceRef };
+}
+
+/** The design claim without a compliance verdict: source review cannot conclude compliance. */
+const designClaim = (status: string): string => status.replace(/^Compliant\s+—\s+/, '');
+
+function regulatoryBlock(s: RegulatorySection, evidence: Map<string, RunnerResult>): string {
   let out = '';
   out += section(2, `${s.id} — ${s.title}`);
   out += `**Regulatory Text:** "${s.regulatoryText}"\n\n`;
   out += `**Risk Level:** ${riskBadge(s.riskLevel)}\n\n`;
-  out += '**Implementation:**\n\n';
+  out += '**Implementation (design, from source review):**\n\n';
   out += controlTable(s.controls);
-  out += `\n**Test Cases:** ${s.testCases}\n\n`;
-  out += `**Compliance Status:** ${s.status}\n\n`;
+  const verified = verification(s, evidence);
+  out += `\n**Verification in this record:** ${verified.status}\n\n`;
+  out += `**Mapped cases:** ${verified.cases}\n\n`;
+  out += `**Design claim (source review; not a verification result):** ${designClaim(s.status)}\n\n`;
   out += hr();
   return out;
 }
 
-function buildComplianceRow(s: RegulatorySection, regulation: string): ComplianceMatrixRow {
+function buildComplianceRow(s: RegulatorySection, regulation: string, evidence: Map<string, RunnerResult>): ComplianceMatrixRow {
+  const mapping = complianceMappingFor(s.id);
   return {
     regulation,
     section: s.id,
     title: s.title,
-    status: s.status.split('—')[0].trim(),
+    status: verification(s, evidence).status,
     risk: s.riskLevel,
-    testRefs: s.testCases,
+    testRefs: mapping?.testCaseIds.length ? mapping.testCaseIds.join(', ') : '—',
   };
 }
 
@@ -86,7 +104,6 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'Database constraint enforcement', file: 'migrations.ts', description: 'NOT NULL, UNIQUE, CHECK, and FOREIGN KEY constraints on all regulated tables' },
         { control: 'Type-safe data contracts', file: 'shared-types/src/', description: 'Canonical DTOs enforcing data shape consistency across all system tiers' },
       ],
-      testCases: 'IQ-001 through IQ-032, OQ-043, OQ-049, PQ-007',
       status: 'Compliant — Validated via documented IQ/OQ/PQ process with automated evidence capture',
     },
     {
@@ -103,7 +120,6 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'Audit trail export', file: 'audit.service.ts', description: 'Complete audit trail export filterable by study, subject, form, or date range' },
         { control: 'Print-ready rendering', file: 'print.service.ts', description: 'Browser-based print rendering with watermarks, page breaks, and header/footer stamps' },
       ],
-      testCases: 'OQ-050 through OQ-056',
       status: 'Compliant — Multiple export formats available with complete data, metadata, and audit history',
     },
     {
@@ -121,7 +137,6 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'Data lock mechanism', file: 'data-locks.service.ts', description: 'Prevents modification or deletion of locked/frozen study records' },
         { control: 'PostgreSQL WAL archiving', file: 'Infrastructure (PostgreSQL)', description: 'Write-Ahead Logging provides point-in-time recovery capability' },
       ],
-      testCases: 'OQ-057 through OQ-062, DR-001 through DR-005',
       status: 'Compliant — AES-256 encrypted backups with automated scheduling, retention enforcement, and verified restore',
     },
     {
@@ -138,7 +153,6 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'Request rate limiting', file: 'rateLimiter.middleware.ts', description: 'IP-based and user-based rate limiting to prevent brute-force and DoS attacks' },
         { control: 'Account lockout policy', file: 'auth.service.ts', description: 'Automatic account lockout after configurable consecutive failed login attempts' },
       ],
-      testCases: 'OQ-001 through OQ-015, OQ-094, SEC-001 through SEC-010',
       status: 'Compliant — Multi-layered access control via authentication, authorization, session management, and rate limiting',
     },
     {
@@ -159,7 +173,6 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'Audit trail export', file: 'audit.service.ts', description: 'Full audit history exportable per study, subject, or form for agency inspection' },
         { control: 'Hash chain integrity', file: 'part11.middleware.ts', description: 'Sequential SHA-256 hash chain links audit entries to detect insertion or deletion of records' },
       ],
-      testCases: 'OQ-016 through OQ-030, PQ-001 through PQ-006',
       status: 'Compliant — Immutable audit trail with full change history, UTC timestamps, hash chain, and agency-accessible exports',
     },
     {
@@ -176,7 +189,6 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'E-signature prerequisites', file: 'esignature.service.ts', description: 'Requires all queries resolved and validations passed before e-signature is permitted' },
         { control: 'Skip logic engine', file: 'form.service.ts', description: 'Conditionally displays/hides form fields based on prior answers enforcing logical data flow' },
       ],
-      testCases: 'OQ-031 through OQ-037',
       status: 'Compliant — Workflow engine enforces permitted sequences; data lock hierarchy prevents out-of-order operations',
     },
   ];
@@ -199,7 +211,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'Data modification authority', file: 'authorization.middleware.ts', description: 'Write, edit, and delete operations require specific role-based permissions per entity type' },
         { control: 'Admin operation guards', file: 'authorization.middleware.ts', description: 'System administration operations restricted to Administrator and System Owner roles only' },
       ],
-      testCases: 'OQ-038 through OQ-042, SEC-011 through SEC-015',
       status: 'Compliant — Granular RBAC with 42 permissions across 6 roles; every operation checked against user authority',
     },
     {
@@ -216,7 +227,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'CORS configuration', file: 'app.ts', description: 'Cross-Origin Resource Sharing restricted to authorized frontend domains only' },
         { control: 'Rate limiting per device', file: 'rateLimiter.middleware.ts', description: 'Per-IP and per-device rate limiting prevents automated attack tools from submitting data' },
       ],
-      testCases: 'OQ-007 (manual; fingerprint recording only), SEC-008 (CORS)',
       status: 'Pending device evidence — optional API fingerprint tracking is not enforced device binding and fingerprint-mismatch rejection (URS-010) is not implemented; other source controls require their own retained results',
     },
     {
@@ -233,7 +243,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'Training matrix generator', file: '15-training-matrix.ts', description: 'Automated role-based training requirements matrix specifying required modules per role' },
         { control: 'Pre-access training gate', file: 'feature-flag.guard.ts', description: 'System features can be gated on training completion status via feature flag configuration' },
       ],
-      testCases: 'ADM-001 through ADM-005',
       status: 'Compliant — Training management system with role-based requirements, progress tracking, and certificate generation',
     },
     {
@@ -251,7 +260,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'E-signature meaning capture', file: 'esignature.service.ts', description: 'Every e-signature requires documented reason/meaning, creating individual accountability record' },
         { control: 'Validation framework SOPs', file: 'validation-framework/', description: 'Documented validation procedures, deviation handling, and CAPA processes' },
       ],
-      testCases: 'ADM-006 through ADM-010',
       status: 'Compliant — Written policies, SOPs, and accountability mechanisms established and documented',
     },
     {
@@ -267,7 +275,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'Validation package generation', file: 'validation-framework/', description: 'Automated generation of controlled validation documents with version and date stamps' },
         { control: 'Document classification labels', file: 'markdown-writer.ts', description: 'Every generated document includes classification level (Confidential, Regulatory, Internal)' },
       ],
-      testCases: 'ADM-011 through ADM-013',
       status: 'Compliant — Documentation distributed via access-controlled version control with full audit history',
     },
     {
@@ -283,7 +290,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'Database migration versioning', file: 'migrations/', description: 'Date-prefixed SQL migration files creating time-sequenced record of all schema changes' },
         { control: 'Pull request review process', file: 'GitHub Pull Requests', description: 'All changes require peer review before merging; review comments and approvals preserved' },
       ],
-      testCases: 'ADM-014 through ADM-016',
       status: 'Compliant — Git provides time-sequenced audit trail of all documentation and system changes',
     },
     {
@@ -302,7 +308,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'CORS restriction policy', file: 'app.ts', description: 'Cross-Origin Resource Sharing restricted to authorized frontend domains only' },
         { control: 'HSTS security headers', file: 'Infrastructure (Nginx/Vercel)', description: 'HTTP Strict Transport Security, CSP, X-Frame-Options, and X-Content-Type-Options headers' },
       ],
-      testCases: 'SEC-021 through SEC-025',
       status: 'Compliant — TLS in transit, AES-256 at rest, cryptographic signatures, and security headers enforced',
     },
     {
@@ -320,7 +325,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'Signature in PDF exports', file: 'pdf/pdf-export.service.ts', description: 'PDF exports display full signature manifestation block with name, date, time, and meaning' },
         { control: 'Audit trail signature records', file: 'audit.service.ts', description: 'Audit trail records SIGN action with all three manifestation fields preserved immutably' },
       ],
-      testCases: 'OQ-063 through OQ-068',
       status: 'Compliant — All signed records display printed name, UTC date/time, and meaning; preserved in exports',
     },
     {
@@ -338,7 +342,6 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'Auto-invalidation on change', file: 'esignature.service.ts', description: 'Any modification to a signed record automatically invalidates the signature and triggers re-sign' },
         { control: 'Immutable signature records', file: 'esignature.service.ts', description: 'Signature records are INSERT-only; no UPDATE or DELETE operations permitted on the table' },
       ],
-      testCases: 'OQ-069 through OQ-074',
       status: 'Compliant — SHA-256 cryptographic hash links each signature to exact record version; tampering auto-detected',
     },
   ];
@@ -359,7 +362,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Signature attribution', file: 'esignature.service.ts', description: 'Every signature permanently attributed to authenticated user who executed it via foreign key' },
         { control: 'Password-based two-component auth', file: 'auth.service.ts', description: 'E-signatures require both unique identification code (username) and password components' },
       ],
-      testCases: 'OQ-075 through OQ-078',
       status: 'Compliant — Unique usernames enforced at database level; accounts never reused or reassigned',
     },
     {
@@ -376,7 +378,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Identity confirmation SOP', file: 'SOPs_For_Email/', description: 'SOP requires identity verification (government ID or equivalent) before account issuance' },
         { control: 'Provisioning audit trail', file: 'audit.service.ts', description: 'Account creation event logged with who authorized, when, and under what organization' },
       ],
-      testCases: 'ADM-017 through ADM-019',
       status: 'Compliant — Identity verified before account issuance per SOP; provisioning events fully audited',
     },
     {
@@ -392,7 +393,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Certification tracking record', file: '17a-esignature-certification-letter.md', description: 'Internal record for tracking mailing date, tracking number, and confirmation status' },
         { control: 'Signature legal equivalence statement', file: 'esignature.service.ts', description: 'System presents legal equivalence acknowledgment at each signing event to the signer' },
       ],
-      testCases: 'ADM-020, ADM-021',
       status: 'Compliant — Certification letter template generated; must be printed, signed, and mailed to FDA',
     },
     {
@@ -410,7 +410,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Session continuity tracking', file: 'auth.service.ts', description: 'Session identity is tracked by JWT sid; the optional fingerprint alert is not signing authority or a signing-state reset' },
         { control: 'Idle timeout session break', file: 'auth.service.ts', description: 'Session idle timeout (30 minutes default) breaks continuity; next sign requires full re-auth' },
       ],
-      testCases: 'OQ-079 through OQ-082',
       status: 'Compliant — First signing requires full two-component auth; subsequent signings require password only',
     },
     {
@@ -427,7 +426,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Signing session state reset', file: 'esignature.service.ts', description: 'Server-side signing session state cleared on any session discontinuity event' },
         { control: 'No session-based signing shortcuts', file: 'esignature.service.ts', description: 'System never allows signing based solely on active session without credential re-entry' },
       ],
-      testCases: 'OQ-083 through OQ-086',
       status: 'Compliant — Non-continuous signings always require full two-component authentication',
     },
     {
@@ -443,7 +441,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Per-user password salting', file: 'auth.service.ts', description: 'Bcrypt hashing with unique random salt per user; identical passwords produce different hashes' },
         { control: 'Duplicate detection audit', file: 'audit.service.ts', description: 'Duplicate account creation attempts rejected at database level and logged in audit trail' },
       ],
-      testCases: 'SEC-026, SEC-027',
       status: 'Compliant — Database constraints enforce unique identification codes; no shared combinations possible',
     },
     {
@@ -459,7 +456,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Password complexity rules', file: 'auth.service.ts', description: 'Minimum length, uppercase, lowercase, numeric, and special character requirements enforced' },
         { control: 'Administrative forced reset', file: 'user.service.ts', description: 'Administrators can trigger immediate password reset for any user account on demand' },
       ],
-      testCases: 'SEC-028, SEC-029',
       status: 'Compliant — Password aging with configurable expiration, history enforcement, and complexity requirements',
     },
     {
@@ -478,7 +474,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Device fingerprint invalidation', file: 'auth.service.ts', description: 'Fingerprint mismatch does not revoke sessions; explicit account/session revocation requires separate evidence' },
         { control: 'Incident audit logging', file: 'audit.service.ts', description: 'All loss management actions logged in audit trail with reason and administrator identity' },
       ],
-      testCases: 'OQ-021, OQ-022, OQ-058',
       status: 'Compliant — Immediate session revocation, account deactivation, and forced credential reset available',
     },
     {
@@ -496,7 +491,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Anomaly detection alerts', file: 'notification.service.ts', description: 'Administrators notified of suspicious activity (multiple failed logins, unusual access patterns)' },
         { control: 'Security event flagging', file: 'audit.service.ts', description: 'Security-relevant events flagged for immediate review in audit trail dashboard' },
       ],
-      testCases: 'SEC-032 through SEC-035',
       status: 'Compliant — Failed login detection, account lockout, rate limiting, and notification mechanisms active',
     },
     {
@@ -513,7 +507,6 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Session consistency checks', file: 'auth.middleware.ts', description: 'Native session identity is checked; IP is recorded and optional fingerprint mismatch alerts do not enforce device/IP binding' },
         { control: 'Automated security testing', file: 'validation-framework/', description: 'IQ/OQ test cases verify authentication device behavior and tamper detection mechanisms' },
       ],
-      testCases: 'OQ-007 (manual; fingerprint recording only), SEC-004, OQ-095',
       status: 'Pending — token integrity evidence is separate; optional fingerprint tracking remains unqualified and does not reject mismatch',
     },
   ];
@@ -535,7 +528,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Security event detection', file: 'auth.service.ts', description: 'Failed login patterns, unusual access times, and privilege escalation attempts detected' },
         { control: 'Input sanitization', file: 'validation.middleware.ts', description: 'All inputs validated and sanitized to prevent injection attacks and data corruption' },
       ],
-      testCases: 'SEC-038 through SEC-042',
       status: 'Compliant — Prevention, detection, containment, and correction mechanisms implemented',
     },
     {
@@ -554,7 +546,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Password management guidance', file: 'SOPs_For_Email/', description: 'SOP provides password security guidance and prohibited practices' },
         { control: 'Phishing awareness content', file: 'training.service.ts', description: 'Training content covering social engineering and phishing attack recognition' },
       ],
-      testCases: 'ADM-022 through ADM-025',
       status: 'Compliant — Security awareness training program with role-based requirements and completion tracking',
     },
     {
@@ -572,7 +563,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Post-incident review process', file: 'COMPLIANCE_DOCUMENTATION/', description: 'SOP requires root cause analysis and preventive action plan after every security incident' },
         { control: 'Evidence preservation', file: 'audit.service.ts', description: 'Immutable audit trail preserves forensic evidence during incident investigation' },
       ],
-      testCases: 'SEC-043 through SEC-046',
       status: 'Compliant — Security incident detection, logging, notification, and response procedures implemented',
     },
     {
@@ -592,7 +582,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Data backup plan', file: 'backup/backup-scheduler.service.ts', description: 'Daily incremental and weekly full backup schedule with configurable RPO targets' },
         { control: 'Emergency mode operation', file: 'COMPLIANCE_DOCUMENTATION/', description: 'Procedures for operating with degraded capability while systems are being restored' },
       ],
-      testCases: 'DR-001 through DR-010',
       status: 'Compliant — Backup, restore, and disaster recovery procedures established and periodically tested',
     },
     {
@@ -612,7 +601,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Vendor security review', file: 'COMPLIANCE_DOCUMENTATION/', description: 'Annual security review of all third-party vendors with ePHI access documented' },
         { control: 'Minimum necessary principle', file: 'interop-middleware/src/', description: 'External integrations limited to minimum necessary ePHI for stated purpose' },
       ],
-      testCases: 'ADM-026 through ADM-028',
       status: 'Compliant — BAA templates and third-party security assessment procedures established',
     },
     {
@@ -631,7 +619,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'API endpoint authorization', file: 'authorization.middleware.ts', description: 'Every endpoint specifies required permissions; unauthorized access returns 403 and is logged' },
         { control: 'Emergency access procedure', file: 'auth.service.ts', description: 'Break-glass procedure for emergency ePHI access with mandatory post-access audit review' },
       ],
-      testCases: 'OQ-001 through OQ-015, SEC-001 through SEC-010',
       status: 'Compliant — Multi-layered technical access control enforcing need-to-know access to ePHI',
     },
     {
@@ -647,7 +634,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'User identity in audit trail', file: 'audit.middleware.ts', description: 'Every audit record references the acting user by unique ID enabling complete user tracking' },
         { control: 'No shared accounts policy', file: 'SOPs_For_Email/', description: 'SOP prohibits shared or generic accounts; each user must have individual credentials' },
       ],
-      testCases: 'SEC-047, SEC-048',
       status: 'Compliant — Unique user ID, username, and email assigned to each individual; tracked in all actions',
     },
     {
@@ -665,7 +651,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Timeout warning dialog', file: 'auth.service.ts (Angular)', description: 'User warned 2 minutes before automatic logoff with option to extend session' },
         { control: 'Screen lock on inactivity', file: 'auth.service.ts (Angular)', description: 'Frontend displays authentication screen overlay on timeout preventing unauthorized viewing' },
       ],
-      testCases: 'OQ-087 through OQ-090',
       status: 'Compliant — Configurable idle timeout with frontend detection, warning dialog, and automatic logoff',
     },
     {
@@ -682,7 +667,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Key management', file: 'backup/encryption.service.ts', description: 'Encryption keys stored separately from encrypted data; key rotation without data re-encryption' },
         { control: 'Encryption algorithm validation', file: 'backup/encryption.service.ts', description: 'Only NIST-approved algorithms used; validated against FIPS 140-2 requirements' },
       ],
-      testCases: 'SEC-049 through SEC-053',
       status: 'Compliant — AES-256 at rest, TLS in transit, bcrypt hashing, and key management implemented',
     },
     {
@@ -700,7 +684,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Audit data retention', file: 'backup/retention-manager.service.ts', description: 'Audit records retained for minimum 6 years (HIPAA) or 15 years (clinical trial) whichever longer' },
         { control: 'Real-time activity monitoring', file: 'audit.service.ts', description: 'Dashboard view of recent system activity for administrative examination of access patterns' },
       ],
-      testCases: 'OQ-016 through OQ-030',
       status: 'Compliant — Comprehensive immutable audit trail with hash chain integrity and examination tools',
     },
     {
@@ -719,7 +702,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Backup integrity verification', file: 'backup/backup.service.ts', description: 'SHA-256 checksums computed pre-encryption and verified post-decryption on restore' },
         { control: 'Soft delete pattern', file: 'database patterns', description: 'Records marked as deleted rather than physically removed; preserves data for audit purposes' },
       ],
-      testCases: 'OQ-091 through OQ-096',
       status: 'Compliant — Multi-layered integrity protection via locks, immutable audit, hash chains, and constraints',
     },
     {
@@ -737,7 +719,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Failed authentication handling', file: 'auth.service.ts', description: 'Account lockout, delay injection, and alerting on repeated authentication failures' },
         { control: 'Session token binding', file: 'auth.middleware.ts', description: 'Not implemented: JWT is associated with its sid, without enforced fingerprint/IP binding; fingerprint mismatch does not invalidate it' },
       ],
-      testCases: 'OQ-001 through OQ-010, SEC-001 through SEC-005',
       status: 'Pending — password authentication and sensitive-action re-authentication have separate evidence; device binding is not implemented and fingerprint tracking is not a second authentication factor',
     },
     {
@@ -755,7 +736,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Certificate pinning guidance', file: 'COMPLIANCE_DOCUMENTATION/', description: 'Deployment documentation specifies certificate management and renewal procedures' },
         { control: 'API request encryption', file: 'Infrastructure (Nginx)', description: 'All request/response payloads encrypted in transit; no plaintext ePHI on network' },
       ],
-      testCases: 'SEC-054 through SEC-058',
       status: 'Compliant — TLS 1.2+ with HSTS, secure cookies, and CORS restrictions guard all transmissions',
     },
     {
@@ -775,7 +755,6 @@ function buildHIPAASections(): RegulatorySection[] {
         { control: 'Breach log maintenance', file: 'audit.service.ts', description: 'All suspected and confirmed breaches logged with discovery date, assessment, and remediation' },
         { control: 'HHS notification procedure', file: 'COMPLIANCE_DOCUMENTATION/', description: 'Procedure for notifying HHS Secretary of breaches affecting 500+ individuals' },
       ],
-      testCases: 'SEC-059 through SEC-062',
       status: 'Compliant — Breach detection, risk assessment, notification workflow, and logging procedures in place',
     },
   ];
@@ -811,6 +790,7 @@ function buildTocEntries(): Array<{ level: number; title: string }> {
 }
 
 export function generate(outputDir: string, _workspaceRoot: string): void {
+  const evidence = loadRunnerEvidence(outputDir);
   const part11SubpartB = buildPart11SubpartB();
   const part11Continued = buildPart11SubpartB_Continued();
   const part11SubpartC = buildPart11SubpartC();
@@ -1036,11 +1016,11 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += hr();
 
   for (const s of part11SubpartB) {
-    c += regulatoryBlock(s);
+    c += regulatoryBlock(s, evidence);
   }
 
   for (const s of part11Continued.slice(0, 6)) {
-    c += regulatoryBlock(s);
+    c += regulatoryBlock(s, evidence);
   }
 
   c += section(2, 'Subpart B — Open Systems and Signature Requirements');
@@ -1059,7 +1039,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += hr();
 
   for (const s of part11Continued.slice(6)) {
-    c += regulatoryBlock(s);
+    c += regulatoryBlock(s, evidence);
   }
 
   c += section(1, 'Subpart C — Electronic Signatures');
@@ -1082,7 +1062,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += hr();
 
   for (const s of part11SubpartC) {
-    c += regulatoryBlock(s);
+    c += regulatoryBlock(s, evidence);
   }
 
   c += section(1, 'HIPAA Security Rule — Technical Safeguards');
@@ -1105,45 +1085,43 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += hr();
 
   for (const s of hipaaSections) {
-    c += regulatoryBlock(s);
+    c += regulatoryBlock(s, evidence);
   }
 
   c += section(1, 'Summary Compliance Matrix');
-  c += '\nThe following matrix provides an at-a-glance view of compliance status across all ';
-  c += 'mapped regulatory requirements. This matrix is intended for executive review and ';
-  c += 'regulatory inspection preparation.\n\n';
+  c += '\nThe following matrix lists every mapped regulatory requirement with the verification this record holds for it.\n\n';
   c += '**Reading This Matrix:**\n';
-  c += '- **Status** indicates current compliance determination as of the document date\n';
+  c += '- **Verification** is the state of the retained runner cases mapped to the section in this record. It is not a compliance determination; a section without an executed case is not verified by this record\n';
   c += '- **Risk Level** indicates the severity classification per the methodology in Section 2\n';
-  c += '- **Test References** link to specific test protocols and execution records\n\n';
+  c += '- **Test References** are the executed cases mapped to the section (see the case checks in 19-csa-feature-assurance.md)\n\n';
 
   const matrixRows: string[][] = [];
   for (const s of allSections) {
     const row = buildComplianceRow(
       s,
       s.id.startsWith('§11') ? '21 CFR Part 11' : 'HIPAA Security Rule',
+      evidence,
     );
     matrixRows.push([row.regulation, row.section, row.title, row.status, row.risk, row.testRefs]);
   }
 
   c += markdownTable(
-    ['Regulation', 'Section', 'Title', 'Status', 'Risk Level', 'Test References'],
+    ['Regulation', 'Section', 'Title', 'Verification', 'Risk Level', 'Test References'],
     matrixRows,
   );
 
   c += '\n';
+  const verifiedStates = allSections.map((s) => verification(s, evidence).status);
+  const countOf = (pattern: RegExp) => verifiedStates.filter((status) => pattern.test(status)).length;
   c += `**Total Requirements Mapped:** ${allSections.length}\n\n`;
-  c += `**Compliant:** ${allSections.filter((s) => s.status.startsWith('Compliant')).length}\n\n`;
-  c += `**Non-Compliant:** ${allSections.filter((s) => s.status.startsWith('Non-Compliant')).length}\n\n`;
-  c += `**Partial:** ${allSections.filter((s) => s.status.startsWith('Partial')).length}\n\n`;
-  c += '**Overall Compliance Determination:** Based on the assessment documented herein, the ';
-  c += `${SYSTEM_INFO.fullName} demonstrates compliance with all applicable requirements of `;
-  c += '21 CFR Part 11 and HIPAA Security Rule. Identified gaps are administrative in nature ';
-  c += '(pending FDA certification mailing, BAA execution, training completion) and do not ';
-  c += 'affect the technical compliance of system controls.\n\n';
-  c += '**Assessment Confidence Level:** High — All technical controls have been verified via ';
-  c += 'automated IQ/OQ/PQ test protocols with documented evidence. Administrative controls ';
-  c += 'verified via documentation review and process walkthrough.\n\n';
+  c += `**Every mapped case passed:** ${countOf(/^PASS/)}\n\n`;
+  c += `**A mapped case failed:** ${countOf(/^FAIL/)}\n\n`;
+  c += `**Manual verification pending:** ${countOf(/^Manual verification pending/)}\n\n`;
+  c += `**Incomplete, pending or not verified by this record:** ${countOf(/^(Incomplete|Pending|Not verified)/)}\n\n`;
+  c += '**Compliance determination:** none is made by this generated document. The implementation tables and design ';
+  c += 'claims come from source review; the verification column reports only the retained runner cases mapped to each ';
+  c += 'section, and a section without one is not verified by this record. A determination requires qualified review ';
+  c += 'and approval of the complete evidence.\n\n';
   c += hr();
 
   c += section(1, 'Gap Analysis and Remediation Plan');
@@ -1186,19 +1164,19 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['Low', String(lowCount), `${Math.round((lowCount / allSections.length) * 100)}%`, 'Standard controls; annual review cycle'],
   ]);
   c += '\n';
-  c += '**Overall Risk Posture:** The system implements defense-in-depth controls for all Critical and ';
-  c += 'High risk requirements. No single point of failure exists for any Critical requirement. ';
-  c += 'All identified gaps have remediation plans with defined timelines and owners.\n\n';
+  c += '**Overall Risk Posture (design intent):** The design applies layered controls to Critical and High risk ';
+  c += 'requirements. This record does not verify the absence of single points of failure, and residual risk ';
+  c += 'acceptance requires the risk owner\'s documented approval, which this generated document does not record.\n\n';
   c += '**Residual Risk Assessment:**\n\n';
-  c += markdownTable(['Risk Category', 'Inherent Risk', 'Control Effectiveness', 'Residual Risk', 'Acceptable'], [
-    ['Unauthorized ePHI access', 'Critical', 'High (multi-layered controls)', 'Low', 'Yes'],
-    ['Data integrity compromise', 'Critical', 'High (immutable audit + hash chain)', 'Low', 'Yes'],
-    ['E-signature repudiation', 'Critical', 'High (cryptographic linking)', 'Low', 'Yes'],
-    ['Data loss/unavailability', 'High', 'High (encrypted backups + DR)', 'Low', 'Yes'],
-    ['Audit trail tampering', 'Critical', 'High (INSERT-only + hash chain)', 'Very Low', 'Yes'],
-    ['Credential compromise', 'High', 'High (lockout + rotation + alerts)', 'Medium', 'Yes — with monitoring'],
-    ['Training gap', 'Medium', 'Medium (system + manual tracking)', 'Low', 'Yes'],
-    ['Vendor security failure', 'Medium', 'Medium (BAA + assessment)', 'Low', 'Yes'],
+  c += markdownTable(['Risk Category', 'Inherent Risk', 'Control Effectiveness (design)', 'Residual Risk (design estimate)', 'Acceptance'], [
+    ['Unauthorized ePHI access', 'Critical', 'High (multi-layered controls)', 'Low', 'Pending risk-owner approval'],
+    ['Data integrity compromise', 'Critical', 'High (immutable audit + hash chain)', 'Low', 'Pending risk-owner approval'],
+    ['E-signature repudiation', 'Critical', 'High (cryptographic linking)', 'Low', 'Pending risk-owner approval'],
+    ['Data loss/unavailability', 'High', 'High (encrypted backups + DR)', 'Low', 'Pending risk-owner approval'],
+    ['Audit trail tampering', 'Critical', 'High (INSERT-only + hash chain)', 'Very Low', 'Pending risk-owner approval'],
+    ['Credential compromise', 'High', 'High (lockout + rotation + alerts)', 'Medium', 'Pending risk-owner approval'],
+    ['Training gap', 'Medium', 'Medium (system + manual tracking)', 'Low', 'Pending risk-owner approval'],
+    ['Vendor security failure', 'Medium', 'Medium (BAA + assessment)', 'Low', 'Pending risk-owner approval'],
   ]);
   c += '\n';
   c += hr();
@@ -1398,8 +1376,9 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += hr();
 
   c += section(1, 'Appendix B — Test Case Summary by Regulatory Section');
-  c += '\nThe following provides a consolidated view of all test cases referenced in this document, ';
-  c += 'grouped by test case prefix and regulatory coverage:\n\n';
+  c += '\nThe IQ, security, PQ, disaster-recovery and administrative tables list planned protocol ranges; they are ';
+  c += 'not executed or verified by this record. The operational table lists the executed OQ and PQ cases mapped ';
+  c += 'to each section, with what they verify.\n\n';
   c += section(2, 'Installation Qualification (IQ) Test Cases');
   c += '\n';
   c += markdownTable(['Test Case Range', 'Regulatory Section(s)', 'Verification Scope'], [
@@ -1412,22 +1391,11 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += '\n';
   c += section(2, 'Operational Qualification (OQ) Test Cases');
   c += '\n';
-  c += markdownTable(['Test Case Range', 'Regulatory Section(s)', 'Verification Scope'], [
-    ['OQ-001 through OQ-015', '§11.10(d), §164.312(a)(1)', 'Access control functional testing; login/logout; permission enforcement'],
-    ['OQ-016 through OQ-030', '§11.10(e), §164.312(b)', 'Audit trail functional testing; record creation; immutability; export'],
-    ['OQ-031 through OQ-037', '§11.10(f)', 'Workflow sequencing tests; state machine transitions; lock ordering'],
-    ['OQ-038 through OQ-042', '§11.10(g)', 'Authority check testing; permission boundaries; escalation prevention'],
-    ['OQ-043, OQ-044, OQ-049', '§11.10(a)', 'Validation rules engine testing; input validation; data integrity checks'],
-    ['OQ-050 through OQ-056', '§11.10(b)', 'Export format testing; PDF, CSV, XML, ODM generation; completeness verification'],
-    ['OQ-057 through OQ-062', '§11.10(c)', 'Backup and recovery testing; encryption verification; retention enforcement'],
-    ['OQ-063 through OQ-068', '§11.50', 'Signature manifestation testing; name, date, time, meaning display'],
-    ['OQ-069 through OQ-074', '§11.70', 'Signature-record linking testing; hash computation; tampering detection'],
-    ['OQ-075 through OQ-078', '§11.100(a)', 'Signature uniqueness testing; no reuse verification'],
-    ['OQ-079 through OQ-082', '§11.200(a)(1)(i)', 'Continuous session signing tests; first-sign full auth; subsequent password-only'],
-    ['OQ-083 through OQ-086', '§11.200(a)(1)(ii)', 'Non-continuous signing tests; full re-auth after session break'],
-    ['OQ-087 through OQ-090', '§164.312(a)(2)(iii)', 'Automatic logoff testing; idle detection; timeout enforcement'],
-    ['OQ-091 through OQ-096', '§164.312(c)(1)', 'Data integrity testing; lock protection; immutability verification'],
-  ]);
+  c += markdownTable(['Executed cases', 'Regulatory Section', 'What they verify'],
+    allSections.flatMap((s) => {
+      const mapping = complianceMappingFor(s.id);
+      return mapping?.testCaseIds.length ? [[mapping.testCaseIds.join(', '), s.id, mapping.evidenceRef]] : [];
+    }));
   c += '\n';
   c += section(2, 'Security (SEC) Test Cases');
   c += '\n';
