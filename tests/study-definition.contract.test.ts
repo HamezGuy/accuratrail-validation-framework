@@ -4,7 +4,7 @@ import { validateStudyDefinitionContent } from '@accura-trial/shared-types/usdm/
 import {
   StudyDefinitionClient, pendingStudy, cloneStudy, readStudyWorkspace, readStudySummaryPage,
   assertEnrollmentReady, type StudyWorkspace, type StudyContent, type StudyResponse,
-  studyActivationReviewHash, readStudyActivationSnapshot, type StudyActivationSnapshot,
+  studyActivationReviewHash, readStudyActivationSnapshot, type StudyActivationSnapshot, CAPTURE_ONLY_REASON,
 } from '../runners/study-definition-client';
 import { qualificationOptions, syntheticStudyDefinition } from '../runners/qualification-fixture';
 
@@ -341,4 +341,42 @@ test('shared validation preserves the graph and missing values without manufactu
   assert.equal(complete.conformanceValid, false);
   assert.equal(complete.releaseReady, false);
   assert.ok(complete.issues.some(issue => issue.code === 'USDM_CORE_REPORT_REQUIRED'));
+});
+
+// After enrollment or data capture the API's scoped read records changed native
+// execution as capture-only draft successors with identical content.
+function captureChain(change?: (successor: StudyWorkspace, middle: StudyWorkspace) => void) {
+  const acknowledged = workspace(pendingStudy('Synthetic capture', 'QUAL'), 42, 3);
+  const middle = cloneStudy(acknowledged), current = cloneStudy(acknowledged);
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  Object.assign(middle.revision, { revisionId: id(4), revisionToken: id(104), revisionNumber: 4, previousRevisionId: id(3), reason: CAPTURE_ONLY_REASON });
+  Object.assign(current.revision, { revisionId: id(5), revisionToken: id(105), revisionNumber: 5, previousRevisionId: id(4), reason: CAPTURE_ONLY_REASON });
+  current.summary.currentDefinitionRevisionId = current.revision.revisionId;
+  change?.(current, middle);
+  const revision = (value: StudyWorkspace['revision']): StudyResponse => ({ status: 200, body: { success: true, data: value } });
+  const { client, calls } = queued(response(current), revision(middle.revision), revision(acknowledged.revision));
+  return { client, calls, acknowledged, current };
+}
+
+test('verify accepts only capture-only successors with identical content back to the acknowledged revision', async () => {
+  const { client, calls, current, acknowledged } = captureChain();
+  assert.deepEqual(await client.verify(acknowledged), current);
+  assert.deepEqual(calls.map(call => call.path), ['/studies/42', `/studies/42/definition/revisions/${current.revision.previousRevisionId}`,
+    `/studies/42/definition/revisions/${acknowledged.revision.revisionId}`]);
+});
+
+for (const [name, change] of [
+  ['changed content', (current: StudyWorkspace) => { current.revision.content.document.study!.description = 'Changed synthetic description'; }],
+  ['a non-capture reason in the chain', (_current: StudyWorkspace, middle: StudyWorkspace) => { middle.revision.reason = 'Author edited the draft'; }],
+  ['a moved application', (current: StudyWorkspace) => { current.executionContext.appliedApplicationId = '00000000-0000-4000-8000-000000000999'; }],
+  ['a released successor', (current: StudyWorkspace) => { current.revision.state = 'released'; }],
+] as const) test(`verify refuses a successor with ${name}`, async () => {
+  const { client, acknowledged } = captureChain(change);
+  await assert.rejects(client.verify(acknowledged), /differs from the acknowledged/);
+});
+
+test('verify refuses a chain that never reaches the acknowledged revision', async () => {
+  const { client, acknowledged } = captureChain();
+  acknowledged.revision.revisionId = '00000000-0000-4000-8000-000000000777';
+  await assert.rejects(client.verify(acknowledged));
 });

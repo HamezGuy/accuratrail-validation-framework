@@ -3,6 +3,27 @@ import { pathToFileURL } from 'node:url';
 
 export interface ParsedPdf { pages: number; text: string }
 
+/** PDF.js splits a word where the glyph run changes: Chromium sets "fi" as a
+ * ligature run, so "confirm" arrives as "con", "fi", "rm" abutting on one
+ * line. Abutting items join without a space; a line end, a new line or a
+ * visible gap is a space. The parser worker embeds this exact function. */
+export function joinPdfTextItems(items: ReadonlyArray<{ str?: unknown; width?: number; hasEOL?: boolean; transform?: number[] }>): string {
+  let text = '';
+  let previous: { width?: number; hasEOL?: boolean; transform?: number[] } | null = null;
+  for (const item of items) {
+    if (typeof item.str !== 'string') continue;
+    if (previous) {
+      const before = previous.transform, after = item.transform;
+      const abutting = !previous.hasEOL && Array.isArray(before) && Array.isArray(after)
+        && Math.abs(after[5] - before[5]) < 0.5 && Math.abs(after[4] - (before[4] + (previous.width ?? 0))) <= 0.5;
+      if (!abutting) text += ' ';
+    }
+    text += item.str;
+    previous = item;
+  }
+  return text;
+}
+
 /** Parse retained bytes in a bounded process. A PDF-looking envelope is insufficient.
  * No URL or document script is evaluated; font assets come from the pinned package.
  * Native font-library faults must not terminate the qualification controller.
@@ -15,6 +36,7 @@ export async function parsePdfEvidence(bytes: Buffer): Promise<ParsedPdf> {
   }
   const script = `
     const path = require('node:path');
+    const joinPdfTextItems = ${joinPdfTextItems.toString()};
     process.once('message', async (workerData) => {
       let loading;
       try {
@@ -32,7 +54,7 @@ export async function parsePdfEvidence(bytes: Buffer): Promise<ParsedPdf> {
         for (let index = 1; index <= document.numPages; index++) {
           const page = await document.getPage(index);
           const content = await page.getTextContent();
-          const text = content.items.filter(item => typeof item.str === 'string').map(item => item.str).join(' ');
+          const text = joinPdfTextItems(content.items);
           length += text.length;
           if (length > 1000000) throw new Error('PDF text exceeds the qualification bound.');
           parts.push(text); page.cleanup();

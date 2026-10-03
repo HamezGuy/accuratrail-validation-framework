@@ -1,3 +1,4 @@
+import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runAuthenticationTests, runPart11ComplianceTests, runDataOperationTests, runComprehensiveAuditTests, runSecurityValidationTests,
@@ -340,14 +341,16 @@ for (const defect of ['none', 'missing-freeze-reason', 'missing-action', 'foreig
 for (const defect of ['none', 'missing-old', 'wrong-scope', 'wrong-actor', 'wrong-old-actor', 'wrong-hash', 'duplicate', 'missing-prerequisite'])
   test(`signature audit links both real workflow signatures to their exact manifest: ${defect}`, async t => {
     const fixture = reviewedFixture(); fixture.state.signatureId = 222;
-    fixture.results = ['PQ-027', 'PQ-029'].map((id, i) => ({ ...prerequisite(id), relatedEvidence: [{ ...prerequisite(id + '-sign'),
-      endpoint: baseUrl + '/api/esignature/sign', responseBody: { success: true, data: { signatureId: 221 + i } } }] }));
+    // Each reviewed signed (re-)completion retains the native proof naming its signature.
+    fixture.results = ['PQ-027', 'PQ-029'].map((id, i) => ({ ...prerequisite(id), relatedEvidence: [{ ...prerequisite(id + '-proof'),
+      endpoint: baseUrl + '/api/esignature/status/eventCrf/111', responseStatus: 200,
+      responseBody: { success: true, data: { isSigned: true, activeSignature: { signatureId: 221 + i } } } }] }));
     if (defect === 'missing-prerequisite') fixture.results.pop();
     const contentHash = 'a'.repeat(64), signedAt = '2026-10-02T12:00:00Z';
     const rows = [221, 222].map(auditId => ({ auditId, userId: defect === 'wrong-actor' || defect === 'wrong-old-actor' && auditId === 221 ? 8 : 7,
       studyId: 42, eventCrfId: defect === 'wrong-scope' ? 999 : 111, studyEventId: 91, auditDate: signedAt,
       newValue: JSON.stringify({ type: 'electronic_signature', entity_type: 'event_crf', entity_id: 111, signed_by: 'operator',
-        meaning: 'approval', signed_at: signedAt, content_hash: defect === 'wrong-hash' ? 'b'.repeat(64) : contentHash, hash_algorithm: 'sha256' }) }));
+        meaning: SIGNATURE_MEANINGS.FORM_DATA_COMPLETE, signed_at: signedAt, content_hash: defect === 'wrong-hash' ? 'b'.repeat(64) : contentHash, hash_algorithm: 'sha256' }) }));
     if (defect === 'missing-old') rows.shift(); if (defect === 'duplicate') rows.push(rows[0]);
     t.mock.method(globalThis, 'fetch', async (url: string) => {
       const p = new URL(url).pathname;

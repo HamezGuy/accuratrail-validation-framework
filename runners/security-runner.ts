@@ -171,7 +171,9 @@ export async function testCorsPreflight(baseUrl: string): Promise<EvidenceResult
       method: 'OPTIONS',
       responseStatus: response.status,
       responseBody: { accessControlAllowOrigin: allowOrigin },
-      passed: [200, 204, 403].includes(response.status) && !wildcardOrEvil,
+      // A preflight from an untrusted origin may be answered or refused (401/403);
+      // the control is that it never receives an allow-origin for that origin.
+      passed: [200, 204, 401, 403].includes(response.status) && !wildcardOrEvil,
       notes: wildcardOrEvil
         ? `CORS allows untrusted origin: ${allowOrigin}`
         : `CORS does not allow untrusted origin (allow-origin: ${allowOrigin || 'not set'})`,

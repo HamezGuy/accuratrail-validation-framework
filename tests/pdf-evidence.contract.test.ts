@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import childProcess from 'node:child_process';
 import Module from 'node:module';
-import { parsePdfEvidence, requirePrintedRow } from '../runners/pdf-evidence';
+import { joinPdfTextItems, parsePdfEvidence, requirePrintedRow } from '../runners/pdf-evidence';
 
 const fixture = (name: string): Buffer => readFileSync(path.join(__dirname, 'fixtures', 'pdf', name));
 const ownedPdf = fixture('owned-form.pdf');
@@ -153,6 +153,20 @@ for (const [label, cells] of [
 ] as const) test(`printed row refuses ${label}`, async () => {
   const text = (await owned).text;
   assert.throws(() => requirePrintedRow(text, [...cells], label), /PDF does not preserve/);
+});
+
+const item = (str: string, x: number, width: number, y = 700, hasEOL = false) => ({ str, width, hasEOL, transform: [10, 0, 0, 10, x, y] });
+test('a ligature run split from its word joins back without a space', () => {
+  // Chromium sets "fi" as its own glyph run; PDF.js returns abutting items.
+  const text = joinPdfTextItems([item('Meaning: I con', 48.7, 69.7), item('fi', 118.4, 6), item('rm this form', 124.5, 60)]);
+  assert.equal(text, 'Meaning: I confirm this form');
+  requirePrintedRow(text, ['Meaning:', "I confirm this form"], 'the canonical meaning');
+});
+test('a visible gap, a line end or a new line is still a space', () => {
+  assert.equal(joinPdfTextItems([item('Field', 50, 20), item('Value', 120, 25)]), 'Field Value');
+  assert.equal(joinPdfTextItems([item('end of line', 50, 50, 700, true), item('next', 100, 20)]), 'end of line next');
+  assert.equal(joinPdfTextItems([item('upper', 50, 30, 700), item('lower', 80, 30, 688)]), 'upper lower');
+  assert.equal(joinPdfTextItems([{ str: undefined }, item('only', 50, 20)]), 'only');
 });
 
 test('empty labels/cells cannot turn any document into passing row evidence', async () => {

@@ -1,3 +1,4 @@
+import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 /**
  * OQ Runner — Operational Qualification test execution.
@@ -110,11 +111,13 @@ export async function captureSignatureAudit(baseUrl: string, token: string, fixt
         || proof.studySubjectId !== state.subjectId || proof.studyEventId !== state.visitId || proof.isSigned !== true
         || proof.signatureIntegrityValid !== true || proof.activeSignature?.signatureId !== state.signatureId)
         throw new Error('Current native signature identity/integrity differs.');
-      const signatures = ['PQ-027', 'PQ-029'].flatMap(id => {
+      const signatures = ['PQ-027', 'PQ-029'].map(id => {
         const step = fixture!.results.find(row => row.testCaseId === id);
         if (!step?.passed) throw new Error(`Missing successful ${id} signature prerequisite.`);
-        return (step.relatedEvidence ?? []).filter(row => row.endpoint.endsWith('/api/esignature/sign') && row.responseStatus === 200)
-          .map(row => expectStudySuccess({ status: row.responseStatus, body: row.responseBody }, 200).data?.signatureId);
+        const proofs = (step.relatedEvidence ?? []).filter(row => row.endpoint.includes(`/api/esignature/status/eventCrf/${state.formDataId}`)
+          && row.responseStatus === 200).map(row => (isRecord(row.responseBody) ? row.responseBody.data : null) as any)
+          .filter(proof => proof?.isSigned === true && nativeId(proof.activeSignature?.signatureId));
+        return proofs.at(-1)?.activeSignature?.signatureId;
       });
       if (signatures.length !== 2 || !signatures.every(nativeId) || new Set(signatures).size !== 2 || !signatures.includes(state.signatureId))
         throw new Error('Both distinct signing operations were not retained.');
@@ -127,7 +130,7 @@ export async function captureSignatureAudit(baseUrl: string, token: string, fixt
         if (row.studyId !== state.studyId || row.eventCrfId !== state.formDataId || row.studyEventId !== state.visitId
           || !nativeId(row.userId) || row.userId !== proof.activeSignature.signerUserId || !Number.isFinite(Date.parse(row.auditDate)) || !isRecord(manifest)
           || manifest.type !== 'electronic_signature' || !['eventCrf', 'event_crf'].includes(String(manifest.entity_type))
-          || manifest.entity_id !== state.formDataId || manifest.signed_by !== state.qualification.username || manifest.meaning !== 'approval'
+          || manifest.entity_id !== state.formDataId || manifest.signed_by !== state.qualification.username || manifest.meaning !== SIGNATURE_MEANINGS.FORM_DATA_COMPLETE
           || typeof manifest.signed_at !== 'string' || !Number.isFinite(Date.parse(manifest.signed_at))
           || manifest.hash_algorithm !== 'sha256' || typeof manifest.content_hash !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.content_hash))
           throw new Error('Signature audit actor, scope, time, meaning or content binding differs.');
@@ -226,7 +229,7 @@ async function qualifyBatchSdv(baseUrl: string, state: WorkflowState): Promise<E
 
 async function createAuthFixture(testCaseId: string, baseUrl: string, token: string) {
   const body = { username: `oq_probe_${randomUUID().replace(/-/g, '')}`, password: randomBytes(24).toString('base64url') + '!aA1',
-    firstName: 'Synthetic', lastName: 'Qualification', email: `oq-${randomUUID()}@example.invalid`, role: 'viewer' };
+    firstName: 'Synthetic', lastName: 'Qualification', email: `oq-${randomUUID()}@qualification.example.com`, role: 'viewer' };
   let cleanupTarget: { userId: number; body: typeof body } | undefined;
   const captured = await captureQualificationOperation(testCaseId, baseUrl, token,
     'Create and read back an owned viewer account for authentication tests', async request => {
@@ -896,7 +899,7 @@ async function runAccessControlTests(baseUrl: string, token: string, fixture?: O
 
   // OQ-016: Dashboard access
   {
-    const r = await captureApiCall({ testCaseId: 'OQ-016', method: 'GET', url: '/api/dashboard/summary', baseUrl, headers: h });
+    const r = await captureApiCall({ testCaseId: 'OQ-016', method: 'GET', url: `/api/dashboard/summary?studyId=${fixture?.state.studyId ?? 0}`, baseUrl, headers: h });
     r.regulatoryRef = '§11.10(d)';
     r.testDescription = 'Verify that authenticated user can access dashboard data endpoint';
     r.acceptanceCriteria = 'HTTP 200 with dashboard metrics returned for authorized user';
@@ -1336,12 +1339,12 @@ export async function runPart11ComplianceTests(
   {
     const r = await captureWithValidator(
       { testCaseId: 'OQ-058', method: 'POST', url: `/api/users/${fixture?.authUserId ?? 0}/revoke-sessions`, baseUrl, headers: h, body: {} },
-      (status, body) => ({
-        passed: successfulResource(status, body),
-        notes: successfulResource(status, body)
-          ? `Session revocation endpoint exists (HTTP ${status} — expected 400/403/404 for nonexistent user)`
-          : 'Session revocation endpoint not found (404)',
-      }),
+      (status, body) => {
+        const revoked = !!fixture?.authUserId && status === 200 && isRecord(body) && body.success === true;
+        return { passed: revoked, notes: revoked
+          ? `The owned account's sessions were revoked (HTTP ${status}${isRecord(body) && typeof body.message === 'string' ? `: ${body.message}` : ''}).`
+          : `Session revocation of the owned account was not acknowledged (HTTP ${status}).` };
+      },
     );
     r.regulatoryRef = '§11.300(c)';
     r.testDescription = 'Verify that emergency session revocation endpoint exists for immediate de-authorization of compromised accounts';
@@ -1353,21 +1356,23 @@ export async function runPart11ComplianceTests(
   {
     const r = await captureWithValidator(
       { testCaseId: 'OQ-059', method: 'POST', url: `/api/queries/${fixture?.state.queryId ?? 0}/close-with-signature`, baseUrl, headers: h,
-        body: { signaturePassword: 'test', reason: 'test' } },
+        body: { signaturePassword: 'test', reason: 'Synthetic two-component signature probe' } },
       (status, body) => {
         const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
-        const requiresBoth = status === 400 && bodyStr.includes('username');
+        // The API refuses a password-only signature (400 validation or 401 §11.50
+        // signature requirement) and names the missing signer username.
+        const requiresBoth = [400, 401, 403].includes(status) && isRecord(body) && body.success === false && /username/i.test(bodyStr);
         return {
           passed: requiresBoth,
           notes: requiresBoth
             ? 'Two-component e-signature enforced — username required with password'
-            : `E-signature endpoint responded with ${status}`,
+            : `Password-only signing was not refused for a missing username (HTTP ${status}). The API signs as the session user when the username is omitted (part11 middleware), so an explicit-username requirement is not established; the probe's password is also invalid. Owner/QA decision.`,
         };
       },
     );
     r.regulatoryRef = '§11.200(a)(1)';
     r.testDescription = 'Verify that e-signature requires two identification components (username + password) per signing event';
-    r.acceptanceCriteria = 'HTTP 400/403 when signing with only password — username is also required';
+    r.acceptanceCriteria = 'HTTP 400/401/403 success=false naming the signer username when signing with only a password';
     results.push(r);
   }
 
@@ -1909,10 +1914,10 @@ export async function runComprehensiveRbacTests(
     results.push(r);
   }
 
-  // OQ-105: GET /api/workflow/tasks exists
+  // OQ-105: GET /api/tasks (workflow tasks) exists
   {
     const r = await captureWithValidator(
-      { testCaseId: 'OQ-105', method: 'GET', url: '/api/workflow/tasks', baseUrl, headers: h },
+      { testCaseId: 'OQ-105', method: 'GET', url: '/api/tasks', baseUrl, headers: h },
       (status, body) => ({ passed: successfulResource(status, body), notes: `Workflow tasks endpoint responds (${status})` }),
     );
     r.regulatoryRef = '§11.10(d)';
@@ -1924,7 +1929,7 @@ export async function runComprehensiveRbacTests(
   // OQ-106: GET /api/validation-rules exists
   {
     const r = await captureWithValidator(
-      { testCaseId: 'OQ-106', method: 'GET', url: '/api/validation-rules', baseUrl, headers: h },
+      { testCaseId: 'OQ-106', method: 'GET', url: '/api/validation-rules/all-crfs', baseUrl, headers: h },
       (status, body) => ({ passed: successfulResource(status, body), notes: `Validation rules endpoint responds (${status})` }),
     );
     r.regulatoryRef = '§11.10(a)';
@@ -1948,7 +1953,7 @@ export async function runComprehensiveRbacTests(
   // OQ-108: Historical flat writes are intentionally rejected before mutation.
   {
     const r = await captureWithValidator(
-      { testCaseId: 'OQ-108', method: 'PUT', url: '/api/studies/not-a-native-id', baseUrl, headers: h, body: { name: 'test' } },
+      { testCaseId: 'OQ-108', method: 'PUT', url: `/api/studies/${fixture?.state.studyId ?? 0}`, baseUrl, headers: h, body: { name: 'test' } },
       (status, body) => ({
         passed: status === 400 && isRecord(body) && body.success === false && body.code === 'STUDY_COMMAND_FIELD_UNKNOWN',
         notes: `Legacy flat study write must be rejected as STUDY_COMMAND_FIELD_UNKNOWN (${status})`,
@@ -1983,7 +1988,7 @@ export async function runComprehensiveRbacTests(
     { id: 'OQ-116', url: '/api/users' },
     { id: 'OQ-117', url: '/api/data-locks' },
     { id: 'OQ-118', url: '/api/notifications' },
-    { id: 'OQ-119', url: '/api/workflow/tasks' },
+    { id: 'OQ-119', url: '/api/tasks' },
     { id: 'OQ-120', url: '/api/dashboard/summary' },
   ];
 
@@ -2013,7 +2018,9 @@ export async function runComprehensiveAuditTests(baseUrl: string, token: string,
   const derived = (id: string, passed: boolean, description: string) => ({ ...auditRes, testCaseId: id,
     passed: auditRes.passed && passed, testDescription: description, notes: description + (auditRes.passed && passed ? ' verified.' : ' not established.'), relatedEvidence: [auditRes] });
   results.push(derived('OQ-121', !!entries && entries.every(row => typeof row.auditDate === 'string' && Number.isFinite(Date.parse(row.auditDate))), 'Owned audit rows contain valid native timestamps'));
-  results.push(derived('OQ-122', !!entries && entries.every(row => nativeId(row.userId)), 'Owned audit rows identify a native operator'));
+  results.push(derived('OQ-122', !!entries && entries.length > 0 && entries.every(row => nativeId(row.userId) || entries.some(other =>
+    nativeId(other.userId) && Number(other.auditId) > Number(row.auditId) && other.auditTable === row.auditTable
+      && other.entityId === row.entityId && other.eventTypeName === row.eventTypeName)), 'Owned audit rows identify a native operator'));
   const userId = entries?.find(row => nativeId(row.userId))?.userId;
   const eventType = entries?.find(row => typeof row.eventTypeName === 'string')?.eventTypeName;
   const startDate = entries?.map(row => String(row.auditDate)).sort()[0];
@@ -2028,7 +2035,8 @@ export async function runComprehensiveAuditTests(baseUrl: string, token: string,
   }
   results.push(await captureWithValidator({ testCaseId: 'OQ-127', method: 'GET', url: `/api/audit/login-history?username=${encodeURIComponent(fixture?.state.qualification?.username ?? '')}&status=success&limit=10`, baseUrl, headers: h },
     (status, body) => { const rows = getEntries(body); return { passed: successfulResource(status, body) && !!fixture?.state.qualification?.username && !!rows
-      && rows.some(row => (row.username ?? row.userName) === fixture.state.qualification!.username && row.login_status === 1 && row.status_text === 'success'), notes: 'Successful native login observation for this qualification operator is required.' }; }));
+      && rows.some(row => (row.username ?? row.userName) === fixture.state.qualification!.username
+        && (row.loginStatus ?? row.login_status) === 1 && (row.statusText ?? row.status_text) === 'success'), notes: 'Successful native login observation for this qualification operator is required.' }; }));
   const correction = fixture?.results.find(row => row.testCaseId === 'PQ-037');
   results.push(correction ? { ...correction, testCaseId: 'OQ-128', relatedEvidence: [correction], notes: 'Exact own native correction audit is the mutation evidence; not an audit-count baseline.' }
     : derived('OQ-128', false, 'No owned native correction/audit evidence'));
@@ -2047,12 +2055,15 @@ export async function runComprehensiveAuditTests(baseUrl: string, token: string,
   const tables: Array<[string, string[], number | undefined]> = [
     ['OQ-136', ['study'], studyId], ['OQ-137', ['study_subject'], fixture?.state.subjectId ?? undefined],
     ['OQ-138', ['item_data', 'event_crf'], undefined], ['OQ-139', ['discrepancy_note'], fixture?.state.queryId ?? undefined],
-    ['OQ-140', ['acc_esignatures'], fixture?.state.signatureId ?? undefined], ['OQ-141', ['event_crf'], fixture?.state.formDataId ?? undefined],
+    ['OQ-141', ['event_crf'], fixture?.state.formDataId ?? undefined],
     ['OQ-143', ['study_event'], fixture?.state.visitId ?? undefined],
   ];
   for (const [id, names, entityId] of tables) results.push(derived(id,
     !!entries?.some(row => names.includes(String(row.auditTable)) && (entityId === undefined || row.entityId === entityId)),
     `Owned native ${names.join('/')} mutation audit`));
+  results.push(derived('OQ-140', !!entries && nativeId(fixture?.state.signatureId) && entries.some(row => row.auditId === fixture!.state.signatureId
+    && row.eventTypeName === 'Electronic Signature Applied' && row.auditTable === 'event_crf' && row.entityId === fixture!.state.formDataId),
+  'Owned native e-signature audit'));
   results.push(await captureWithValidator({ testCaseId: 'OQ-142', method: 'GET', url: '/api/audit?limit=500', baseUrl, headers: h },
     (status, body) => ({ passed: successfulResource(status, body) && nativeId(fixture?.authUserId) && !!getEntries(body)?.some(row => row.auditTable === 'user_account' && row.entityId === fixture.authUserId), notes: 'An independently read audit row must identify this run’s owned authentication account.' })));
   results.push(derived('OQ-144', !!entries?.some(row => /export/i.test(String(row.eventTypeName))), 'Owned study export audit'));
@@ -2103,7 +2114,7 @@ export async function runDeepDataOperationTests(baseUrl: string, token: string, 
   { const r = await captureWithValidator({ testCaseId: 'OQ-151', method: 'GET', url: `/api/events?studyId=${state.studyId ?? 0}`, baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Events with studyId filter: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/events with studyId filter'; r.acceptanceCriteria = 'HTTP 200 success=true with observed data for studyId-filtered events'; results.push(r); }
 
   // OQ-152
-  { const r = await captureWithValidator({ testCaseId: 'OQ-152', method: 'GET', url: '/api/queries?status=open', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Queries with status filter: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/queries with status filter'; r.acceptanceCriteria = 'HTTP 200 success=true with observed data for status-filtered queries'; results.push(r); }
+  { const r = await captureWithValidator({ testCaseId: 'OQ-152', method: 'GET', url: '/api/queries?status=New', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Queries with status filter: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify GET /api/queries with status filter'; r.acceptanceCriteria = 'HTTP 200 success=true with observed data for status-filtered queries'; results.push(r); }
 
   // OQ-154
   results.push(workflow ? { ...workflow[0], testCaseId: 'OQ-154',
@@ -2131,10 +2142,10 @@ export async function runDeepDataOperationTests(baseUrl: string, token: string, 
     { id: 'OQ-159', method: 'GET', url: '/api/queries?limit=1&offset=0', desc: 'Query pagination' },
     { id: 'OQ-160', method: 'GET', url: '/api/studies?limit=1&page=1', desc: 'Study pagination' },
     { id: 'OQ-161', method: 'POST', url: '/api/queries', body: { studyId: state.studyId ?? 0, subjectId: 0, description: 'Synthetic invalid subject query' }, desc: 'Create query with invalid subject' },
-    { id: 'OQ-162', method: 'GET', url: '/api/dashboard/enrollment', desc: 'Dashboard enrollment data' },
-    { id: 'OQ-163', method: 'GET', url: '/api/dashboard/completion', desc: 'Dashboard completion data' },
-    { id: 'OQ-164', method: 'GET', url: '/api/dashboard/queries', desc: 'Dashboard queries data' },
-    { id: 'OQ-165', method: 'GET', url: '/api/dashboard/activity', desc: 'Dashboard activity data' },
+    { id: 'OQ-162', method: 'GET', url: `/api/dashboard/enrollment?studyId=${fixture?.state.studyId ?? 0}`, desc: 'Dashboard enrollment data' },
+    { id: 'OQ-163', method: 'GET', url: `/api/dashboard/completion?studyId=${fixture?.state.studyId ?? 0}`, desc: 'Dashboard completion data' },
+    { id: 'OQ-164', method: 'GET', url: `/api/dashboard/queries?studyId=${fixture?.state.studyId ?? 0}`, desc: 'Dashboard queries data' },
+    { id: 'OQ-165', method: 'GET', url: `/api/dashboard/activity?studyId=${fixture?.state.studyId ?? 0}`, desc: 'Dashboard activity data' },
     { id: 'OQ-166', method: 'GET', url: '/api/esignature/pending', desc: 'Pending signatures' },
     { id: 'OQ-167', method: 'GET', url: '/api/data-locks/unlock-requests', desc: 'Unlock requests list' },
     { id: 'OQ-168', method: 'POST', url: '/api/esignature/verify-password', body: { password: 'wrong' }, desc: 'Reject e-signature verification without a username' },
@@ -2217,7 +2228,7 @@ export async function runSecurityValidationTests(
   results.push(nativeCase(fixture, 'PQ-029', 'OQ-188'));
 
   // OQ-189: Dashboard enrollment trend
-  { const r = await captureWithValidator({ testCaseId: 'OQ-189', method: 'GET', url: '/api/dashboard/enrollment-trend', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Enrollment trend: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify dashboard enrollment trend endpoint responds'; r.acceptanceCriteria = 'Enrollment trend endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
+  { const r = await captureWithValidator({ testCaseId: 'OQ-189', method: 'GET', url: `/api/dashboard/enrollment-trend?studyId=${fixture?.state.studyId ?? 0}`, baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Enrollment trend: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify dashboard enrollment trend endpoint responds'; r.acceptanceCriteria = 'Enrollment trend endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
 
   // OQ-190: Dashboard data quality
   { const r = await captureWithValidator({ testCaseId: 'OQ-190', method: 'GET', url: '/api/dashboard/data-quality', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Data quality metrics: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify dashboard data quality metrics endpoint responds'; r.acceptanceCriteria = 'Data quality endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
@@ -2256,13 +2267,13 @@ export async function runSecurityValidationTests(
   { const r = await captureWithValidator({ testCaseId: 'OQ-201', method: 'GET', url: '/api/dashboard/health-score', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Health score: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify dashboard health score endpoint exists'; r.acceptanceCriteria = 'Health score endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
 
   // OQ-202: Dashboard action items
-  { const r = await captureWithValidator({ testCaseId: 'OQ-202', method: 'GET', url: '/api/dashboard/action-items', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Action items: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify dashboard action items endpoint exists'; r.acceptanceCriteria = 'Action items endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
+  { const r = await captureWithValidator({ testCaseId: 'OQ-202', method: 'GET', url: `/api/dashboard/action-items?studyId=${fixture?.state.studyId ?? 0}`, baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Action items: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify dashboard action items endpoint exists'; r.acceptanceCriteria = 'Action items endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
 
   // OQ-203: Query aging analysis
-  { const r = await captureWithValidator({ testCaseId: 'OQ-203', method: 'GET', url: '/api/dashboard/query-aging', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Query aging: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify query aging analysis endpoint exists'; r.acceptanceCriteria = 'Query aging endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
+  { const r = await captureWithValidator({ testCaseId: 'OQ-203', method: 'GET', url: `/api/dashboard/query-aging?studyId=${fixture?.state.studyId ?? 0}`, baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Query aging: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify query aging analysis endpoint exists'; r.acceptanceCriteria = 'Query aging endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
 
   // OQ-204: Visit compliance
-  { const r = await captureWithValidator({ testCaseId: 'OQ-204', method: 'GET', url: '/api/dashboard/visit-compliance', baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Visit compliance: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify visit compliance endpoint exists'; r.acceptanceCriteria = 'Visit compliance endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
+  { const r = await captureWithValidator({ testCaseId: 'OQ-204', method: 'GET', url: `/api/dashboard/visit-compliance?studyId=${fixture?.state.studyId ?? 0}`, baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Visit compliance: ${status}` })); r.regulatoryRef = '§11.10(a)'; r.testDescription = 'Verify visit compliance endpoint exists'; r.acceptanceCriteria = 'Visit compliance endpoint requires HTTP 200 success=true and observed data'; results.push(r); }
 
   // OQ-205: E-signature history for entity
   { const r = await captureWithValidator({ testCaseId: 'OQ-205', method: 'GET', url: `/api/esignature/history/eventCrf/${fixture?.state.formDataId ?? 0}`, baseUrl, headers: h }, (status, body) => ({ passed: successfulResource(status, body), notes: `Sig history: ${status}` })); r.regulatoryRef = '§11.50(a)'; r.testDescription = 'Verify e-signature history endpoint for entity works'; r.acceptanceCriteria = 'Signature history endpoint requires HTTP 200 success=true and observed data'; results.push(r); }

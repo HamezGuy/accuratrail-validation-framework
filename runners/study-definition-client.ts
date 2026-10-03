@@ -300,6 +300,8 @@ function verifyRemovedRows<Row extends { readonly statusId?: number | null }>(
  * a write never takes it from the request. Its own audit columns advance on any
  * write to that row; every other native column must hold. */
 const NATIVE_ROW_AUDIT_COLUMNS = ['date_updated', 'update_id'];
+/** The API's reason for a scoped read that records changed native execution. */
+export const CAPTURE_ONLY_REASON = 'Capture externally changed native execution configuration under the existing scoped read authority.';
 function withoutRowAudit(extensions: unknown): unknown {
   if (!record(extensions) || typeof extensions.nativeRowJson !== 'string') return extensions;
   let row: unknown;
@@ -455,9 +457,33 @@ export class StudyDefinitionClient {
     return readStudyWorkspace(await this.transport('GET', `/studies/${studyId}`), 200, studyId);
   }
 
+  /** The acknowledged revision, or the API's capture-only successors of it.
+   * After enrollment or data capture a scoped read records the changed native
+   * execution as a new draft with identical content (CAPTURE_ONLY_REASON).
+   * Every revision back to the acknowledged one must be such a capture with
+   * the same canonical content; identity and application must be unchanged. */
   async verify(expected: StudyWorkspace): Promise<StudyWorkspace> {
     const actual = await this.get(expected.summary.studyId);
-    assertStudyReadback(actual, expected);
+    if (actual.revision.revisionId === expected.revision.revisionId) { assertStudyReadback(actual, expected); return actual; }
+    const message = 'Study readback differs from the acknowledged revision; reload and review before continuing.';
+    let cursor: Record<string, any> = actual.revision;
+    for (let steps = 0; cursor.revisionId !== expected.revision.revisionId; steps++) {
+      check(steps < 50 && cursor.reason === CAPTURE_ONLY_REASON && cursor.state === 'draft'
+        && cursor.contentHash === expected.revision.contentHash && isDeepStrictEqual(cursor.content, expected.revision.content)
+        && uuid(cursor.previousRevisionId), message);
+      const previous = expectStudySuccess(await this.transport('GET',
+        `/studies/${expected.summary.studyId}/definition/revisions/${cursor.previousRevisionId}`), 200).data;
+      check(record(previous) && previous.revisionId === cursor.previousRevisionId, message);
+      cursor = previous;
+    }
+    check(cursor.revisionToken === expected.revision.revisionToken && cursor.state === expected.revision.state
+      && isDeepStrictEqual(cursor.content, expected.revision.content), message);
+    check(actual.summary.studyId === expected.summary.studyId
+      && isDeepStrictEqual(actual.executionContext.identity, expected.executionContext.identity)
+      && actual.executionContext.appliedDefinitionRevisionId === expected.executionContext.appliedDefinitionRevisionId
+      && actual.executionContext.appliedApplicationId === expected.executionContext.appliedApplicationId
+      && isDeepStrictEqual(actual.executionContext.appliedExecutionConfiguration, expected.executionContext.appliedExecutionConfiguration),
+    'Study application readback differs from the acknowledged application.');
     return actual;
   }
 
