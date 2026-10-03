@@ -16,16 +16,8 @@ import { qualificationOptions, syntheticStudyDefinition } from './qualification-
  * take precedence over PQ_USERNAME / PQ_PASSWORD. There is no built-in account; a
  * missing value refuses the run before any request is made. */
 export function pqCredentials(): { username: string; password: string } {
-  const { username, password } = qualificationCredentials({
-    username: process.env.PQ_USERNAME ?? '',
-    password: process.env.PQ_PASSWORD ?? '',
-  });
-  const missing = [
-    ...(username ? [] : ['PQ_USERNAME (or OQ_USERNAME)']),
-    ...(password ? [] : ['PQ_PASSWORD (or OQ_PASSWORD)']),
-  ];
-  if (missing.length) throw new Error(`PQ operator credentials are not configured: set ${missing.join(' and ')}.`);
-  return { username, password };
+  return qualificationCredentials({ username: process.env.PQ_USERNAME, password: process.env.PQ_PASSWORD },
+    { username: 'PQ_USERNAME (or OQ_USERNAME)', password: 'PQ_PASSWORD (or OQ_PASSWORD)' }, 'PQ');
 }
 
 function evidence(testCaseId: string, endpoint: string, method: string, status: number, body: unknown, passed: boolean, notes: string): EvidenceResult {

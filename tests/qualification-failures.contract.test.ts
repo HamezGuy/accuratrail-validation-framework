@@ -597,6 +597,14 @@ for (const suite of ['authentication', 'password'] as const) for (const foreign 
 
 test('an unexpected OQ suite error still archives only its owned study, closes its session, and retains the case denominator', async t => {
   const pq = require('../runners/pq-runner'), auth = require('../runners/auth'), oq = require('../runners/oq-runner');
+  // The runner has no built-in operator: name a synthetic one (login itself is mocked below).
+  const saved = { username: process.env.OQ_USERNAME, password: process.env.OQ_PASSWORD };
+  t.after(() => {
+    if (saved.username === undefined) delete process.env.OQ_USERNAME; else process.env.OQ_USERNAME = saved.username;
+    if (saved.password === undefined) delete process.env.OQ_PASSWORD; else process.env.OQ_PASSWORD = saved.password;
+  });
+  process.env.OQ_USERNAME = 'synthetic-oq-operator';
+  process.env.OQ_PASSWORD = 'synthetic-oq-secret';
   const evidence = { testCaseId: 'OQ-LOGIN', timestamp: new Date().toISOString(), endpoint: '/api/auth/login', method: 'POST', responseStatus: 200, responseBody: { success: true }, passed: true, notes: 'Offline session fixture' };
   const study = workspace(syntheticStudyDefinition('OQ-THROW'));
   t.mock.method(auth, 'login', async (_url: string, _username: string, _password: string, testCaseId = 'OQ-LOGIN') => ({

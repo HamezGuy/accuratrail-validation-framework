@@ -1,4 +1,6 @@
 import { authHeaders, login, qualificationCredentials } from './auth';
+
+type Credentials = { username: string; password: string };
 import { type EvidenceResult, captureApiCall, isRecord, saveEvidence } from './evidence-capture';
 
 // Every timing below is captureApiCall's durationMs: the interval to the response
@@ -16,9 +18,8 @@ async function testHealthResponseTime(baseUrl: string): Promise<EvidenceResult> 
   return r;
 }
 
-async function testLoginResponseTime(baseUrl: string): Promise<EvidenceResult> {
+async function testLoginResponseTime(baseUrl: string, { username, password }: Credentials): Promise<EvidenceResult> {
   const maxMs = 1000;
-  const { username, password } = qualificationCredentials();
   const { evidence: r } = await login(baseUrl, username, password, 'PERF-002');
   const durationMs = r.durationMs ?? 0;
   r.passed = (r.responseStatus === 200 || r.responseStatus === 401) && durationMs < maxMs;
@@ -27,8 +28,7 @@ async function testLoginResponseTime(baseUrl: string): Promise<EvidenceResult> {
   return r;
 }
 
-async function testStudiesResponseTime(baseUrl: string): Promise<EvidenceResult> {
-  const { username, password } = qualificationCredentials();
+async function testStudiesResponseTime(baseUrl: string, { username, password }: Credentials): Promise<EvidenceResult> {
   const { session } = await login(baseUrl, username, password);
 
   if (!session) {
@@ -58,11 +58,10 @@ async function testStudiesResponseTime(baseUrl: string): Promise<EvidenceResult>
   return r;
 }
 
-async function testConcurrentLogins(baseUrl: string): Promise<EvidenceResult> {
+async function testConcurrentLogins(baseUrl: string, { username, password }: Credentials): Promise<EvidenceResult> {
   const url = `${baseUrl.replace(/\/$/, '')}/api/auth/login`;
   const timestamp = new Date().toISOString();
   const concurrency = 5;
-  const { username, password } = qualificationCredentials();
 
   const attempts = await Promise.all(
     Array.from({ length: concurrency }, () => login(baseUrl, username, password, 'PERF-004')),
@@ -107,6 +106,8 @@ async function testLargeQueryString(baseUrl: string): Promise<EvidenceResult> {
 }
 
 export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
+  // Refuses before any request when no operator is configured.
+  const credentials = qualificationCredentials();
   console.log(`\n  Running Performance tests (5 cases) against ${baseUrl}...`);
   const results: EvidenceResult[] = [];
 
@@ -119,21 +120,21 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   results.push(result);
   console.log(`  PERF-001 (Health RT): ${result.passed ? 'PASS' : 'FAIL'} — ${result.notes}`);
 
-  result = await testLoginResponseTime(baseUrl);
+  result = await testLoginResponseTime(baseUrl, credentials);
   result.regulatoryRef = '§11.10(d)';
   result.testDescription = 'Authentication endpoint response time under 1000ms';
   result.acceptanceCriteria = 'Login response within 1000ms';
   results.push(result);
   console.log(`  PERF-002 (Login RT): ${result.passed ? 'PASS' : 'FAIL'} — ${result.notes}`);
 
-  result = await testStudiesResponseTime(baseUrl);
+  result = await testStudiesResponseTime(baseUrl, credentials);
   result.regulatoryRef = '§11.10(a)';
   result.testDescription = 'Authenticated data access response time under 1000ms';
   result.acceptanceCriteria = 'GET /api/studies within 1000ms with valid token';
   results.push(result);
   console.log(`  PERF-003 (Studies RT): ${result.passed ? 'PASS' : 'FAIL'} — ${result.notes}`);
 
-  result = await testConcurrentLogins(baseUrl);
+  result = await testConcurrentLogins(baseUrl, credentials);
   result.regulatoryRef = '§11.10(a)';
   result.testDescription = 'Concurrent login handling (5 simultaneous)';
   result.acceptanceCriteria = 'All 5 concurrent requests succeed without errors';

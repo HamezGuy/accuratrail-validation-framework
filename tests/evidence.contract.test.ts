@@ -18,8 +18,10 @@ import { generate as generateRegulatoryMap } from '../generators/18-regulatory-r
 import { generate as generateCsaAssurance } from '../generators/19-csa-feature-assurance';
 import { generate as generateDesignSpec } from '../generators/21-design-specification';
 import { SYSTEM_INFO } from '../config/system-info';
-import { login } from '../runners/auth';
+import { login, optionalQualificationCredentials, qualificationCredentials } from '../runners/auth';
 import { pqCredentials, run as runPq } from '../runners/pq-runner';
+import { run as runOq } from '../runners/oq-runner';
+import { run as runPerformance } from '../runners/performance-runner';
 
 function workspace(t: { after(callback: () => void): void }): string {
   const root = fs.realpathSync(os.tmpdir());
@@ -396,5 +398,37 @@ test('PQ refuses to run without explicitly configured operator credentials', asy
     throw new Error('PQ must not contact the API without configured credentials');
   });
   await assert.rejects(runPq(workspace(t), 'https://qualification.invalid'), /PQ_USERNAME/);
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+test('no runner has a built-in operator: credentials come only from the environment', async t => {
+  const names = ['OQ_USERNAME', 'OQ_PASSWORD', 'PQ_USERNAME', 'PQ_PASSWORD'];
+  const saved = new Map(names.map(name => [name, process.env[name]]));
+  t.after(() => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  for (const name of names) delete process.env[name];
+  assert.throws(() => qualificationCredentials(), /Qualification operator credentials are not configured: set OQ_USERNAME and OQ_PASSWORD/);
+  // Runners whose other checks run unauthenticated (DR, security) open no session.
+  assert.equal(optionalQualificationCredentials(), null);
+  process.env.OQ_USERNAME = 'synthetic-oq-operator';
+  for (const lookup of [qualificationCredentials, optionalQualificationCredentials]) {
+    assert.throws(() => lookup(), (error: unknown) => error instanceof Error
+      && /OQ_PASSWORD/.test(error.message) && !/OQ_USERNAME/.test(error.message));
+  }
+  process.env.OQ_PASSWORD = 'synthetic-oq-secret';
+  const configured = { username: 'synthetic-oq-operator', password: 'synthetic-oq-secret' };
+  assert.deepEqual(qualificationCredentials(), configured);
+  assert.deepEqual(optionalQualificationCredentials(), configured);
+  assert.deepEqual(qualificationCredentials({ username: 'runner-variable', password: 'runner-secret' }), configured);
+  for (const name of names) delete process.env[name];
+  const fetchMock = t.mock.method(globalThis, 'fetch', async (): Promise<Response> => {
+    throw new Error('A runner must not contact the API without configured credentials');
+  });
+  await assert.rejects(runOq(workspace(t), 'https://qualification.invalid'), /OQ_USERNAME and OQ_PASSWORD/);
+  await assert.rejects(runPerformance(workspace(t), 'https://qualification.invalid'), /OQ_USERNAME and OQ_PASSWORD/);
   assert.equal(fetchMock.mock.callCount(), 0);
 });

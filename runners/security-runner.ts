@@ -1,4 +1,4 @@
-import { login, qualificationCredentials } from './auth';
+import { login, optionalQualificationCredentials } from './auth';
 import {
   type EvidenceResult,
   captureWithValidator,
@@ -276,8 +276,9 @@ export async function run(outputDir: string, baseUrl: string): Promise<EvidenceR
   console.log(`\n  Running Security tests (10 cases) against ${baseUrl}...`);
 
   // Tests that need a session use this token; the rest run unauthenticated.
-  const { username, password } = qualificationCredentials();
-  const token = (await login(baseUrl, username, password)).session?.token ?? null;
+  // Without a configured operator there is no session (no built-in account).
+  const credentials = optionalQualificationCredentials();
+  const token = credentials ? (await login(baseUrl, credentials.username, credentials.password)).session?.token ?? null : null;
 
   const results: EvidenceResult[] = [];
 

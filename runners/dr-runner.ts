@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { defaultWorkspaceRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
-import { login, qualificationCredentials } from './auth';
+import { login, optionalQualificationCredentials } from './auth';
 import {
   type EvidenceResult,
   captureWithValidator,
@@ -150,8 +150,9 @@ export async function run(outputDir: string, baseUrl: string, workspaceRoot?: st
   const apiRoot = resolveLibreclinicaApiRoot(workspaceRoot || defaultWorkspaceRoot());
 
   // DR-001 uses this session when one is available; the file checks need none.
-  const { username, password } = qualificationCredentials();
-  const token = (await login(baseUrl, username, password)).session?.token ?? null;
+  // Without a configured operator there is no session (no built-in account).
+  const credentials = optionalQualificationCredentials();
+  const token = credentials ? (await login(baseUrl, credentials.username, credentials.password)).session?.token ?? null : null;
 
   const results: EvidenceResult[] = [];
 

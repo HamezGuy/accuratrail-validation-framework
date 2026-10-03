@@ -5,15 +5,29 @@ export function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
 
-/** Operator credentials for live qualification: OQ_USERNAME / OQ_PASSWORD, else the
- * runner's defaults. Every runner resolves its credentials through this one lookup. */
+/** Operator credentials for live qualification come only from the environment:
+ * OQ_USERNAME / OQ_PASSWORD, else the runner's own variables passed as `fallback`
+ * (named in `variables` for the refusal). There is no built-in account: a missing
+ * value refuses the run before any request is made. Every runner resolves its
+ * credentials through this one lookup. */
 export function qualificationCredentials(
-  defaults: { username: string; password: string } = { username: 'admin', password: 'admin' },
+  fallback: { username?: string; password?: string } = {},
+  variables: { username: string; password: string } = { username: 'OQ_USERNAME', password: 'OQ_PASSWORD' },
+  operator = 'Qualification',
 ): { username: string; password: string } {
-  return {
-    username: process.env.OQ_USERNAME || defaults.username,
-    password: process.env.OQ_PASSWORD || defaults.password,
-  };
+  const username = process.env.OQ_USERNAME || fallback.username || '';
+  const password = process.env.OQ_PASSWORD || fallback.password || '';
+  const missing = [...(username ? [] : [variables.username]), ...(password ? [] : [variables.password])];
+  if (missing.length) throw new Error(`${operator} operator credentials are not configured: set ${missing.join(' and ')}.`);
+  return { username, password };
+}
+
+/** For runners whose session is optional (their other checks run unauthenticated):
+ * null when neither OQ_USERNAME nor OQ_PASSWORD is set, else the complete pair
+ * (one without the other is refused as a misconfiguration). */
+export function optionalQualificationCredentials(): { username: string; password: string } | null {
+  if (!process.env.OQ_USERNAME && !process.env.OQ_PASSWORD) return null;
+  return qualificationCredentials();
 }
 
 export interface LoginSession {
