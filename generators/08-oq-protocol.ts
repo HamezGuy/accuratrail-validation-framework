@@ -885,16 +885,20 @@ function part11ComplianceCases(): OqTestCase[] {
       evidence: 'See evidence/oq/OQ-071.json',
     },
     {
-      id: 'OQ-072', title: 'Concurrent Session Control', requirement: 'URS-AUTH-017', cfr: '11.10(d)',
-      riskLevel: 'High', preconditions: 'User account exists with active session',
+      id: 'OQ-072', title: 'Independent Multi-Device Sessions', requirement: 'URS-AUTH-017', cfr: '11.10(d)',
+      riskLevel: 'High',
+      preconditions: 'Owned synthetic user account with no other active session. Policy (owner decision 2026-10-02): ' +
+        '"Keep multiple devices; verify each session independently." Not implemented by the current runner, which records a ' +
+        'failing "did not execute" placeholder for OQ-072; runner case OQ-094 executes the two-session check in step 3.',
       steps: [
-        'Login as user from device A — obtain JWT-A.',
-        'Login as same user from device B — obtain JWT-B.',
-        'Attempt API call with JWT-A.',
-        'Verify JWT-A is blocked (401) — old session invalidated.',
-        'Verify JWT-B is valid and accepted.',
+        'Login as the user from device A — obtain JWT-A (session A).',
+        'Login as the same user from device B — obtain JWT-B (session B).',
+        'Verify JWT-A and JWT-B are both accepted (200): a new login does not end other sessions.',
+        'Logout session A; verify JWT-A is refused (401) and JWT-B is still accepted (200).',
+        'Refresh session B; verify the replacement token is accepted and JWT-A stays refused.',
+        'Verify the login and logout audit rows carry the session ID of the session they belong to.',
       ],
-      expectedResult: 'New login invalidates previous session; only latest session is active.',
+      expectedResult: 'Simultaneous independent sessions are supported and each session is verified independently; a new login does not end other sessions; logout and refresh affect only the exact session, and its audit rows identify it.',
       evidence: 'See evidence/oq/OQ-072.json',
     },
     {
@@ -1002,7 +1006,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- **Electronic Signatures:** Re-authentication, manifestation, linkage, non-repudiation\n';
   content += '- **Data Operations:** eCRF CRUD, validation rules, exports, query workflow\n';
   content += '- **Data Locks:** Freeze/lock enforcement, unlock workflow, status reporting\n';
-  content += '- **Part 11 Compliance Controls:** Password expiration, session revocation, audit immutability, PHI redaction, concurrent sessions\n\n';
+  content += '- **Part 11 Compliance Controls:** Password expiration, session revocation, audit immutability, PHI redaction, independent multi-device sessions\n\n';
   content += `**Applicable regulations:** ${REGULATORY_SCOPE.part11Applicable ? '21 CFR Part 11' : ''}` +
     `${REGULATORY_SCOPE.hipaaApplicable ? ', HIPAA Security Rule' : ''}\n\n`;
 

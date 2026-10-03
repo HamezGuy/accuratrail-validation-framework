@@ -80,8 +80,8 @@ function buildDetailedRiskAnalyses(criticalFeatures: FeatureRisk[]): DetailedRis
       failureMode: 'Session management fails, leaving sessions active on unattended workstations indefinitely.',
       patientSafetyImpact: 'Unauthorized persons could access and modify clinical data through abandoned sessions, potentially altering treatment assignments or safety reports.',
       dataIntegrityImpact: 'Actions performed through hijacked sessions are attributed to the original user, creating false audit trail entries.',
-      mitigationControls: ['JWT expiration claim with configurable TTL', 'Frontend idle-timeout service with countdown warning', 'Server-side token validation on every request', 'Optional fingerprint-header mismatch raises an alert; UI header delivery and rejection are not implemented', 'Independent concurrent sessions are allowed; prior-session exclusion is not a control'],
-      residualRisk: 'Pending reassessment — timeout evidence must be reviewed; enforced device binding and prior-session exclusion are absent.',
+      mitigationControls: ['JWT expiration claim with configurable TTL', 'Frontend idle-timeout service with countdown warning', 'Server-side token validation on every request', 'Simultaneous independent sessions (devices) are supported (owner decision 2026-10-02): each session (JWT sid) is verified independently on every request — revocation, per-session idle timeout and account state — and a new login does not end other sessions', 'All of an account\'s sessions are revoked on a password change, an administrator role change, disable, lock or deletion, removal from a study, or the emergency revoke-sessions endpoint; every session of a locked (including the automatic failed-login lockout) or inactive account is refused while that state lasts', 'Optional fingerprint header recorded at login; a mismatch raises an alert only, which is not enforced device binding (the UI does not send the header)'],
+      residualRisk: 'Pending reassessment — per-session timeout and revocation evidence must be reviewed; fingerprint-mismatch rejection (device binding, URS-010) is not implemented.',
       csaClassification: 'High Process Risk',
       csaReasoning: 'Unattended session access could compromise safety data in clinical settings.',
     },
@@ -161,7 +161,7 @@ function buildDetailedRiskAnalyses(criticalFeatures: FeatureRisk[]): DetailedRis
       failureMode: 'Signer can deny having signed a record due to insufficient evidence of signing identity.',
       patientSafetyImpact: 'Repudiated signatures on adverse event reports or treatment approvals create ambiguity about who authorized critical safety decisions.',
       dataIntegrityImpact: 'Non-repudiation is required by §11.10(j) — without it, the accountability chain for electronic records breaks down.',
-      mitigationControls: ['Signature record includes authenticated userId and fresh password verification', 'SHA-256 record hash ties signature to specific content', 'Server-generated UTC timestamp', 'Audit trail logs all signing events including failures', 'IP address and device fingerprint captured'],
+      mitigationControls: ['Signature record includes authenticated userId and fresh password verification', 'SHA-256 record hash ties signature to specific content', 'Server-generated UTC timestamp', 'Audit trail logs all signing events including failures', 'Login session records keep the IP address and, only when an API client supplies it, a device fingerprint; signature records do not populate their IP or fingerprint columns, and the fingerprint is not enforced device binding'],
       residualRisk: 'Low — Multi-factor evidence prevents repudiation.',
       csaClassification: 'High Process Risk',
       csaReasoning: 'Repudiable signatures void the legal equivalence to handwritten signatures.',
@@ -362,7 +362,7 @@ function buildCriticalMitigations(criticalFeatures: FeatureRisk[]): MitigationCo
       residualRisk: 'Low — comprehensive RBAC with granular permissions',
     },
     'FEAT-005': {
-      controls: 'JWT expiration claim checked by auth.middleware.ts; frontend idle-timeout.service.ts triggers forced logout; independent concurrent sessions; optional fingerprint mismatch alert only (no rejection)',
+      controls: 'JWT expiration claim checked by auth.middleware.ts; per-session (sid) revocation and idle-timeout checks on every request; frontend idle-timeout.service.ts triggers forced logout; simultaneous independent sessions, where a new login does not end other sessions; account-wide revocation on password change, administrator role change, disable, lock or deletion, study removal or the revoke-sessions endpoint, and sessions of a locked or inactive account are refused; optional fingerprint mismatch alert only (not enforced device binding)',
       residualRisk: 'Pending reassessment — timeout controls require retained evidence; fingerprint tracking does not establish device binding',
     },
     'FEAT-010': {

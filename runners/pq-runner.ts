@@ -12,12 +12,20 @@ import { cloneStudy, pendingStudy, type StudyWorkspace, type StudyActivationRevi
 import { captureStudyOperation, captureQualificationOperation } from './study-qualification';
 import { qualificationOptions, syntheticStudyDefinition } from './qualification-fixture';
 
-/** PQ keeps its own default operator; OQ_USERNAME / OQ_PASSWORD still take precedence. */
-function pqCredentials(): { username: string; password: string } {
-  return qualificationCredentials({
-    username: process.env.PQ_USERNAME || 'jamesgui333',
-    password: process.env.PQ_PASSWORD || 'Welcome2025!',
+/** PQ operator credentials come only from the environment: OQ_USERNAME / OQ_PASSWORD
+ * take precedence over PQ_USERNAME / PQ_PASSWORD. There is no built-in account; a
+ * missing value refuses the run before any request is made. */
+export function pqCredentials(): { username: string; password: string } {
+  const { username, password } = qualificationCredentials({
+    username: process.env.PQ_USERNAME ?? '',
+    password: process.env.PQ_PASSWORD ?? '',
   });
+  const missing = [
+    ...(username ? [] : ['PQ_USERNAME (or OQ_USERNAME)']),
+    ...(password ? [] : ['PQ_PASSWORD (or OQ_PASSWORD)']),
+  ];
+  if (missing.length) throw new Error(`PQ operator credentials are not configured: set ${missing.join(' and ')}.`);
+  return { username, password };
 }
 
 function evidence(testCaseId: string, endpoint: string, method: string, status: number, body: unknown, passed: boolean, notes: string): EvidenceResult {

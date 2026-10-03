@@ -134,11 +134,11 @@ function buildPart11SubpartB(): RegulatorySection[] {
         { control: 'JWT authentication', file: 'auth.middleware.ts', description: 'Token-based authentication verifying user identity on every API request' },
         { control: 'Role-based authorization', file: 'authorization.middleware.ts', description: 'RBAC with 6 defined roles and 42 granular permissions enforced at each endpoint' },
         { control: 'Account provisioning workflow', file: 'auth.service.ts', description: 'User account creation, activation, deactivation, and role assignment controlled by admins' },
-        { control: 'Session management', file: 'auth.service.ts', description: 'Independent concurrent sessions, configurable idle timeout, optional API fingerprint tracking; no single-session enforcement' },
+        { control: 'Session management', file: 'token-blocklist.service.ts', description: 'Simultaneous independent sessions (devices) per account (owner decision 2026-10-02): each session (JWT sid) is tracked and verified independently — exact-session logout, refresh, idle timeout and audit — and a new login does not end other sessions; all of an account\'s sessions are revoked on a password change, an administrator role change, disable, lock or deletion, removal from a study, or the emergency revoke-sessions endpoint; every session of a locked or inactive account is refused while that state lasts' },
         { control: 'Request rate limiting', file: 'rateLimiter.middleware.ts', description: 'IP-based and user-based rate limiting to prevent brute-force and DoS attacks' },
         { control: 'Account lockout policy', file: 'auth.service.ts', description: 'Automatic account lockout after configurable consecutive failed login attempts' },
       ],
-      testCases: 'OQ-001 through OQ-015, SEC-001 through SEC-010',
+      testCases: 'OQ-001 through OQ-015, OQ-094, SEC-001 through SEC-010',
       status: 'Compliant — Multi-layered access control via authentication, authorization, session management, and rate limiting',
     },
     {
@@ -216,8 +216,8 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         { control: 'CORS configuration', file: 'app.ts', description: 'Cross-Origin Resource Sharing restricted to authorized frontend domains only' },
         { control: 'Rate limiting per device', file: 'rateLimiter.middleware.ts', description: 'Per-IP and per-device rate limiting prevents automated attack tools from submitting data' },
       ],
-      testCases: 'SEC-016 through SEC-020',
-      status: 'Pending device evidence — optional API fingerprint tracking is not enforced device binding; other source controls require their own retained results',
+      testCases: 'OQ-007 (manual; fingerprint recording only), SEC-008 (CORS)',
+      status: 'Pending device evidence — optional API fingerprint tracking is not enforced device binding and fingerprint-mismatch rejection (URS-010) is not implemented; other source controls require their own retained results',
     },
     {
       id: '§11.10(i)',
@@ -422,8 +422,8 @@ function buildPart11SubpartC(): RegulatorySection[] {
         'continuous period of controlled system access, each signing shall be executed using ' +
         'all of the electronic signature components.',
       controls: [
-        { control: 'Full re-authentication per signing', file: 'esignature.service.ts', description: 'After session break (timeout, logout, new login), full username + password required for each sign' },
-        { control: 'Session discontinuity detection', file: 'auth.middleware.ts', description: 'Detects non-continuous access via JWT expiration, device change, or idle timeout trigger' },
+        { control: 'Full re-authentication per signing', file: 'esignature.service.ts', description: 'Each signing request requires the signer\'s username and password, whatever the session state; a new login is a separate session and does not end or reset the user\'s other sessions' },
+        { control: 'Session discontinuity detection', file: 'auth.middleware.ts', description: 'Each session (sid) is checked on every request for revocation, idle timeout and account state; a device fingerprint mismatch only raises an alert and does not end the session' },
         { control: 'Signing session state reset', file: 'esignature.service.ts', description: 'Server-side signing session state cleared on any session discontinuity event' },
         { control: 'No session-based signing shortcuts', file: 'esignature.service.ts', description: 'System never allows signing based solely on active session without credential re-entry' },
       ],
@@ -474,11 +474,11 @@ function buildPart11SubpartC(): RegulatorySection[] {
       controls: [
         { control: 'Token blocklist on logout', file: 'auth.service.ts', description: 'Immediate session revocation capability; compromised JWT tokens added to server-side blocklist' },
         { control: 'Admin account deactivation', file: 'user.service.ts', description: 'Rapid account deactivation workflow for lost or stolen credentials via admin panel' },
-        { control: 'Session revocation', file: 'auth.service.ts', description: 'All active sessions for a user can be revoked instantly by administrator action' },
+        { control: 'Session revocation', file: 'token-blocklist.service.ts', description: 'All of a user\'s sessions are revoked by POST /api/users/:id/revoke-sessions (optionally locking the account), by a password change, and by an administrator role change, disable, lock, deletion or study removal; every session of a locked (including the automatic failed-login lockout) or inactive account is refused while that state lasts; a new login ends no other session' },
         { control: 'Device fingerprint invalidation', file: 'auth.service.ts', description: 'Fingerprint mismatch does not revoke sessions; explicit account/session revocation requires separate evidence' },
         { control: 'Incident audit logging', file: 'audit.service.ts', description: 'All loss management actions logged in audit trail with reason and administrator identity' },
       ],
-      testCases: 'SEC-030, SEC-031',
+      testCases: 'OQ-021, OQ-022, OQ-058',
       status: 'Compliant — Immediate session revocation, account deactivation, and forced credential reset available',
     },
     {
@@ -513,7 +513,7 @@ function buildPart11SubpartC(): RegulatorySection[] {
         { control: 'Session consistency checks', file: 'auth.middleware.ts', description: 'Native session identity is checked; IP is recorded and optional fingerprint mismatch alerts do not enforce device/IP binding' },
         { control: 'Automated security testing', file: 'validation-framework/', description: 'IQ/OQ test cases verify authentication device behavior and tamper detection mechanisms' },
       ],
-      testCases: 'SEC-036, SEC-037',
+      testCases: 'OQ-007 (manual; fingerprint recording only), SEC-004, OQ-095',
       status: 'Pending — token integrity evidence is separate; optional fingerprint tracking remains unqualified and does not reject mismatch',
     },
   ];
@@ -988,7 +988,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += '**Defense-in-Depth Layers:**\n\n';
   c += markdownTable(['Layer', 'Controls', 'Failure Mode'], [
     ['Network', 'TLS 1.2+, CORS, HSTS, firewall rules', 'If breached: authentication layer prevents access'],
-    ['Authentication', 'JWT verification, device fingerprint, session management', 'If breached: authorization layer restricts actions'],
+    ['Authentication', 'JWT verification; per-session (sid) revocation, idle-timeout and account-state checks; optional fingerprint alert only (no device binding)', 'If breached: authorization layer restricts actions'],
     ['Authorization', 'RBAC, 42 permissions, study-site scoping', 'If breached: audit trail records all actions'],
     ['Application', 'Input validation, workflow enforcement, data locks', 'If breached: database constraints prevent corruption'],
     ['Database', 'Constraints, transactions, connection encryption', 'If breached: backup encryption protects data at rest'],
@@ -1434,13 +1434,13 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += markdownTable(['Test Case Range', 'Regulatory Section(s)', 'Verification Scope'], [
     ['SEC-001 through SEC-010', '§11.10(d), §164.312(a)(1)', 'Access control security testing; boundary testing; unauthorized access prevention'],
     ['SEC-011 through SEC-015', '§11.10(g)', 'Authority bypass testing; privilege escalation prevention'],
-    ['SEC-016 through SEC-020', '§11.10(h)', 'Device validation testing; CSRF; CORS; fingerprint verification'],
+    ['SEC-016 through SEC-020', '§11.10(h)', 'Not emitted by any current runner. Device checks: OQ-007 is a manual fingerprint-recording case and SEC-008 checks CORS; no fingerprint-verification or device-binding test exists (fingerprint-mismatch rejection, URS-010, is unresolved)'],
     ['SEC-021 through SEC-025', '§11.30', 'Open system security; TLS verification; encryption strength testing'],
     ['SEC-026, SEC-027', '§11.300(a)', 'Uniqueness enforcement testing; duplicate prevention verification'],
     ['SEC-028, SEC-029', '§11.300(b)', 'Password aging tests; expiration enforcement; history validation'],
-    ['SEC-030, SEC-031', '§11.300(c)', 'Loss management testing; token revocation; account deactivation'],
+    ['SEC-030, SEC-031', '§11.300(c)', 'Not emitted by any current runner. Session revocation evidence: OQ-021 (role change) and OQ-022 (disable) refuse issued tokens; OQ-058 only requires the revoke-sessions endpoint to answer'],
     ['SEC-032 through SEC-035', '§11.300(d)', 'Transaction safeguard testing; brute-force prevention; alerting'],
-    ['SEC-036, SEC-037', '§11.300(e)', 'Device authentication testing; JWT integrity; session consistency'],
+    ['SEC-036, SEC-037', '§11.300(e)', 'Not emitted by any current runner. Token integrity is exercised by SEC-004 and OQ-095; no device-authentication or session-binding test exists'],
     ['SEC-038 through SEC-042', '§164.308(a)(1)', 'Security management process testing; violation detection and containment'],
     ['SEC-043 through SEC-046', '§164.308(a)(6)', 'Incident procedure testing; detection, logging, notification workflows'],
     ['SEC-047, SEC-048', '§164.312(a)(2)(i)', 'Unique identification testing; ID assignment and tracking'],

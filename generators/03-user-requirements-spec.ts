@@ -10,6 +10,7 @@ import {
   hr,
   riskBadge,
 } from './helpers/markdown-writer';
+import { runnerCaseCheck } from './helpers/evidence-linker';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -29,12 +30,24 @@ interface ReqCategory {
   requirements: Requirement[];
 }
 
+/** One planned verification activity. It cites a runner case only where the case's
+ * actual check (RUNNER_CASE_CHECKS) matches the activity; otherwise it is a gap. */
+interface PlannedVerification {
+  activity: string;
+  cases: string[];
+  /** What the cited cases do not cover, or why no executed case is mapped. */
+  note?: string;
+}
+
 interface DetailedDescription {
   id: string;
   rationale: string;
   context: string;
-  acceptanceMethod: string;
+  planned: PlannedVerification[];
 }
+
+const verify = (activity: string, cases: string[], note?: string): PlannedVerification => ({ activity, cases, note });
+const gap = (activity: string, note: string): PlannedVerification => ({ activity, cases: [], note });
 
 function buildDetailedDescriptions(): DetailedDescription[] {
   return [
@@ -47,9 +60,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Clinical trial sites may have multiple users sharing workstations in busy research units. ' +
         'The system must ensure individual accountability for all data entries through unique identification. ' +
         'During FDA inspections, auditors routinely verify that every data entry can be traced to a specific person.',
-      acceptanceMethod: 'Verified through OQ-001 (valid login with unique credentials), OQ-002 (duplicate username ' +
-        'prevention at registration), OQ-003 (invalid credential rejection), and IQ-013 (acc_users table schema ' +
-        'verification with UNIQUE constraint on username column).',
+      planned: [
+        verify('Valid login with an individual account\'s own credentials', ['OQ-001']),
+        verify('Duplicate username refused at account creation', ['OQ-002']),
+        verify('Invalid credentials refused', ['OQ-003']),
+        gap('Database UNIQUE constraint on the username column',
+          'No executed case checks a database constraint; IQ-013 only matches a users-table name in migrations.ts.'),
+      ],
     },
     {
       id: 'URS-002',
@@ -59,9 +76,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Clinical research coordinators and investigators may not prioritize password security. ' +
         'The system must enforce complexity without creating barriers that lead to password sharing or ' +
         'write-down behaviors, both of which are common findings in FDA 483 observations.',
-      acceptanceMethod: 'Verified through OQ-004 (password complexity enforcement), OQ-005 (weak password ' +
-        'rejection), PQ-001 (password policy integration test), and IQ-014 (bcrypt hashing verification ' +
-        'in database storage).',
+      planned: [
+        verify('Weak password refused by the complexity policy', ['OQ-004', 'OQ-093'],
+          'one password ("123") that fails several rules is refused; no single rule is isolated.'),
+        gap('Each character-class rule and the 8-character minimum individually', 'No executed case isolates a single rule.'),
+        gap('bcrypt hashing of stored passwords',
+          'No executed case inspects stored password hashes; IQ-032 is a source keyword match.'),
+      ],
     },
     {
       id: 'URS-003',
@@ -71,8 +92,12 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Clinical trial systems are high-value targets because they contain patient data and treatment ' +
         'assignment information. Automated attacks against login endpoints are common. The lockout threshold ' +
         'must balance security (low threshold) against usability (avoiding lockout from typos).',
-      acceptanceMethod: 'Verified through OQ-006 (lockout after N failed attempts), OQ-007 (locked account ' +
-        'rejects valid credentials), OQ-008 (admin unlock workflow), and PQ-002 (brute-force simulation test).',
+      planned: [
+        verify('Account locks after repeated failed logins', ['OQ-009']),
+        verify('Locked account refuses its valid credentials', ['OQ-009']),
+        gap('Administrator unlock workflow', 'No account-unlock case exists; OQ-053 unlocks a data lock, not an account.'),
+        verify('Brute-force throttling of the login endpoint', ['OQ-008']),
+      ],
     },
     {
       id: 'URS-004',
@@ -82,9 +107,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Clinical research sites are busy healthcare environments where staff frequently move between ' +
         'patients, exam rooms, and workstations. Automatic session timeout is the primary control against ' +
         'unauthorized access through abandoned sessions. HIPAA §164.312(a)(2)(iii) also mandates this control.',
-      acceptanceMethod: 'Verified through OQ-009 (session expiration after idle period), OQ-010 (re-authentication ' +
-        'required after timeout), PQ-003 (idle timeout integration with frontend timer), and IQ-015 (JWT ' +
-        'expiration claim configuration verification).',
+      planned: [
+        gap('Session expires after the configured idle period', 'No executed case lets a session idle out.'),
+        gap('Re-authentication required after an idle timeout', 'No executed case exercises a timed-out session.'),
+        gap('Frontend idle-timer integration', 'No UI case exists.'),
+        verify('Access-token expiration claim', ['OQ-006', 'OQ-086'],
+          'these bound the absolute token lifetime, not the idle timeout.'),
+      ],
     },
     {
       id: 'URS-005',
@@ -96,10 +125,14 @@ function buildDetailedDescriptions(): DetailedDescription[] {
         'perform source data verification, data managers resolve queries, and administrators manage users. ' +
         'Each role requires different access levels. A site coordinator should never be able to lock a database, ' +
         'and a monitor should not modify subject data.',
-      acceptanceMethod: 'Verified through OQ-011 (role assignment enforcement), OQ-012 (cross-role access denial), ' +
-        'OQ-013 (permission matrix verification for all 6 roles), PQ-004 (end-to-end role-based workflow test), ' +
-        'and IQ-013 (acc_role_permission table schema verification — roles are stored per-organization '
-        + 'as role_name/permission_key pairs; there are no acc_roles or acc_permissions tables).',
+      planned: [
+        verify('Role change enforcement and cross-role access denial', ['OQ-021'],
+          'only the admin, data_manager and viewer roles appear, and the refusal is a read of a user record.'),
+        gap('Permission matrix for all six roles', 'No executed case exercises the role matrix.'),
+        gap('End-to-end role-based workflow', 'The PQ workflow runs as one operator.'),
+        gap('acc_role_permission schema verification (roles are stored per organization as role_name/permission_key pairs)',
+          'No IQ case checks this table.'),
+      ],
     },
     {
       id: 'URS-006',
@@ -109,8 +142,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Pharmaceutical sponsors often run multiple concurrent trials. CROs managing data for competing ' +
         'sponsors must have strict study-level data isolation. Site-level restrictions ensure monitors only ' +
         'see data from their assigned sites, preventing inadvertent unblinding or competitive intelligence issues.',
-      acceptanceMethod: 'Verified through OQ-014 (study-scoped data filtering), OQ-015 (site-scoped data ' +
-        'filtering), OQ-016 (cross-study access denial), and PQ-005 (multi-study user isolation integration test).',
+      planned: [
+        gap('Study-scoped data filtering per user assignment',
+          'Study filters (OQ-121 to OQ-126, OQ-149 to OQ-151) run as the administrator; per-user study authorization is not exercised.'),
+        gap('Site-scoped data filtering', 'No site-scope case exists.'),
+        gap('Cross-study access denial', 'No cross-study refusal case exists.'),
+        gap('Multi-study user isolation', 'No multi-study user case exists.'),
+      ],
     },
     {
       id: 'URS-009',
@@ -120,8 +158,51 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'During regulatory inspections, FDA auditors review login records to verify system access controls ' +
         'are functioning. The login audit trail provides evidence that only authorized users accessed the system ' +
         'during the trial period. IP address logging enables geographic anomaly detection.',
-      acceptanceMethod: 'Verified through OQ-017 (successful login audit entry), OQ-018 (failed login audit entry ' +
-        'with IP), OQ-019 (audit log completeness verification), and PQ-006 (login audit trail review test).',
+      planned: [
+        verify('Successful login recorded in the login audit', ['OQ-127'], 'the IP address is not checked.'),
+        gap('Failed login recorded with IP address', 'No executed case reads a failed-login audit entry.'),
+        gap('Login audit completeness', 'OQ-133 verifies the audit hash chain, not login-event completeness.'),
+      ],
+    },
+    {
+      id: 'URS-010',
+      rationale: '21 CFR Part 11 §11.10(h) calls for device checks, where appropriate, to determine the validity of ' +
+        'the source of data input or operational instruction. A supplied device fingerprint that differs from the ' +
+        'one recorded for a session can indicate a transferred (hijacked) token.',
+      context: 'This requirement is separate from URS-011: several devices per account are supported, so a ' +
+        'fingerprint identifies the device of one session, not the only permitted device. The API records an optional ' +
+        'x-device-fingerprint header at login when an API client supplies it (the UI does not send it) and raises a ' +
+        'security alert on a mismatch without rejecting the request. Optional recording and alerting are not ' +
+        'enforced device binding, and mismatch rejection remains unresolved.',
+      planned: [
+        verify('Optional fingerprint recorded for each session', ['OQ-007']),
+        gap('Request with a mismatched fingerprint rejected (device binding)',
+          'Not implemented in the API: a mismatch only raises a security alert; no executed case exists.'),
+      ],
+    },
+    {
+      id: 'URS-011',
+      rationale: '21 CFR Part 11 §11.10(d) limits system access to authorized individuals. Each session therefore ' +
+        'has to be authenticated, revocable and auditable on its own, so that one device\'s logout, timeout or ' +
+        'compromise is handled without relying on the user\'s other sessions.',
+      context: 'Owner decision 2026-10-02: "Keep multiple devices; verify each session independently." Staff work ' +
+        'from more than one workstation or device. Each login adds a session, and a new login does not end other ' +
+        'sessions; each session (JWT sid) has its own record, idle timeout, logout, refresh and audit trail. All of ' +
+        'an account\'s sessions are revoked only where the API does so: a password change, an administrator role ' +
+        'change, disable, lock or deletion of the account, removal of the user from a study, or the emergency ' +
+        'POST /api/users/:id/revoke-sessions endpoint. While an account is locked (including the automatic lockout ' +
+        'after failed logins) or otherwise inactive, every one of its sessions is refused.',
+      planned: [
+        verify('Two simultaneous sessions of one account are issued and each verifies', ['OQ-094']),
+        verify('Logout revokes exactly the session that logged out', ['OQ-010', 'OQ-062']),
+        gap('Logout or refresh of one session leaves the account\'s other sessions usable',
+          'No executed case checks this explicitly.'),
+        verify('Refresh issues a usable replacement access token for that session', ['OQ-087']),
+        gap('Each session idles out independently', 'No executed case lets a session idle out.'),
+        gap('Login and logout audit rows carry the session ID', 'No executed case matches audit rows to a session ID.'),
+        verify('Account-wide security events revoke all of the account\'s sessions', ['OQ-021', 'OQ-022'],
+          'only a role change and a disable are exercised against issued tokens; password change, deletion, study removal and the revoke-sessions endpoint are not.'),
+      ],
     },
     {
       id: 'URS-015',
@@ -131,8 +212,12 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Administrative changes are high-impact events. Creating a new user account grants access to ePHI ' +
         'and regulated records. Changing a role could elevate privileges. Deactivating a user could disrupt ' +
         'clinical operations. Every such action must be attributable for regulatory accountability.',
-      acceptanceMethod: 'Verified through OQ-020 (user creation audit entry), OQ-021 (role change audit entry), ' +
-        'OQ-022 (deactivation audit entry), and PQ-007 (administrative action audit trail completeness test).',
+      planned: [
+        verify('User-creation audit entry', ['OQ-142'], 'the event type is not checked.'),
+        gap('Role-change audit entry', 'OQ-021 changes roles but reads no audit.'),
+        gap('Deactivation audit entry', 'OQ-022 deactivates an account but reads no audit.'),
+        gap('Administrative audit completeness', 'No executed case exists.'),
+      ],
     },
     {
       id: 'URS-016',
@@ -142,9 +227,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'In clinical trials, every data change must be traceable. When an adverse event severity is changed ' +
         'from "mild" to "severe," regulators need to know who made the change, when, and why. The audit trail ' +
         'serves as the permanent, immutable history of every record in the system.',
-      acceptanceMethod: 'Verified through OQ-023 (audit entry generated on data creation), OQ-024 (audit entry ' +
-        'generated on data modification), OQ-025 (audit entry generated on data deletion), OQ-026 (UTC timestamp ' +
-        'verification), and IQ-017 (acc_audit_log table schema with NOT NULL constraints).',
+      planned: [
+        verify('Audit entry on data creation', ['PQ-036', 'OQ-137', 'OQ-141'], 'the CREATE action type is not asserted.'),
+        verify('Audit entry on data modification', ['PQ-037']),
+        gap('Audit entry on data deletion', 'No deletion-audit case exists.'),
+        gap('UTC timestamp', 'OQ-026 and OQ-121 check only timestamp format or parseability.'),
+        gap('Audit table NOT NULL constraints', 'IQ-011 only matches an audit-table name in migrations.ts.'),
+      ],
     },
     {
       id: 'URS-017',
@@ -154,9 +243,11 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'A complete audit trail entry answers the five W questions for regulated records: Who (user identity), ' +
         'What (action performed and record affected), When (UTC timestamp), Where (record identifier), and Why ' +
         '(reason for change, captured separately). Missing any element undermines the investigative value.',
-      acceptanceMethod: 'Verified through OQ-027 (audit entry field completeness check for all six fields), ' +
-        'OQ-028 (no null fields in audit entries for data changes), and IQ-018 (NOT NULL constraints on all ' +
-        'required acc_audit_log columns).',
+      planned: [
+        verify('Required fields present in audit entries', ['OQ-121', 'OQ-122', 'OQ-027', 'OQ-028', 'PQ-037'],
+          'date and user are checked on every owned-study row; action and record only on the first row of one form read; old and new values only on the exact correction.'),
+        gap('NOT NULL constraints on the audit columns', 'No executed case checks database constraints.'),
+      ],
     },
     {
       id: 'URS-018',
@@ -166,9 +257,11 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'In practice, data corrections happen frequently in clinical trials — typos, measurement ' +
         'recalculations, late information from lab reports. The reason for change allows data managers and ' +
         'monitors to verify that each correction is clinically justified and not suspicious.',
-      acceptanceMethod: 'Verified through OQ-029 (reason field required on data correction), OQ-030 (correction ' +
-        'rejected without reason), OQ-031 (reason stored in audit trail), and PQ-008 (data correction workflow ' +
-        'end-to-end test).',
+      planned: [
+        verify('Correction refused without a reason', ['OQ-061']),
+        verify('Reason stored in the audit trail and its export', ['PQ-037', 'OQ-032']),
+        verify('Data-correction workflow end to end', ['PQ-013', 'PQ-037']),
+      ],
     },
     {
       id: 'URS-019',
@@ -178,9 +271,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Audit trail immutability is the single most scrutinized control during FDA inspections of ' +
         'computerized systems. Inspectors routinely attempt to verify that no mechanism exists — through the ' +
         'application, database, or administrative tools — to alter audit trail records.',
-      acceptanceMethod: 'Verified through OQ-032 (no API endpoint for audit modification), OQ-033 (database ' +
-        'permission REVOKE verification), OQ-034 (attempted audit modification returns error), and IQ-019 ' +
-        '(database role permission audit for acc_audit_log table).',
+      planned: [
+        verify('Audit API refuses modification and deletion and the entries stay unchanged',
+          ['OQ-030', 'OQ-031', 'OQ-060', 'OQ-129', 'OQ-130', 'OQ-131', 'OQ-132'], 'API refusal only.'),
+        gap('Database REVOKE verification',
+          'No executed case issues direct SQL; the runner states its refusals prove API refusal, not database enforcement.'),
+        gap('Database role permission audit for the audit table', 'No executed case exists.'),
+      ],
     },
     {
       id: 'URS-020',
@@ -190,9 +287,11 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Pharmaceutical companies may face regulatory inquiries years or decades after a trial concludes. ' +
         'The audit trail must be accessible and readable for the full retention period. This requires both ' +
         'physical storage durability and format readability over time.',
-      acceptanceMethod: 'Verified through OQ-035 (retention policy configuration), OQ-036 (no auto-purge on ' +
-        'audit tables), IQ-020 (retention-manager.service.ts configuration review), and PQ-009 (simulated ' +
-        'long-term retention test).',
+      planned: [
+        gap('Retention policy configuration', 'DR-003 only keyword-checks retention-manager.service.ts.'),
+        gap('No automatic purge of audit tables', 'No executed case exists.'),
+        gap('Long-term retention simulation', 'PQ-036 to PQ-039 re-read only within the same run.'),
+      ],
     },
     {
       id: 'URS-027',
@@ -202,8 +301,11 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Server-generated timestamps in UTC eliminate timezone ambiguity and prevent timestamp manipulation. ' +
         'In multi-site, multi-timezone clinical trials, a single consistent time source is essential for ' +
         'reconstructing the accurate sequence of events during regulatory review.',
-      acceptanceMethod: 'Verified through OQ-037 (client-supplied timestamps rejected), OQ-038 (server timestamp ' +
-        'accuracy verification against NTP), and IQ-021 (DEFAULT NOW() on acc_audit_log.created_at column).',
+      planned: [
+        gap('Client-supplied timestamps rejected', 'No executed case sends a client timestamp.'),
+        gap('Server timestamp accuracy against a reference time source', 'No executed case exists.'),
+        gap('Database default timestamp on audit rows', 'No IQ case checks the column default.'),
+      ],
     },
     {
       id: 'URS-029',
@@ -213,9 +315,11 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'In clinical trials, electronic signatures are used to approve CRF data, sign adverse event reports, ' +
         'and authorize database locks. Each signature carries legal weight equivalent to a wet-ink signature on ' +
         'paper. The signer takes personal responsibility for the content they sign.',
-      acceptanceMethod: 'Verified through OQ-039 (signature creation requires personal re-authentication), ' +
-        'OQ-040 (signature uniquely tied to authenticated user ID), and PQ-010 (signature lifecycle integration ' +
-        'test with multiple signers).',
+      planned: [
+        verify('Signature creation requires personal re-authentication', ['OQ-033', 'OQ-041']),
+        verify('Signature attributed to the authenticated signer', ['OQ-042', 'PQ-028']),
+        gap('Signature lifecycle with multiple signers', 'All signature cases use one synthetic signer.'),
+      ],
     },
     {
       id: 'URS-041',
@@ -225,9 +329,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'eCRF data entry is the core function of an EDC system. Every field on every form may contribute ' +
         'to a regulatory submission. Field-level validation at point of entry is the first defense against ' +
         'data quality issues that could require costly corrections later in the trial.',
-      acceptanceMethod: 'Verified through OQ-041 (all CRF field types render and save correctly), OQ-042 ' +
-        '(field-level validation fires on entry), PQ-011 (complete CRF data entry workflow test), and ' +
-        'IQ-022 (form data storage schema verification).',
+      planned: [
+        verify('All configured field types save and read back', ['PQ-011', 'PQ-012', 'PQ-015'],
+          'API save and readback of five scalar types; rendering is not tested.'),
+        verify('Field-level validation on entry', ['PQ-014'], 'preview endpoint only.'),
+        verify('Complete CRF data-entry workflow', ['PQ-011', 'PQ-020', 'PQ-021']),
+        gap('Form data storage schema verification', 'No IQ case checks form storage.'),
+      ],
     },
     {
       id: 'URS-044',
@@ -237,9 +345,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'FDA inspectors may request data in PDF for on-screen review, CSV for analysis, XML for automated ' +
         'processing, or CDISC ODM for regulatory submission. The system must produce exports that faithfully ' +
         'represent the source data without omission or transformation artifacts.',
-      acceptanceMethod: 'Verified through OQ-043 (PDF export completeness), OQ-044 (CSV export accuracy), ' +
-        'OQ-045 (XML well-formedness), OQ-046 (CDISC ODM compliance), and PQ-012 (export round-trip verification ' +
-        'against source data).',
+      planned: [
+        verify('PDF export completeness', ['OQ-048', 'OQ-067'], 'one owned form; study-level completeness is not tested.'),
+        verify('CSV export accuracy', ['OQ-047']),
+        gap('XML well-formedness', 'No executed case parses exported XML; OQ-195 only checks substrings of the ODM output.'),
+        gap('CDISC ODM compliance', 'No schema validation exists; OQ-195 checks only the ODM root, study OID and subject label.'),
+        verify('Export round-trip against source data', ['PQ-035', 'OQ-047']),
+      ],
     },
     {
       id: 'URS-057',
@@ -249,8 +361,12 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Subject enrollment assigns a unique identifier that links all subsequent clinical data to that ' +
         'individual. Duplicate enrollment or cross-site enrollment errors are serious protocol deviations that ' +
         'can invalidate study data and endanger patients.',
-      acceptanceMethod: 'Verified through OQ-047 (unique subject ID generation), OQ-048 (duplicate enrollment ' +
-        'prevention), OQ-049 (site assignment verification), and PQ-013 (enrollment workflow end-to-end test).',
+      planned: [
+        verify('Subject enrollment with a native subject identity', ['PQ-006', 'PQ-007']),
+        verify('Duplicate enrollment prevention', ['PQ-008']),
+        gap('Site assignment verification', 'No site-assignment case exists.'),
+        verify('Enrollment workflow end to end', ['OQ-154']),
+      ],
     },
     {
       id: 'URS-069',
@@ -260,9 +376,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'Clinical trial data includes sensitive health information that, if exposed, could harm patients ' +
         'through discrimination, insurance denial, or social stigma. Database-level and backup encryption ' +
         'protect against physical media theft, unauthorized database access, and backup exposure.',
-      acceptanceMethod: 'Verified through IQ-023 (PostgreSQL encryption-at-rest configuration), IQ-024 ' +
-        '(backup encryption verification with AES-256-GCM), OQ-050 (encrypted backup creation and ' +
-        'decryption test), and PQ-014 (encryption key rotation test).',
+      planned: [
+        gap('PostgreSQL encryption-at-rest configuration', 'No executed case checks it.'),
+        gap('Backup encryption with AES-256-GCM',
+          'IQ-027 and DR-002 are static source and file checks and do not verify GCM.'),
+        gap('Encrypted backup creation and decryption', 'OQ-068 and OQ-192 only read backup status.'),
+        gap('Encryption key rotation', 'No executed case exists.'),
+      ],
     },
     {
       id: 'URS-073',
@@ -272,10 +392,22 @@ function buildDetailedDescriptions(): DetailedDescription[] {
       context: 'In healthcare settings, "snooping" — viewing patient records without a clinical need — is a ' +
         'common privacy violation. The system must log not just data modifications but also data access events ' +
         'to enable detection of unauthorized viewing of ePHI.',
-      acceptanceMethod: 'Verified through OQ-051 (ePHI read access audit entry generation), OQ-052 (audit log ' +
-        'completeness for read events), and PQ-015 (ePHI access audit trail review and anomaly detection test).',
+      planned: [
+        gap('ePHI read-access audit entry', 'No read-access audit case exists.'),
+        gap('Audit completeness for read events', 'No executed case exists.'),
+        gap('ePHI access review and anomaly detection', 'No executed case exists.'),
+      ],
     },
   ];
+}
+
+/** Planned verification text: cited cases with what they actually execute, and explicit gaps. */
+function plannedVerification(planned: PlannedVerification[]): string {
+  return planned.map(item => {
+    if (!item.cases.length) return `- ${item.activity}: Gap — no executed case mapped. ${item.note ?? ''}`.trimEnd();
+    return [`- ${item.activity}:`, ...item.cases.map(id => `  - ${id} — ${runnerCaseCheck(id).check}`),
+      ...(item.note ? [`  - Not covered: ${item.note}`] : [])].join('\n');
+  }).join('\n') + '\n\n';
 }
 
 function buildCategories(): ReqCategory[] {
@@ -293,8 +425,8 @@ function buildCategories(): ReqCategory[] {
         { id: 'URS-007', description: 'The system SHALL support user provisioning with role and study assignment by administrators', priority: 'Must', risk: 'High', part11Ref: '11.10(d)', acceptance: 'Admin can create users, assign roles, assign studies; changes audit-logged' },
         { id: 'URS-008', description: 'The system SHALL support user deactivation without data deletion', priority: 'Must', risk: 'High', part11Ref: '11.10(d)', acceptance: 'Deactivated user cannot log in; historical audit trail entries preserved' },
         { id: 'URS-009', description: 'The system SHALL log all login attempts (success and failure) with timestamp and IP address', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'Login audit log contains username, timestamp, IP, success/failure for every attempt' },
-        { id: 'URS-010', description: 'The system SHALL enforce device fingerprinting to detect session hijacking', priority: 'Should', risk: 'High', part11Ref: '11.10(h)', acceptance: 'UNMET: session invalidation remains the requested criterion; current middleware only alerts on a supplied fingerprint mismatch, and the UI does not send the header' },
-        { id: 'URS-011', description: 'The system SHALL prevent concurrent sessions for the same user account', priority: 'Should', risk: 'High', part11Ref: '11.10(d)', acceptance: 'UNMET: termination or blocking remains the requested criterion; current password login explicitly permits independent concurrent sessions' },
+        { id: 'URS-010', description: 'The system SHALL enforce device fingerprinting to detect session hijacking', priority: 'Should', risk: 'High', part11Ref: '11.10(h)', acceptance: 'UNRESOLVED (separate from URS-011): the requested criterion is rejection of a request whose supplied device fingerprint does not match its session. The API records an optional fingerprint header at login (the UI does not send it) and only raises an alert on a mismatch, which is not enforced device binding' },
+        { id: 'URS-011', description: 'The system SHALL support simultaneous independent sessions (devices) for the same user account and SHALL track and verify each session independently', priority: 'Should', risk: 'High', part11Ref: '11.10(d)', acceptance: 'Two sessions of one account are both usable and each is verified independently; a new login does not end other sessions; logout, refresh and idle timeout act only on the exact session (JWT sid), and login/logout audit rows carry that session ID; all of an account\'s sessions are revoked only by a password change, an administrator role change, disable, lock or deletion, removal from a study, or POST /api/users/:id/revoke-sessions, and every session of a locked (including the automatic failed-login lockout) or inactive account is refused while that state lasts (owner decision 2026-10-02: "Keep multiple devices; verify each session independently")' },
         { id: 'URS-012', description: 'The system SHALL enforce periodic password expiration', priority: 'Should', risk: 'High', part11Ref: '11.300(b)', acceptance: 'Users prompted to change password after configured expiration period' },
         { id: 'URS-013', description: 'The system SHALL prevent password reuse for a configurable number of previous passwords', priority: 'Should', risk: 'High', part11Ref: '11.300(b)', acceptance: 'System rejects passwords matching last N passwords' },
         { id: 'URS-014', description: 'The system SHALL support periodic user access review by administrators', priority: 'Must', risk: 'High', part11Ref: '11.10(d)', acceptance: 'Admin can generate user access report; review documented' },
@@ -309,8 +441,8 @@ function buildCategories(): ReqCategory[] {
         { id: 'URS-017', description: 'Each audit trail entry SHALL contain: user identity, date/time (UTC), action performed, record affected, old value, new value', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'Audit entry contains all six fields; no field is null for data changes' },
         { id: 'URS-018', description: 'The system SHALL capture a reason for change when clinical data is modified', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'Data correction requires reason; reason stored in audit entry' },
         { id: 'URS-019', description: 'Audit trail records SHALL be immutable — no user including administrators can modify or delete audit entries', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'No API endpoint or database operation permits audit record modification' },
-        { id: 'URS-020', description: 'Audit trail records SHALL be retained for the full record retention period (minimum 15 years for clinical data)', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'Audit records persist beyond record retention; verified via retention test' },
-        { id: 'URS-021', description: 'The system SHALL provide audit trail export in human-readable format (PDF) and machine-readable format (CSV/XML)', priority: 'Must', risk: 'High', part11Ref: '11.10(b)', acceptance: 'Exported audit trail matches database records; formats verified' },
+        { id: 'URS-020', description: 'Audit trail records SHALL be retained for the full record retention period (minimum 15 years for clinical data)', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'Audit records persist for the full retention period; to be shown by a retention test' },
+        { id: 'URS-021', description: 'The system SHALL provide audit trail export in human-readable format (PDF) and machine-readable format (CSV/XML)', priority: 'Must', risk: 'High', part11Ref: '11.10(b)', acceptance: 'Exported audit trail matches database records; each format to be verified' },
         { id: 'URS-022', description: 'The system SHALL allow authorized users to review audit trails filtered by subject, form, field, user, and date range', priority: 'Must', risk: 'High', part11Ref: '11.10(e)', acceptance: 'All filter combinations return correct, complete results' },
         { id: 'URS-023', description: 'Audit trail entries SHALL be independent of the record they audit — deleting a record must not delete its audit trail', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'After record deletion, audit trail entries remain accessible' },
         { id: 'URS-024', description: 'The system SHALL audit access events (view/read) for ePHI records', priority: 'Must', risk: 'High', part11Ref: '11.10(e)', acceptance: 'Viewing patient data generates an audit entry' },
@@ -345,10 +477,10 @@ function buildCategories(): ReqCategory[] {
         { id: 'URS-041', description: 'The system SHALL support electronic Case Report Form (eCRF) data entry with field-level validation', priority: 'Must', risk: 'Critical', part11Ref: '11.10(a)', acceptance: 'All CRF field types render correctly; validation fires on entry/save' },
         { id: 'URS-042', description: 'The system SHALL enforce configurable validation rules (range checks, pattern checks, cross-field checks) at point of entry', priority: 'Must', risk: 'Critical', part11Ref: '11.10(f)', acceptance: 'Invalid data triggers error/warning; rules configurable per form' },
         { id: 'URS-043', description: 'Data corrections SHALL NOT overwrite previous values — old values must be preserved in the audit trail', priority: 'Must', risk: 'Critical', part11Ref: '11.10(e)', acceptance: 'After correction, old value visible in audit trail; reason captured' },
-        { id: 'URS-044', description: 'The system SHALL support data export in PDF, CSV, XML, and CDISC ODM formats', priority: 'Must', risk: 'Critical', part11Ref: '11.10(b)', acceptance: 'Exported data matches source; all formats validated' },
+        { id: 'URS-044', description: 'The system SHALL support data export in PDF, CSV, XML, and CDISC ODM formats', priority: 'Must', risk: 'Critical', part11Ref: '11.10(b)', acceptance: 'Exported data matches source; each format to be validated' },
         { id: 'URS-045', description: 'The system SHALL retain all electronic records for the required retention period without degradation', priority: 'Must', risk: 'Critical', part11Ref: '11.10(c)', acceptance: 'Records retrievable and readable after retention period simulation' },
-        { id: 'URS-046', description: 'The system SHALL provide automated backup with AES-256 encryption', priority: 'Must', risk: 'Critical', part11Ref: '11.10(c)', acceptance: 'Backups encrypted; encryption verified; backup schedule operational' },
-        { id: 'URS-047', description: 'The system SHALL support full restoration from backup with verified data integrity', priority: 'Must', risk: 'Critical', part11Ref: '11.10(c)', acceptance: 'Restored data matches pre-backup state; checksums verified' },
+        { id: 'URS-046', description: 'The system SHALL provide automated backup with AES-256 encryption', priority: 'Must', risk: 'Critical', part11Ref: '11.10(c)', acceptance: 'Backups encrypted (encryption to be verified); backup schedule operational' },
+        { id: 'URS-047', description: 'The system SHALL support full restoration from backup with verified data integrity', priority: 'Must', risk: 'Critical', part11Ref: '11.10(c)', acceptance: 'Restored data matches pre-backup state; checksums to be compared' },
         { id: 'URS-048', description: 'The system SHALL support skip/branching logic in eCRFs to show/hide fields based on data entry', priority: 'Should', risk: 'High', part11Ref: '11.10(a)', acceptance: 'Conditional fields appear/hide correctly based on trigger values' },
         { id: 'URS-049', description: 'The system SHALL support calculated fields with automatic derivation from entered data', priority: 'Should', risk: 'High', part11Ref: '11.10(a)', acceptance: 'Calculated values update correctly; formula documented in audit trail' },
         { id: 'URS-050', description: 'The system SHALL support Double Data Entry (DDE) for critical fields with discrepancy detection', priority: 'Should', risk: 'High', part11Ref: '11.10(a)', acceptance: 'DDE mode forces independent entry; discrepancies flagged for review' },
@@ -382,16 +514,16 @@ function buildCategories(): ReqCategory[] {
       title: 'HIPAA Safeguards',
       anchor: 'hipaa',
       requirements: [
-        { id: 'URS-069', description: 'The system SHALL encrypt all ePHI at rest using AES-256 or equivalent', priority: 'Must', risk: 'Critical', part11Ref: '164.312(a)(2)(iv)', acceptance: 'Database encryption verified; backup encryption verified' },
-        { id: 'URS-070', description: 'The system SHALL encrypt all ePHI in transit using TLS 1.2 or higher', priority: 'Must', risk: 'Critical', part11Ref: '164.312(e)(1)', acceptance: 'All API endpoints enforce HTTPS; TLS version verified' },
+        { id: 'URS-069', description: 'The system SHALL encrypt all ePHI at rest using AES-256 or equivalent', priority: 'Must', risk: 'Critical', part11Ref: '164.312(a)(2)(iv)', acceptance: 'Database encryption and backup encryption each to be verified' },
+        { id: 'URS-070', description: 'The system SHALL encrypt all ePHI in transit using TLS 1.2 or higher', priority: 'Must', risk: 'Critical', part11Ref: '164.312(e)(1)', acceptance: 'All API endpoints enforce HTTPS; TLS version to be verified' },
         { id: 'URS-071', description: 'The system SHALL enforce unique user identification for all users accessing ePHI', priority: 'Must', risk: 'Critical', part11Ref: '164.312(a)(2)(i)', acceptance: 'No shared accounts; every ePHI access tied to individual user' },
         { id: 'URS-072', description: 'The system SHALL implement automatic logoff after configurable idle period', priority: 'Must', risk: 'Critical', part11Ref: '164.312(a)(2)(iii)', acceptance: 'Idle timeout enforced; session terminated; re-auth required' },
         { id: 'URS-073', description: 'The system SHALL maintain audit controls recording all access to ePHI', priority: 'Must', risk: 'Critical', part11Ref: '164.312(b)', acceptance: 'All ePHI read/write operations logged with user, timestamp, record ID' },
         { id: 'URS-074', description: 'The system SHALL protect ePHI integrity through validation and error-detection mechanisms', priority: 'Must', risk: 'Critical', part11Ref: '164.312(c)(1)', acceptance: 'Data integrity checks in place; checksum validation on export' },
         { id: 'URS-075', description: 'The system SHALL authenticate all persons or entities seeking access to ePHI', priority: 'Must', risk: 'Critical', part11Ref: '164.312(d)', acceptance: 'JWT-based auth required for all ePHI endpoints; no anonymous access' },
-        { id: 'URS-076', description: 'The system SHALL implement access controls limiting ePHI access to minimum necessary', priority: 'Must', risk: 'Critical', part11Ref: '164.312(a)(1)', acceptance: 'RBAC enforces minimum necessary; verified by cross-role testing' },
-        { id: 'URS-077', description: 'The system SHALL support breach notification procedures including detection and reporting', priority: 'Must', risk: 'Critical', part11Ref: '164.404', acceptance: 'Breach detection mechanisms documented; notification workflow tested' },
-        { id: 'URS-078', description: 'The system SHALL implement contingency planning including backup, disaster recovery, and emergency mode', priority: 'Must', risk: 'Critical', part11Ref: '164.308(a)(7)', acceptance: 'Backup/restore verified; disaster recovery plan documented and tested' },
+        { id: 'URS-076', description: 'The system SHALL implement access controls limiting ePHI access to minimum necessary', priority: 'Must', risk: 'Critical', part11Ref: '164.312(a)(1)', acceptance: 'RBAC enforces minimum necessary; to be verified by cross-role testing' },
+        { id: 'URS-077', description: 'The system SHALL support breach notification procedures including detection and reporting', priority: 'Must', risk: 'Critical', part11Ref: '164.404', acceptance: 'Breach detection mechanisms documented; notification workflow to be tested' },
+        { id: 'URS-078', description: 'The system SHALL implement contingency planning including backup, disaster recovery, and emergency mode', priority: 'Must', risk: 'Critical', part11Ref: '164.308(a)(7)', acceptance: 'Backup/restore to be verified; disaster recovery plan documented and to be tested' },
         { id: 'URS-079', description: 'The system SHALL support Business Associate Agreement (BAA) requirements for all third-party data processors', priority: 'Must', risk: 'High', part11Ref: '164.308(b)', acceptance: 'BAAs in place with cloud providers; documented and reviewed' },
         { id: 'URS-080', description: 'The system SHALL implement workforce training tracking for HIPAA compliance', priority: 'Must', risk: 'High', part11Ref: '164.308(a)(5)', acceptance: 'Training completion records maintained; periodic refresher tracked' },
       ],
@@ -430,6 +562,10 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += 'These requirements form the basis for system validation and are traceable to specific 21 CFR Part 11 sections, HIPAA Security Rule sections, and ICH E6(R2) GCP principles.\n\n';
   content += 'Each requirement is assigned a priority (Must/Should/Could per MoSCoW), a risk level, ' +
     'a regulatory reference, and formal acceptance criteria.\n\n';
+  content += 'This is a specification and records no test results. The **Planned Verification** of each detailed ' +
+    'requirement cites a runner case only where that case\'s actual executed check, quoted beside it, matches the ' +
+    'planned activity; an activity without such a case is marked "Gap — no executed case mapped". Executed results ' +
+    'are reported in the retained OQ/PQ evidence and in the CSA Feature Assurance Records (VAL-019).\n\n';
   content += hr();
 
   content += section(2, 'Requirement Format');
@@ -479,7 +615,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
         content += `**${r.id}: ${r.description.split(' SHALL ')[0]}**\n\n`;
         content += `**Rationale:** ${detail.rationale}\n\n`;
         content += `**Context:** ${detail.context}\n\n`;
-        content += `**Acceptance Method:** ${detail.acceptanceMethod}\n\n`;
+        content += '**Planned Verification:**\n\n';
+        content += plannedVerification(detail.planned);
         content += hr();
       }
     }
@@ -563,7 +700,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     'functionality. Could requirements are candidates for future releases.\n\n';
 
   content += section(3, 'Prioritization Rationale');
-  content += 'The prioritization was determined through a collaborative assessment involving:\n\n';
+  content += 'Priorities are assigned using the following criteria:\n\n';
   content += '- **Regulatory compliance analysis:** Requirements directly mandated by 21 CFR Part 11 or HIPAA ' +
     'are classified as Must.\n';
   content += '- **Patient safety impact assessment:** Requirements whose failure could foreseeably affect patient ' +
@@ -593,20 +730,9 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   // Change History
   content += section(2, 'Change History');
-  content += 'This section documents the version history of the User Requirements Specification.\n\n';
-  content += markdownTable(
-    ['Version', 'Date', 'Author', 'Description of Change', 'Approved By'],
-    [
-      ['0.1', '2025-06-15', 'System Architect', 'Initial draft — core authentication and audit trail requirements', 'N/A (draft)'],
-      ['0.2', '2025-08-01', 'System Architect', 'Added electronic signature requirements per Part 11 Subpart C', 'N/A (draft)'],
-      ['0.3', '2025-10-10', 'Clinical Operations', 'Added clinical workflow and data entry requirements', 'N/A (draft)'],
-      ['0.4', '2025-12-01', 'Regulatory Affairs', 'Added HIPAA Security Rule requirements; regulatory cross-references', 'N/A (draft)'],
-      ['0.5', '2026-01-15', 'Quality Assurance', 'Formal review — acceptance criteria refined for testability', 'QA Lead'],
-      ['1.0', DOC_DATE, 'Quality Assurance', 'Approved for validation — all requirements finalized with detailed descriptions', 'QA Lead, Project Manager'],
-    ],
-  );
-  content += '\n';
-  content += '> **Change Control:** After approval of version 1.0, any changes to this document require a formal ' +
+  content += 'This generated draft records no approvals and no revision history. The revision history and approval ' +
+    'records of this specification are kept by document control; none are asserted here.\n\n';
+  content += '> **Change Control:** Once this specification is approved, any change to it requires a formal ' +
     'change request, impact assessment, and re-approval by the original signatories. Changes affecting validated ' +
     'functionality require re-validation per the Validation Change Control SOP.\n\n';
   content += hr();
