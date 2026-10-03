@@ -13,8 +13,89 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { testXssInjection, testPathTraversal, testCorsPreflight, testErrorLeakage } from '../runners/security-runner';
 import { captureWithValidator, captureWithExpectedStatus, redactEvidenceSecrets } from '../runners/evidence-capture';
+import { captureLoginProbe } from '../runners/auth';
 
 const baseUrl = 'https://qualification.invalid';
+
+for (const defect of ['none', 'logout-unavailable', 'logout-false', 'still-active', 'wrong-refusal', 'bad-credentials', 'missing-token', 'nested-token'])
+  test(`login-only qualification probe owns and verifies its session cleanup: ${defect}`, async t => {
+    const active = new Set(['foreign-session']);
+    const requests: Array<{ path: string; bearer: string | null }> = [];
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+      const p = new URL(url).pathname, bearer = new Headers(init.headers).get('authorization');
+      requests.push({ path: p, bearer });
+      assert.equal(init.redirect, 'error');
+      let status = 200, body: any = { success: true };
+      if (p === '/api/auth/login') {
+        assert.equal(init.method, 'POST');
+        assert.deepEqual(JSON.parse(String(init.body)), { username: 'owned', password: 'OwnedPassword42!' });
+        if (defect === 'bad-credentials') { status = 401; body = { success: false }; }
+        else if (defect === 'missing-token') body = { success: true, user: { userId: 77 } };
+        else {
+          active.add('issued-probe');
+          const payload = { accessToken: 'issued-probe', user: { userId: 77 } };
+          body = defect === 'nested-token' ? { success: true, data: payload } : { success: true, ...payload };
+        }
+      } else {
+        assert.equal(bearer, 'Bearer issued-probe', 'Only the session issued by this probe may be targeted');
+        if (p === '/api/auth/logout') {
+          assert.equal(init.method, 'POST');
+          if (defect === 'logout-unavailable') throw new Error('Unavailable');
+          if (defect === 'logout-false') body = { success: false };
+          else if (defect !== 'still-active') active.delete('issued-probe');
+        } else if (p === '/api/auth/verify') {
+          assert.equal(init.method, 'GET');
+          if (active.has('issued-probe')) body = { success: true, data: { userId: 77 } };
+          else { status = 401; body = { success: false, error: { code: defect === 'wrong-refusal' ? 'INVALID_TOKEN' : 'SESSION_REVOKED' } }; }
+        } else assert.fail(`Unexpected operation ${p}`);
+      }
+      return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    });
+    const result = await captureLoginProbe(baseUrl, 'owned', 'OwnedPassword42!', 'OQ-PROBE');
+    assert.equal(result.passed, ['none', 'nested-token'].includes(defect));
+    assert.ok(active.has('foreign-session'));
+    assert.equal(requests.length, ['bad-credentials', 'missing-token'].includes(defect) ? 1 : 3);
+    if (requests.length === 3) {
+      assert.deepEqual(result.relatedEvidence?.map(row => row.testCaseId), ['OQ-PROBE-logout', 'OQ-PROBE-logout-readback']);
+      assert.ok(!JSON.stringify(result.relatedEvidence).includes('issued-probe'));
+    }
+    const retained = JSON.stringify(redactEvidenceSecrets(result));
+    assert.ok(!retained.includes('OwnedPassword42!') && !retained.includes('issued-probe'));
+  });
+
+test('OQ operator claim and password-age probes release their sessions while preserving the caller session', async t => {
+  const active = new Set(['foreign-session']);
+  let serial = 0;
+  const issue = () => {
+    const token = `e30.${Buffer.from(JSON.stringify({ userId: 77, role: 'admin', exp: Date.now() / 1000 + 600, sid: `owned-${++serial}` })).toString('base64url')}.signature`;
+    active.add(token); return token;
+  };
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit = {}) => {
+    const p = new URL(url).pathname, bearer = new Headers(init.headers).get('authorization')?.replace('Bearer ', '');
+    let status = 200, body: any = { success: true, data: [] };
+    if (p === '/api/auth/login') {
+      const request = JSON.parse(String(init.body));
+      if (request.username !== 'owned' || request.password !== 'OwnedPassword42!') { status = 401; body = { success: false }; }
+      else body = { success: true, accessToken: issue(), user: { userId: 77 }, passwordExpirationWarning: false };
+    } else if (p === '/api/auth/logout') {
+      assert.ok(bearer && bearer !== 'foreign-session'); active.delete(bearer); body = { success: true };
+    } else if (p === '/api/auth/verify') {
+      if (bearer && active.has(bearer)) body = { success: true, data: { userId: 77 } };
+      else { status = 401; body = { success: false, error: { code: 'SESSION_REVOKED' } }; }
+    }
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  });
+  const authRows = await runAuthenticationTests(baseUrl, 'owned', 'OwnedPassword42!', false, true);
+  const claims = authRows.find(row => row.testCaseId === 'OQ-006');
+  assert.equal(claims?.passed, true);
+  assert.ok(claims?.relatedEvidence?.every(row => row.passed));
+  assert.deepEqual([...active], ['foreign-session']);
+  const partRows = await runPart11ComplianceTests(baseUrl, 'owned', 'OwnedPassword42!', 'foreign-session');
+  const policy = partRows.find(row => row.testCaseId === 'OQ-056');
+  assert.equal(policy?.passed, true);
+  assert.ok(policy?.relatedEvidence?.every(row => row.passed));
+  assert.deepEqual([...active], ['foreign-session']);
+});
 
 const prerequisite = (testCaseId: string, passed = true) => ({ testCaseId, timestamp: '2026-10-02T12:00:00Z',
   method: 'POST', endpoint: baseUrl + '/api/owned', responseStatus: 200, responseBody: { success: true }, passed, notes: 'Retained native fixture result' });
@@ -549,8 +630,14 @@ for (const defect of ['missing-role', 'bad-id', 'bad-exp', 'valid']) test(`JWT c
   if (defect === 'bad-id') payload.userId = '7';
   if (defect === 'bad-exp') payload.exp = 'far-future';
   const token = `e30.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.fixture`;
-  t.mock.method(globalThis, 'fetch', async (url: string) => new Response(JSON.stringify(new URL(url).pathname === '/api/auth/login'
-    ? { success: true, accessToken: token } : { success: false }), { headers: { 'Content-Type': 'application/json' } }));
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    const route = new URL(url).pathname;
+    const body = route === '/api/auth/login' ? { success: true, accessToken: token }
+      : route === '/api/auth/logout' ? { success: true }
+      : { success: false, error: { code: 'SESSION_REVOKED' } };
+    return new Response(JSON.stringify(body), { status: route === '/api/auth/verify' ? 401 : 200,
+      headers: { 'Content-Type': 'application/json' } });
+  });
   assert.equal((await runAuthenticationTests(baseUrl, 'operator', 'secret')).find(row => row.testCaseId === 'OQ-006')!.passed, defect === 'valid');
 });
 function replies(t: any, status: number, body: unknown) {

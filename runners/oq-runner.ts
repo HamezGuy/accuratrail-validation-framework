@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
  * OQ Runner — Operational Qualification test execution.
  * Executes the 205-case OQ catalog and retains unmet evidence as failures.
  */
-import { authHeaders, login, qualificationCredentials } from './auth';
+import { authHeaders, captureLoginProbe, login, qualificationCredentials } from './auth';
 import {
   EvidenceResult,
   captureApiCall,
@@ -746,10 +746,7 @@ export async function runAuthenticationTests(
 
   // OQ-006: JWT claims verification
   {
-    const loginRes = await captureApiCall({
-      testCaseId: 'OQ-006', method: 'POST', url: '/api/auth/login', baseUrl,
-      body: { username, password },
-    });
+    const loginRes = await captureLoginProbe(baseUrl, username, password, 'OQ-006');
     if (loginRes.passed && isRecord(loginRes.responseBody)) {
       const tok = loginRes.responseBody.accessToken as string;
       try {
@@ -1316,10 +1313,7 @@ export async function runPart11ComplianceTests(
 
   // OQ-056: §11.300(b) — Password expiration check is active
   {
-    const r = await captureApiCall({
-      testCaseId: 'OQ-056', method: 'POST', url: '/api/auth/login', baseUrl,
-      body: { username, password },
-    });
+    const r = await captureLoginProbe(baseUrl, username, password, 'OQ-056');
     if (r.passed && isRecord(r.responseBody)) {
       const hasExpirationInfo = 'passwordExpirationWarning' in r.responseBody ||
                                  'daysUntilExpiration' in r.responseBody;
