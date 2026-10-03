@@ -10,7 +10,7 @@ import {
   tableOfContents,
   hr,
 } from './helpers/markdown-writer';
-import { EvidenceStats, loadRunnerEvidence, RunnerResult, tryLoadEvidence } from './helpers/evidence-linker';
+import { EvidenceStats, loadRunnerEvidence, mappedCaseState, runnerCaseCheck, RunnerResult, tryLoadEvidence, type MappedCaseState } from './helpers/evidence-linker';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -22,66 +22,64 @@ interface ComplianceMapping {
   evidenceRef: string;
 }
 
+/** Each section cites only catalogued runner cases (RUNNER_CASE_CHECKS) whose
+ * actual check verifies it; evidenceRef says what those cases verify. A section
+ * no executed case verifies stays Pending: written procedures, training, IQ and
+ * transmission checks are outside this runner evidence. */
 const PART11_MAPPINGS: ComplianceMapping[] = [
-  { section: '11.10(a)', title: 'Validation', testCaseIds: ['OQ-043', 'OQ-044', 'OQ-049', 'PQM-007'], evidenceRef: 'This validation package' },
-  { section: '11.10(b)', title: 'Accurate and complete copies', testCaseIds: ['OQ-045', 'OQ-047', 'OQ-048', 'PQM-020'], evidenceRef: 'OQ — export test cases' },
-  { section: '11.10(c)', title: 'Record protection', testCaseIds: ['IQ-026', 'IQ-027', 'PQM-021'], evidenceRef: 'OQ — access control, backup tests' },
-  { section: '11.10(d)', title: 'Limiting system access', testCaseIds: ['OQ-001', 'OQ-002', 'OQ-003', 'OQ-005', 'OQ-006', 'OQ-008', 'OQ-009', 'OQ-010'], evidenceRef: 'OQ — RBAC, authentication tests' },
-  { section: '11.10(e)', title: 'Audit trails', testCaseIds: ['OQ-023', 'OQ-024', 'OQ-025', 'OQ-026', 'OQ-027', 'OQ-028', 'OQ-029', 'OQ-030', 'OQ-031', 'OQ-032', 'OQ-042', 'OQ-044'], evidenceRef: 'OQ — audit trail test cases' },
-  { section: '11.10(f)', title: 'Operational system checks', testCaseIds: ['OQ-043', 'PQM-008'], evidenceRef: 'OQ — validation rules, edit checks' },
-  { section: '11.10(g)', title: 'Authority checks', testCaseIds: ['OQ-011', 'OQ-012', 'OQ-013', 'OQ-014', 'OQ-015', 'OQ-016', 'OQ-017', 'OQ-018', 'OQ-019', 'OQ-020', 'OQ-021', 'OQ-022'], evidenceRef: 'OQ — role-based access tests' },
-  { section: '11.10(h)', title: 'Device checks', testCaseIds: ['OQ-005', 'OQ-007'], evidenceRef: 'IQ — infrastructure verification' },
+  { section: '11.10(a)', title: 'Validation', testCaseIds: [], evidenceRef: 'This validation package; validation is concluded only by its review and approval' },
+  { section: '11.10(b)', title: 'Accurate and complete copies', testCaseIds: ['OQ-032', 'OQ-047', 'OQ-048', 'OQ-067'], evidenceRef: 'exact owned values in the audit CSV and data CSV exports and in the printed PDF record' },
+  { section: '11.10(c)', title: 'Record protection', testCaseIds: ['OQ-030', 'OQ-031', 'PQ-031', 'PQ-034'], evidenceRef: 'audit-row edit and delete refusals; frozen and locked form write refusals (API refusals; retention and backup are not tested)' },
+  { section: '11.10(d)', title: 'Limiting system access', testCaseIds: ['OQ-001', 'OQ-003', 'OQ-009', 'OQ-010', 'OQ-021', 'OQ-022', 'OQ-095'], evidenceRef: 'login, wrong-password refusal, lockout, logout, role-change and disable revocation, forged-token refusal' },
+  { section: '11.10(e)', title: 'Audit trails', testCaseIds: ['PQ-036', 'PQ-037', 'OQ-027', 'OQ-028', 'OQ-121', 'OQ-122'], evidenceRef: 'scoped form audit holding the exact correction (old and new value, reason, actor, visit), event types, entity identities, timestamps and operators' },
+  { section: '11.10(f)', title: 'Operational system checks', testCaseIds: ['PQ-022', 'OQ-061'], evidenceRef: 'a stale-observation write and a correction without a reason are refused' },
+  { section: '11.10(g)', title: 'Authority checks', testCaseIds: ['OQ-021', 'OQ-053'], evidenceRef: 'a lowered role is refused a privileged read; unlock requires an authorized signed actor' },
+  { section: '11.10(h)', title: 'Device checks', testCaseIds: ['OQ-007'], evidenceRef: 'manual readback of the per-session device fingerprint' },
   { section: '11.10(i)', title: 'Training', testCaseIds: [], evidenceRef: '15-training-matrix.md' },
-  { section: '11.10(j)', title: 'Documentation accountability', testCaseIds: ['OQ-029'], evidenceRef: 'OQ — e-signature non-repudiation' },
-  { section: '11.10(k)(1)', title: 'Documentation controls — distribution', testCaseIds: ['OQ-045'], evidenceRef: 'SOP review' },
-  { section: '11.10(k)(2)', title: 'Documentation controls — revision', testCaseIds: ['OQ-046'], evidenceRef: 'SOP review' },
-  { section: '11.50', title: 'Signature manifestations', testCaseIds: ['OQ-034', 'OQ-038'], evidenceRef: 'OQ — e-signature display tests' },
-  { section: '11.70', title: 'Signature/record linking', testCaseIds: ['OQ-037'], evidenceRef: 'OQ — signature linkage tests' },
-  { section: '11.100', title: 'General e-signature requirements', testCaseIds: ['OQ-033'], evidenceRef: 'OQ — e-signature test cases' },
-  { section: '11.200', title: 'E-signature components and controls', testCaseIds: ['OQ-033'], evidenceRef: 'OQ — re-authentication tests' },
-  { section: '11.300', title: 'Controls for ID codes/passwords', testCaseIds: ['OQ-004'], evidenceRef: 'OQ — password policy tests' },
+  { section: '11.10(j)', title: 'Documentation accountability', testCaseIds: [], evidenceRef: 'written accountability policies (SOP review); no runner case' },
+  { section: '11.10(k)(1)', title: 'Documentation controls — distribution', testCaseIds: [], evidenceRef: 'SOP review; no runner case' },
+  { section: '11.10(k)(2)', title: 'Documentation controls — revision', testCaseIds: [], evidenceRef: 'SOP review; no runner case' },
+  { section: '11.50', title: 'Signature manifestations', testCaseIds: ['PQ-028', 'OQ-048', 'OQ-067'], evidenceRef: 'signer, signing time and canonical meaning on the signature proof and on the printed record' },
+  { section: '11.70', title: 'Signature/record linking', testCaseIds: ['PQ-029', 'PQ-039', 'OQ-042'], evidenceRef: 'a correction invalidates the signature and fresh signing re-binds it; the audit manifestation carries the content hash' },
+  { section: '11.100', title: 'General e-signature requirements', testCaseIds: ['OQ-002', 'PQ-027'], evidenceRef: 'a username cannot be registered twice; the signature belongs to the named signer' },
+  { section: '11.200', title: 'E-signature components and controls', testCaseIds: ['OQ-033', 'OQ-041', 'PQ-027'], evidenceRef: 'signing without or with a wrong password is refused; signing re-authenticates username and password' },
+  { section: '11.300', title: 'Controls for ID codes/passwords', testCaseIds: ['OQ-004', 'OQ-009', 'OQ-071', 'OQ-092', 'OQ-093'], evidenceRef: 'password policy, lockout, password history and current-password verification' },
 ];
 
 const HIPAA_MAPPINGS: ComplianceMapping[] = [
-  { section: '164.312(a)(1)', title: 'Access control', testCaseIds: ['OQ-011', 'OQ-012', 'OQ-013', 'OQ-014', 'OQ-015', 'OQ-016', 'OQ-017', 'OQ-018', 'OQ-019', 'OQ-020', 'OQ-021', 'OQ-022'], evidenceRef: 'OQ — RBAC tests' },
-  { section: '164.312(a)(2)(i)', title: 'Unique user identification', testCaseIds: ['OQ-002'], evidenceRef: 'OQ — unique account tests' },
+  { section: '164.312(a)(1)', title: 'Access control', testCaseIds: ['OQ-001', 'OQ-010', 'OQ-021', 'OQ-022'], evidenceRef: 'authenticated access, logout, role-change and disable revocation' },
+  { section: '164.312(a)(2)(i)', title: 'Unique user identification', testCaseIds: ['OQ-002'], evidenceRef: 'a username cannot be registered twice' },
   { section: '164.312(a)(2)(ii)', title: 'Emergency access procedure', testCaseIds: [], evidenceRef: '14-hipaa-assessment.md' },
-  { section: '164.312(a)(2)(iii)', title: 'Automatic logoff', testCaseIds: ['OQ-005'], evidenceRef: 'OQ — session timeout tests' },
-  { section: '164.312(a)(2)(iv)', title: 'Encryption and decryption', testCaseIds: ['IQ-027'], evidenceRef: 'OQ — backup encryption tests' },
-  { section: '164.312(b)', title: 'Audit controls', testCaseIds: ['OQ-023'], evidenceRef: 'OQ — audit trail tests' },
-  { section: '164.312(c)(1)', title: 'Integrity', testCaseIds: ['OQ-043'], evidenceRef: 'OQ — data validation tests' },
-  { section: '164.312(c)(2)', title: 'Mechanism to authenticate ePHI', testCaseIds: ['OQ-001'], evidenceRef: 'OQ — authentication tests' },
-  { section: '164.312(d)', title: 'Person or entity authentication', testCaseIds: ['OQ-001'], evidenceRef: 'OQ — login/password tests' },
-  { section: '164.312(e)(1)', title: 'Transmission security', testCaseIds: ['IQ-019'], evidenceRef: 'IQ — TLS verification' },
-  { section: '164.312(e)(2)(i)', title: 'Integrity controls', testCaseIds: ['OQ-043'], evidenceRef: 'OQ — data integrity tests' },
-  { section: '164.312(e)(2)(ii)', title: 'Encryption', testCaseIds: ['IQ-019'], evidenceRef: 'IQ — HTTPS enforcement tests' },
+  { section: '164.312(a)(2)(iii)', title: 'Automatic logoff', testCaseIds: [], evidenceRef: 'no case lets a session idle out (OQ-086 bounds only the absolute token lifetime)' },
+  { section: '164.312(a)(2)(iv)', title: 'Encryption and decryption', testCaseIds: [], evidenceRef: 'IQ storage-encryption checks; no runner case' },
+  { section: '164.312(b)', title: 'Audit controls', testCaseIds: ['PQ-036', 'PQ-037', 'OQ-121'], evidenceRef: 'scoped audit rows with the exact correction and parseable timestamps' },
+  { section: '164.312(c)(1)', title: 'Integrity', testCaseIds: ['PQ-022', 'PQ-031', 'PQ-034'], evidenceRef: 'stale, frozen and locked writes are refused with the record unchanged' },
+  { section: '164.312(c)(2)', title: 'Mechanism to authenticate ePHI', testCaseIds: ['PQ-029', 'PQ-039'], evidenceRef: 'a content-bound signature is invalidated by a change and verified on the final record' },
+  { section: '164.312(d)', title: 'Person or entity authentication', testCaseIds: ['OQ-001', 'OQ-003', 'OQ-095'], evidenceRef: 'login, wrong-password refusal, forged-token refusal' },
+  { section: '164.312(e)(1)', title: 'Transmission security', testCaseIds: [], evidenceRef: 'IQ TLS checks; no runner case' },
+  { section: '164.312(e)(2)(i)', title: 'Integrity controls', testCaseIds: [], evidenceRef: 'transmission integrity; no runner case' },
+  { section: '164.312(e)(2)(ii)', title: 'Encryption', testCaseIds: [], evidenceRef: 'IQ HTTPS checks; no runner case' },
 ];
 
+for (const mapping of [...PART11_MAPPINGS, ...HIPAA_MAPPINGS]) for (const id of mapping.testCaseIds) runnerCaseCheck(id);
+
+/** A section's status is the retained state of its mapped cases; PASS means
+ * every mapped case passed in this run and is not a compliance determination. */
 function deriveComplianceStatus(mapping: ComplianceMapping, evidenceMap: Map<string, RunnerResult>): string {
-  if (mapping.testCaseIds.length === 0) return 'Pending';
-
-  let anyTested = false;
-  let anyFailed = false;
-  let allPassed = true;
-
-  for (const id of mapping.testCaseIds) {
-    const evidence = evidenceMap.get(id);
-    if (evidence) {
-      anyTested = true;
-      if (!evidence.passed) {
-        anyFailed = true;
-        allPassed = false;
-      }
-    } else {
-      allPassed = false;
-    }
-  }
-
-  if (!anyTested) return 'Pending';
-  if (anyFailed) return 'FAIL';
-  if (allPassed) return 'PASS';
-  return 'Partial';
+  if (mapping.testCaseIds.length === 0) return 'Pending — no executed case verifies this section';
+  const states = mapping.testCaseIds.map(id => [id, mappedCaseState(id, evidenceMap)] as const);
+  const named = (...wanted: MappedCaseState[]) => states.filter(([, state]) => wanted.includes(state)).map(([id]) => id).join(', ');
+  if (states.some(([, state]) => state === 'failed')) return `FAIL (${named('failed')})`;
+  if (states.every(([, state]) => state === 'passed')) return 'PASS — every mapped case passed';
+  if (states.every(([, state]) => state === 'missing' || state === 'not-executed')) return 'Pending — mapped cases not executed';
+  if (states.some(([, state]) => state === 'manual-pending')) return `Manual verification pending (${named('manual-pending')})`;
+  return `Incomplete — not executed: ${named('missing', 'not-executed')}`;
 }
+
+const complianceRow = (mapping: ComplianceMapping, evidenceMap: Map<string, RunnerResult>): string[] => [
+  mapping.section, mapping.title, deriveComplianceStatus(mapping, evidenceMap),
+  mapping.testCaseIds.length ? `${mapping.testCaseIds.join(', ')} — ${mapping.evidenceRef}` : mapping.evidenceRef,
+];
 
 function formatEvidenceRow(label: string, stats: EvidenceStats): string[] {
   if (stats.total === 0) {
@@ -271,30 +269,25 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   // Section 6: Part 11 Compliance Verification
   content += section(2, 'Part 11 Compliance Verification');
-  content += 'The following table summarizes the verification status of each applicable 21 CFR Part 11 section:\n\n';
-
-  const part11Sections: string[][] = PART11_MAPPINGS.map((m) => [
-    m.section, m.title, deriveComplianceStatus(m, evidenceMap), m.evidenceRef,
-  ]);
+  content += 'The following table summarizes the verification status of each applicable 21 CFR Part 11 section. A status reflects only '
+    + 'the retained runner cases mapped to the section, each cited for what it actually checks; PASS means every mapped case passed in '
+    + 'this run and is not a compliance determination. A section that no executed case verifies stays Pending.\n\n';
 
   content += markdownTable(
-    ['Section', 'Title', 'Status', 'Evidence Reference'],
-    part11Sections,
+    ['Section', 'Title', 'Status', 'Mapped cases and what they verify'],
+    PART11_MAPPINGS.map((m) => complianceRow(m, evidenceMap)),
   );
   content += '\n';
   content += hr();
 
   // Section 7: HIPAA Compliance Verification
   content += section(2, 'HIPAA Compliance Verification');
-  content += 'The following table summarizes the verification status of applicable HIPAA Security Rule technical safeguards:\n\n';
-
-  const hipaaSections: string[][] = HIPAA_MAPPINGS.map((m) => [
-    m.section, m.title, deriveComplianceStatus(m, evidenceMap), m.evidenceRef,
-  ]);
+  content += 'The following table summarizes the verification status of applicable HIPAA Security Rule technical safeguards, '
+    + 'on the same basis as the Part 11 table.\n\n';
 
   content += markdownTable(
-    ['Section', 'Title', 'Status', 'Evidence Reference'],
-    hipaaSections,
+    ['Section', 'Title', 'Status', 'Mapped cases and what they verify'],
+    HIPAA_MAPPINGS.map((m) => complianceRow(m, evidenceMap)),
   );
   content += '\n';
   content += hr();

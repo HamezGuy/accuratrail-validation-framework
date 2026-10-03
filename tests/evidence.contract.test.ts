@@ -180,6 +180,25 @@ test('automatic PQ corrections cannot satisfy manual backup, recovery or regulat
   assert.ok(row); assert.match(row, /Pending/); assert.doesNotMatch(row, /\bPASS\b/);
 });
 
+test('validation summary sections cite only cases that verify them and never conclude compliance', async t => {
+  const directory = workspace(t);
+  saveEvidence(directory, 'pq', ['PQ-028', 'PQ-029', 'PQ-039'].map(id => result({ testCaseId: id })));
+  saveEvidence(directory, 'oq', [result({ testCaseId: 'OQ-048' }), result({ testCaseId: 'OQ-067' }), result({ testCaseId: 'OQ-042', passed: false, notes: 'Synthetic audit manifestation differs' }),
+    { ...manualResult('OQ-007', 'Synthetic manual fingerprint readback is outstanding') }, result({ testCaseId: 'OQ-005' }), result({ testCaseId: 'OQ-038' })]);
+  const { generate: summary } = await import('../generators/12-validation-summary');
+  summary(directory, directory);
+  const vsr = fs.readFileSync(path.join(directory, '12-validation-summary.md'), 'utf8');
+  const row = (key: string, title: string) => { const line = vsr.split('\n').find(l => l.includes(key) && l.includes(title)); assert.ok(line, key); return line!; };
+  assert.match(row('11.50', 'Signature manifestations'), /PASS — every mapped case passed/);
+  assert.match(row('11.70', 'Signature/record linking'), /FAIL \(OQ-042\)/);
+  assert.match(row('11.10(h)', 'Device checks'), /Manual verification pending \(OQ-007\)/);
+  // A passing case that does not test idle logoff cannot make that safeguard pass.
+  assert.match(row('164.312(a)(2)(iii)', 'Automatic logoff'), /Pending — no executed case verifies this section/);
+  assert.match(row('11.10(j)', 'Documentation accountability'), /Pending/);
+  assert.match(row('164.312(d)', 'Person or entity authentication'), /Pending — mapped cases not executed/);
+  assert.match(vsr, /PASS means every mapped case passed in this run and is not a compliance determination/);
+});
+
 // ── Truthful CSA/URS reporting and the multi-device session policy ──
 
 const OBSERVED_ORIGIN = 'http://qualification.invalid:3100';
