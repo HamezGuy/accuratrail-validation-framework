@@ -402,7 +402,7 @@ FEATURE_DATA.set('FEAT-021', {
     covered('Signature record includes UTC date and time of signing as TIMESTAMPTZ value', ['PQ-028'],
       'only a parseable signedAt is required; UTC and TIMESTAMPTZ storage are not checked.'),
     covered('Signature record includes meaning/purpose selected from controlled vocabulary', ['PQ-028'],
-      'the meaning "approval" is checked; vocabulary control is not tested.'),
+      'the canonical form-completion meaning (FORM_DATA_COMPLETE) is checked; vocabulary control is not tested.'),
   ],
 });
 
@@ -680,7 +680,8 @@ FEATURE_DATA.set('FEAT-050', {
   ],
   activities: [
     covered('Frozen CRF rejects data modification attempts with HTTP 403 and descriptive message', ['PQ-030', 'PQ-031'],
-      'OQ-051 re-cites PQ-030 and PQ-031 and is not counted again.'),
+      'the native refusal is HTTP 423 DATA_LOCKED with a message naming the frozen state, not the planned 403. OQ-051 re-cites '
+      + 'PQ-030 and PQ-031 and is not counted again.'),
     gap('Frozen CRF still allows query response and resolution workflows to proceed',
       'The query steps (PQ-017 to PQ-019) run before the freeze (PQ-030).'),
     covered('Unfreeze requires elevated permissions and generates audit trail entry with reason', ['PQ-032', 'OQ-055'],
@@ -704,7 +705,8 @@ FEATURE_DATA.set('FEAT-051', {
   ],
   activities: [
     covered('Locked CRF rejects all modification attempts including query operations (HTTP 403)', ['PQ-033', 'PQ-034'],
-      'only a form save is attempted; query operations on a locked form are not tested. OQ-052 re-cites PQ-033 and PQ-034 and is not counted again.'),
+      'the native refusal is HTTP 423 DATA_LOCKED, not the planned 403; only a form save is attempted; query operations on a '
+      + 'locked form are not tested. OQ-052 re-cites PQ-033 and PQ-034 and is not counted again.'),
     covered('Unlock requires electronic signature with password re-authentication', ['OQ-053'],
       'the signed positive path only; unlock without a signature is not attempted.'),
     covered('Lock and unlock events generate complete audit trail entries with user identity', ['OQ-053', 'OQ-055']),

@@ -92,8 +92,9 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
     + 'field password, any.required) and the owned form\'s signature proof must be unchanged.' },
   'OQ-041': { check: 'Synthetic fixture: POST /api/esignature/sign with a wrong password must be refused with HTTP 400 '
     + '"Invalid password" and the signature proof must be unchanged; no audit is read.' },
-  'OQ-042': { check: 'Synthetic fixture: for both signatures created in the run (PQ-027, PQ-029), exactly one form-audit row per '
-    + 'signature must match scope, signer userId, meaning approval, signed_at and a sha256 64-hex content hash; the active '
+  'OQ-042': { check: 'Synthetic fixture: the two signature IDs come from the retained signature proofs of PQ-027 and PQ-029 '
+    + 'and must differ; for each, exactly one form-audit row whose auditId is that signature ID must match scope, the signer\'s '
+    + 'userId and username, the canonical FORM_DATA_COMPLETE meaning, signed_at and a sha256 64-hex content hash; the active '
     + 'signature\'s row must also agree with the current proof.' },
   'OQ-047': { check: 'Synthetic fixture: POST /api/export/execute (CSV) must return text/csv with exactly one row per expected owned '
     + 'field carrying its exact value for the owned subject.' },
@@ -122,9 +123,12 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-095': { check: 'GET /api/auth/verify with a forged token (userId 99999, invalid signature) must return HTTP 401.' },
   'OQ-121': { check: 'Synthetic fixture: GET /api/audit for the owned study must return rows all scoped to that study, each with a '
     + 'parseable auditDate (UTC is not checked).' },
-  'OQ-122': { check: 'Synthetic fixture: in the same owned-study audit read every row must carry a positive integer userId.' },
-  'OQ-127': { check: 'Synthetic fixture: login history for the qualification operator with status=success must contain a row with '
-    + 'login_status 1 and status_text success (successful logins only; IP and session are not checked).' },
+  'OQ-122': { check: 'Synthetic fixture: in the same owned-study audit read every row must carry a positive integer userId, or be '
+    + 'followed (higher auditId) by a row that does for the same table, entity and event type (a legacy trigger row paired with '
+    + 'its attributed application row).' },
+  'OQ-127': { check: 'Synthetic fixture: login history for the qualification operator with status=success must contain a row for '
+    + 'that username with login status 1 and status text success (camelCase or snake_case fields; successful logins only; IP '
+    + 'and session are not checked).' },
   'OQ-129': { check: auditRefusal('PUT') },
   'OQ-130': { check: auditRefusal('PATCH') },
   'OQ-131': { check: auditRefusal('DELETE') },
@@ -132,7 +136,8 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-136': { check: ownedAuditRow('study', 'study') },
   'OQ-137': { check: ownedAuditRow('study_subject', 'subject') },
   'OQ-139': { check: ownedAuditRow('discrepancy_note', 'query') },
-  'OQ-140': { check: ownedAuditRow('acc_esignatures', 'signature') },
+  'OQ-140': { check: 'Synthetic fixture: the owned-study audit read must contain the "Electronic Signature Applied" event_crf row '
+    + 'whose auditId is the active signature ID and whose entityId is the owned form.' },
   'OQ-141': { check: ownedAuditRow('event_crf', 'form') },
   'OQ-142': { check: 'Synthetic fixture: GET /api/audit must contain some user_account row for the owned authentication account '
     + '(the event type is not checked).' },
@@ -144,16 +149,18 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
     + '(HTTP 201) and GET /api/users/:id must read back its username, email, viewer role and enabled state.' },
   'SEC-004': { check: 'GET /api/studies with a JWT whose payload claims userId 1 and role admin but whose signature is invalid '
     + 'must return HTTP 401.' },
-  'PQ-005': { check: 'Creates a five-field synthetic CRF, verifies its native item IDs and assigns it to the visit; with the '
-    + 'synthetic qualification flags also signed release, application and reviewed activation.' },
+  'PQ-005': { check: 'Creates a five-field synthetic CRF, verifies its native item IDs, creates and reads back an error-severity '
+    + 'range rule (0 to 300) on its weight item, and assigns the version to the visit; with the synthetic qualification flags '
+    + 'also signed release, application and reviewed activation.' },
   'PQ-006': { check: 'Synthetic fixture: enrolls a new subject in the active owned study and verifies the native subject.' },
   'PQ-007': { check: 'Synthetic fixture: reads the native subject back and checks its study, label and enrollment date.' },
   'PQ-008': { check: 'Synthetic fixture: re-submitting the same enrollment must be refused with an unchanged subject census.' },
   'PQ-011': { check: 'Synthetic fixture: saves initial values for all five owned fields with a reason and verifies every native value on readback.' },
   'PQ-012': { check: 'Synthetic fixture: re-reads the owned form and asserts every submitted value.' },
   'PQ-013': { check: 'Synthetic fixture: saves weight 70.5 with an explicit reason and verifies the readback (no audit read).' },
-  'PQ-014': { check: 'Synthetic fixture: POST /api/forms/validate-field with weight -1 (field minimum 0, createQueries false) must '
-    + 'return valid=false with errors and leave the form unchanged (preview endpoint, not the save path).' },
+  'PQ-014': { check: 'Synthetic fixture: POST /api/forms/validate-field/:id with weight -1 (below the PQ-005 range rule, '
+    + 'createQueries false) must return HTTP 200 with success false, valid false and errors, and leave the observation snapshot '
+    + 'unchanged (preview endpoint, not the save path).' },
   'PQ-015': { check: 'Synthetic fixture: saves all five scalar field types and verifies each value on readback.' },
   'PQ-017': { check: 'Synthetic fixture: creates a query on the owned weight item (HTTP 201) and reads it back with matching study, '
     + 'form, item and open status (the assignee is not checked).' },
@@ -166,19 +173,21 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
     + 'HTTP 409 STUDY_FORM_OBSERVATION_STALE and the newer value must remain (sequential, from one session).' },
   'PQ-024': { check: 'Synthetic fixture: saves accented initials and Spanish/Japanese/emoji notes and verifies the exact readback '
     + '(field values only; the reason text is ASCII).' },
-  'PQ-027': { check: 'Synthetic fixture: completes the reviewed form, signs it with username, password and meaning approval, and '
-    + 'requires a verified integrity proof whose active signature is the new one by that signer.' },
-  'PQ-028': { check: 'Synthetic fixture: the signature status must show the active signature with the signer username, meaning '
-    + 'approval, a parseable signedAt and a 64-hex contentHash.' },
+  'PQ-027': { check: 'Synthetic fixture: re-completes the reviewed, unsigned form with the signer\'s username and password (the '
+    + 'API\'s signing event; it keeps one active signature per form) and requires the form complete and a verified integrity '
+    + 'proof whose active signature is by that signer.' },
+  'PQ-028': { check: 'Synthetic fixture: the signature status must show the PQ-027 signature as active with the signer username, '
+    + 'the canonical form-completion meaning (FORM_DATA_COMPLETE), a parseable signedAt and a 64-hex contentHash.' },
   'PQ-029': { check: 'Synthetic fixture: a material correction after signing must leave the form unsigned with no active signature; '
-    + 'fresh signing must then produce a new signature ID with a verified integrity proof (hash values are not compared).' },
+    + 'a fresh signed re-completion must then produce a new signature ID with a verified integrity proof (hash values are not '
+    + 'compared).' },
   'PQ-030': { check: 'Synthetic fixture: freezes the signed form with a reason and signature credentials and reads back frozen true.' },
-  'PQ-031': { check: 'Synthetic fixture: a save on the frozen form must be refused with HTTP 403 FORM_FROZEN and the form snapshot '
-    + 'must be unchanged.' },
+  'PQ-031': { check: 'Synthetic fixture: a save on the frozen form must be refused with HTTP 423 DATA_LOCKED (lock level form, a '
+    + 'message naming frozen), and the observation snapshot must be unchanged with the form still frozen.' },
   'PQ-032': { check: 'Synthetic fixture: unfreezes with a reason and signature credentials and reads back frozen false.' },
   'PQ-033': { check: 'Synthetic fixture: locks the form with a reason and signature credentials and reads back locked true.' },
-  'PQ-034': { check: 'Synthetic fixture: a save on the locked form must be refused with HTTP 403 FORM_LOCKED and the snapshot must '
-    + 'be unchanged (form save only).' },
+  'PQ-034': { check: 'Synthetic fixture: a save on the locked form must be refused with HTTP 423 DATA_LOCKED (lock level form, a '
+    + 'message naming locked), and the snapshot must be unchanged with the form still locked (form save only).' },
   'PQ-035': { check: 'Synthetic fixture: the study raw-store snapshot must report complete scope, and the owned form\'s item_data rows '
     + 'must equal every expected value.' },
   'PQ-036': { check: 'Synthetic fixture: GET /api/audit/form/:id must be non-empty with a row scoped to the owned form and study '
