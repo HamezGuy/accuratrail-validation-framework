@@ -29,6 +29,15 @@ export function syntheticStudyDefinition(nativeIdentifier: string): StudyContent
   return definition;
 }
 
+/** The canonical authoring path cannot assert source custody; only the API's
+ * verified import workflow can. The same exact document and selection are
+ * authored, with no source artifact, binding, disposition or retained value. */
+export function draftWithoutSourceCustody(content: StudyContent): StudyContent {
+  const draft = structuredClone(content);
+  draft.sourceArtifacts = []; draft.entityBindings = []; draft.dispositions = []; draft.retainedValues = [];
+  return draft;
+}
+
 export function qualificationOptions(args: readonly string[], baseUrl: string): {
   acknowledgeUngoverned?: boolean; acknowledgeIncomplete?: boolean;
 } {

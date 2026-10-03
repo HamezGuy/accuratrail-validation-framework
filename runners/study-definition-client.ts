@@ -296,6 +296,19 @@ function verifyRemovedRows<Row extends { readonly statusId?: number | null }>(
   }
 }
 
+/** extensions.nativeRowJson is the API's read-only projection of the native row;
+ * a write never takes it from the request. Its own audit columns advance on any
+ * write to that row; every other native column must hold. */
+const NATIVE_ROW_AUDIT_COLUMNS = ['date_updated', 'update_id'];
+function withoutRowAudit(extensions: unknown): unknown {
+  if (!record(extensions) || typeof extensions.nativeRowJson !== 'string') return extensions;
+  let row: unknown;
+  try { row = JSON.parse(extensions.nativeRowJson); } catch { return extensions; }
+  if (!record(row)) return extensions;
+  const kept = Object.fromEntries(Object.entries(row).filter(([column]) => !NATIVE_ROW_AUDIT_COLUMNS.includes(column)));
+  return { ...extensions, nativeRowJson: kept };
+}
+
 function verifyRows<Row extends object>(
   collection: 'visits' | 'sites', before: Row[], after: Row[], requestedRows: Row[],
   id: (row: Row) => number | undefined, match: (row: Row) => unknown,
@@ -321,6 +334,8 @@ function verifyRows<Row extends object>(
             check(isDeepStrictEqual(assigned[0][field], expected), `CRF assignment ${field} was not preserved.`);
           }
         }
+      } else if (key === 'extensions') {
+        check(isDeepStrictEqual(withoutRowAudit(actualValue), withoutRowAudit(value)), `Study ${collection} ${key} was not preserved.`);
       } else {
         check(isDeepStrictEqual(actualValue, value), `Study ${collection} ${key} was not preserved.`);
       }
@@ -366,6 +381,22 @@ export class StudyDefinitionClient {
     check(metadata.items.length === input.fields.length && new Set(Object.values(items)).size === input.fields.length,
       'Qualification form fields are missing, duplicated, or unexpected.');
     return { crfId: created.crfId, crfVersionId: metadata.version.crfVersionId as number, items };
+  }
+
+  /** The API enforces a numeric range through its validation-rule engine, not
+   * through a field's declared min/max. Create the exact rule and read it back. */
+  async createRangeRule(input: { crfId: number; crfVersionId: number; itemId: number; fieldPath: string;
+    minValue: number; maxValue: number; errorMessage: string }): Promise<number> {
+    check(nativeId(input.crfId) && nativeId(input.crfVersionId) && nativeId(input.itemId), 'A verified native form item is required for a range rule.');
+    const created = expectStudySuccess(await this.transport('POST', '/validation-rules', { ...input,
+      ruleType: 'range', severity: 'error', name: `Synthetic range ${input.fieldPath}`, active: true }), 201);
+    const ruleId = created.ruleId;
+    check(nativeId(ruleId), 'Range rule creation did not return its native rule ID.');
+    const rule = expectStudySuccess(await this.transport('GET', `/validation-rules/${ruleId}`), 200).data;
+    check(record(rule) && rule.validationRuleId === ruleId && rule.crfId === input.crfId && rule.itemId === input.itemId
+      && rule.ruleType === 'range' && rule.severity === 'error' && rule.active === true && rule.fieldPath === input.fieldPath
+      && Number(rule.minValue) === input.minValue && Number(rule.maxValue) === input.maxValue, 'Range rule did not survive native readback.');
+    return ruleId;
   }
 
   async enroll(workspace: StudyWorkspace, label: string, date: string) {
@@ -532,9 +563,12 @@ export class StudyDefinitionClient {
 
   async findInSummaries(expected: StudyWorkspace): Promise<StudySummary> {
     const search = encodeURIComponent(expected.summary.primaryIdentifier ?? expected.summary.displayName);
+    // The API lists a pending (not yet activated) study only when that status
+    // is requested; a canonical draft is created pending.
+    const status = expected.summary.entityStatus.label === 'pending' ? '&status=pending' : '';
     let pageNumber = 1, seen = new Set<number>();
     for (;;) {
-      const page = readStudySummaryPage(await this.transport('GET', `/studies?page=${pageNumber}&limit=100&search=${search}`));
+      const page = readStudySummaryPage(await this.transport('GET', `/studies?page=${pageNumber}&limit=100&search=${search}${status}`));
       check(page.page === pageNumber, 'Study pagination did not advance.');
       for (const study of page.studies) {
         check(!seen.has(study.studyId), 'Study pagination repeated a native study ID.');

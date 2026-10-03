@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { login, qualificationCredentials } from './auth';
 import {
   type EvidenceResult,
@@ -10,7 +11,7 @@ import {
 } from './evidence-capture';
 import { cloneStudy, pendingStudy, type StudyWorkspace, type StudyActivationReview, type StudyTransport, expectStudySuccess, nativeId } from './study-definition-client';
 import { captureStudyOperation, captureQualificationOperation } from './study-qualification';
-import { qualificationOptions, syntheticStudyDefinition } from './qualification-fixture';
+import { draftWithoutSourceCustody, qualificationOptions, syntheticStudyDefinition } from './qualification-fixture';
 
 /** PQ operator credentials come only from the environment: OQ_USERNAME / OQ_PASSWORD
  * take precedence over PQ_USERNAME / PQ_PASSWORD. There is no built-in account; a
@@ -64,8 +65,11 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState, quali
   state.studyName = `PQ Validation Study ${Date.now()}`;
   const protocolId = `PQ-PROTO-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
-  // PQ-001: Create a new test study
-  const initial = qualification ? syntheticStudyDefinition(protocolId)
+  // PQ-001: Create a new test study. A canonical draft cannot assert source
+  // custody: the API accepts custody only through its verified import workflow
+  // (STUDY_SOURCE_IMPORT_REQUIRED). The pinned, hash-verified document is
+  // authored directly; its custody envelope is not claimed by this draft.
+  const initial = qualification ? draftWithoutSourceCustody(syntheticStudyDefinition(protocolId))
     : pendingStudy(state.studyName, protocolId, 'PQ validation test study — created by automated PQ runner');
   // A draft can retain an incomplete clinical design without claiming release.
   if (!qualification) initial.document.study!.versions = [{
@@ -155,6 +159,10 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState, quali
         ],
       });
       state.formId = form.crfId; state.crfVersionId = form.crfVersionId; state.formItems = form.items;
+      // A field's declared min/max is display metadata; the API enforces a range
+      // through its validation-rule engine, so the fixture's range is explicit.
+      await client.createRangeRule({ crfId: form.crfId, crfVersionId: form.crfVersionId, itemId: form.items.weight,
+        fieldPath: 'weight', minValue: 0, maxValue: 300, errorMessage: 'Synthetic weight must be between 0 and 300 kg.' });
       const current = await client.get(state.studyId!);
       const visit = current.executionContext.visits.find(row => row.studyEventDefinitionId === state.eventDefinitionId);
       if (!visit) throw new Error('Qualification visit disappeared before form assignment.');
@@ -268,6 +276,8 @@ async function saveValues(request: StudyTransport, state: WorkflowState, values:
   const after = await patientForm(request, state); assertValues(state, after, values);
   state.values = { ...state.values, ...values }; return after;
 }
+/** The native query read names its item target under linkedItemData. */
+const queryTarget = (query: any): any => (isRecord(query) && isRecord(query.linkedItemData) ? query.linkedItemData : null);
 function signature(state: WorkflowState) {
   demand(state.qualification?.username && state.qualification.password, 'Explicit synthetic signer credentials are required.');
   return { signatureUsername: state.qualification.username, signaturePassword: state.qualification.password };
@@ -311,9 +321,10 @@ export async function runDataEntry(baseUrl: string, state: WorkflowState): Promi
       itemDataId: item.itemDataId, itemId: item.itemId, eventCrfId: state.formDataId,
       studyId: state.studyId, subjectId: state.subjectId, description: 'Verify the synthetic qualification weight', queryType: 'Query' }), 201);
     demand(nativeId(created.queryId), 'Native query identity missing.');
-    const query = dataOf(await r('GET', `/queries/${created.queryId}`));
-    demand(query?.discrepancyNoteId === created.queryId && query.studyId === state.studyId
-      && query.eventCrfId === state.formDataId && query.itemId === item.itemId && query.resolutionStatusId === 1, 'Query readback lost native target or state.');
+    const query = dataOf(await r('GET', `/queries/${created.queryId}`)), target = queryTarget(query);
+    demand(query?.discrepancyNoteId === created.queryId && query.studyId === state.studyId && query.entityType === 'itemData'
+      && target?.itemDataId === item.itemDataId && target.itemId === item.itemId && target.eventCrfId === state.formDataId
+      && query.resolutionStatusId === 1, 'Query readback lost native target or state.');
     state.queryId = created.queryId;
   });
   await step(18, 'Propose a resolution and verify native query state', async r => {
@@ -363,19 +374,20 @@ async function signatureProof(r: StudyTransport, state: WorkflowState) {
   'Native signature proof has missing or mismatched identity.');
   return proof;
 }
+// The form was completed and then corrected. Re-completing the exact reviewed
+// version is the signing event (21 CFR 11.50): it carries the explicit
+// synthetic signer, and the API keeps one active signature per form, so no
+// separate approval signature can follow (FORM_ALREADY_SIGNED).
 async function signForm(r: StudyTransport, state: WorkflowState) {
   const read = await patientForm(r, state), credentials = state.qualification!;
-  expectStudySuccess(await r('POST', `/forms/${state.formDataId}/complete`, reviewed(read)), 200);
-  const complete = await patientForm(r, state);
-  const signed = dataOf(await r('POST', '/esignature/sign', { entityType: 'eventCrf', entityId: state.formDataId,
-    username: credentials.username, password: credentials.password, meaning: 'approval',
-    reasonForSigning: 'Synthetic software qualification approval', ...reviewed(complete) }));
-  demand(nativeId(signed?.signatureId), 'Native signature identifier is missing.');
-  state.signatureId = signed.signatureId;
+  demand((await signatureProof(r, state)).isSigned === false, 'The form already has an active signature before reviewed signing.');
+  expectStudySuccess(await r('POST', `/forms/${state.formDataId}/complete`, { ...reviewed(read), ...signature(state) }), 200);
+  demand((await patientForm(r, state)).lockStatus.isComplete === true, 'Signed re-completion did not complete the native form.');
   const proof = await signatureProof(r, state);
   demand(proof.isSigned === true && proof.signatureIntegrityValid === true && proof.integrityStatus === 'verified'
-    && proof.activeSignature?.signatureId === state.signatureId && proof.activeSignature.signerUsername === credentials.username,
+    && nativeId(proof.activeSignature?.signatureId) && proof.activeSignature.signerUsername === credentials.username,
   'Signature lacks a verified current native proof.');
+  state.signatureId = proof.activeSignature.signatureId;
 }
 async function rejectedLockedEdit(r: StudyTransport, state: WorkflowState, flag: 'frozen' | 'locked') {
   const before = await patientForm(r, state); demand(before.lockStatus[flag] === true, `Native form is not ${flag}.`);
@@ -384,8 +396,9 @@ async function rejectedLockedEdit(r: StudyTransport, state: WorkflowState, flag:
     studyEventId: state.visitId, eventCrfId: state.formDataId, crfId: state.formId,
     formData: nativeValues(state, { weight: 77 }), reasonForChange: `PQ ${flag} protection`, submitAction: 'draft',
     expectedObservations, ...(expectedExecution ? { expectedExecution } : {}) });
-  demand(response.status === 403 && (response.body as any)?.success === false
-    && (response.body as any)?.code === (flag === 'frozen' ? 'FORM_FROZEN' : 'FORM_LOCKED'), `${flag} edit was not refused by its native lifecycle guard.`);
+  const refusal = response.body as any;
+  demand(response.status === 423 && refusal?.success === false && refusal.code === 'DATA_LOCKED' && refusal.lockLevel === 'form'
+    && typeof refusal.message === 'string' && refusal.message.includes(flag), `${flag} edit was not refused by its native lifecycle guard.`);
   const after = await patientForm(r, state);
   demand(after.observationSnapshotHash === before.observationSnapshotHash && after.lockStatus[flag] === true,
     `Rejected ${flag} edit did not preserve native observations.`);
@@ -405,7 +418,7 @@ export async function runReviewAndSignature(baseUrl: string, state: WorkflowStat
   await step(28, 'Read the current signature manifestation and content linkage', async r => {
     const proof = await signatureProof(r, state), sig = proof.activeSignature;
     demand(proof.signatureIntegrityValid === true && sig?.signatureId === state.signatureId
-      && sig.signerUsername === state.qualification!.username && sig.meaning === 'approval'
+      && sig.signerUsername === state.qualification!.username && sig.meaning === SIGNATURE_MEANINGS.FORM_DATA_COMPLETE
       && typeof sig.signedAt === 'string' && Number.isFinite(Date.parse(sig.signedAt))
       && typeof sig.contentHash === 'string' && /^[a-f0-9]{64}$/.test(sig.contentHash), 'Signature manifestation or content linkage is incomplete.');
   });
@@ -467,7 +480,7 @@ export async function runCleanupVerification(baseUrl: string, state: WorkflowSta
   await step(38, 'Verify the exact retained native query remains closed', async r => {
     demand(state.queryId, 'No verified native query.');
     const query = dataOf(await r('GET', `/queries/${state.queryId}`));
-    demand(query?.discrepancyNoteId === state.queryId && query.eventCrfId === state.formDataId
+    demand(query?.discrepancyNoteId === state.queryId && queryTarget(query)?.eventCrfId === state.formDataId
       && query.resolutionStatusId === 4, 'Retained query identity/state mismatch.');
   });
   await step(39, 'Verify the final signed native form remains integrity-checked', async r => {

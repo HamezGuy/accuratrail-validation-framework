@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { createWorkflowState, runDataEntry, runReviewAndSignature, runCleanupVerification } from '../runners/pq-runner';
 import { syntheticStudyDefinition } from '../runners/qualification-fixture';
 import { workspace } from './study-contract-fixtures';
@@ -16,7 +17,7 @@ function workflow(t: any, defect?: string) {
     studyWorkspace: workspace(syntheticStudyDefinition('PQ-CONTRACT')),
   });
   const values: Record<string, string> = {}, audit: any[] = [], calls: any[] = [];
-  let revision = 1, complete = false, frozen = false, locked = false, queryState = 1, active: any = null, signId = 300;
+  let revision = 1, complete = false, everCompleted = false, frozen = false, locked = false, queryState = 1, active: any = null, signId = 300;
   const hash = () => `sha256:${createHash('sha256').update(JSON.stringify({ values, revision, complete, frozen, locked })).digest('hex')}`;
   const read = () => ({ eventCrfId: 111, studyId: defect === 'wrong-study' ? 999 : 42,
     studySubjectId: 81, studyEventId: 91, crfId: 71, crfVersionId: 72,
@@ -37,7 +38,11 @@ function workflow(t: any, defect?: string) {
       assert.equal(body.submitAction, 'draft'); assert.ok(body.reasonForChange.length >= 10);
       assert.equal(body.expectedObservations.contract, 'edc-form-observation-preconditions/1');
       assert.equal(body.expectedExecution, undefined, 'Nullable execution must be omitted for save schema');
-      if (frozen || locked) { status = 403; result = { success: false, code: defect === 'wrong-lock-refusal' ? 'FORBIDDEN' : locked ? 'FORM_LOCKED' : 'FORM_FROZEN' }; }
+      if (frozen || locked) {
+        status = defect === 'wrong-lock-refusal' ? 403 : 423;
+        result = { success: false, code: defect === 'wrong-lock-refusal' ? 'FORBIDDEN' : 'DATA_LOCKED', lockLevel: 'form',
+          message: `This form is ${locked ? 'locked' : 'frozen'} and cannot be modified` };
+      }
       else if (body.expectedObservations.snapshotHash !== hash() && defect !== 'accept-stale') {
         status = defect === 'stale-server-error' ? 500 : 409;
         result = { success: false, code: 'STUDY_FORM_OBSERVATION_STALE' };
@@ -51,6 +56,7 @@ function workflow(t: any, defect?: string) {
           values[key] = String(value ?? '');
         }
         if (defect !== 'retain-signature') active = null;
+        complete = false;
         revision++;
       }
     } else if (path === '/api/forms/validate-field/111') {
@@ -63,18 +69,23 @@ function workflow(t: any, defect?: string) {
       status = 201; result = { success: true, queryId: 201, data: { queryId: 201 } };
     } else if (path === '/api/queries/201/respond') { assert.equal(body.newStatusId, 3); queryState = 3; }
     else if (path === '/api/queries/201/close-with-signature') { assert.equal(body.signaturePassword, 'private-password'); queryState = 4; }
-    else if (path === '/api/queries/201') data({ discrepancyNoteId: 201, studyId: 42, eventCrfId: 111, itemId: 103, resolutionStatusId: queryState });
+    else if (path === '/api/queries/201') data({ discrepancyNoteId: 201, studyId: 42, entityType: 'itemData', resolutionStatusId: queryState,
+      linkedItemData: { itemDataId: 1103, itemId: 103, eventCrfId: 111 } });
     else if (path === '/api/forms/111/complete') {
-      assert.equal(body.expectedExecution, null); assert.equal(body.expectedObservations.snapshotHash, hash()); complete = true; revision++;
+      assert.equal(body.expectedExecution, null); assert.equal(body.expectedObservations.snapshotHash, hash());
+      const signed = body.signatureUsername !== undefined;
+      if (everCompleted && !signed) { status = 403; result = { success: false, code: 'SIGNATURE_REQUIRED', commitStatus: 'not_committed' }; }
+      else {
+        if (signed) {
+          assert.equal(body.signatureUsername, 'synthetic-operator'); assert.equal(body.signaturePassword, 'private-password');
+          active = { signatureId: ++signId, signerUsername: body.signatureUsername, meaning: SIGNATURE_MEANINGS.FORM_DATA_COMPLETE,
+            signedAt: '2026-10-02T12:00:00Z', contentHash: createHash('sha256').update(JSON.stringify(values)).digest('hex') };
+        }
+        complete = true; everCompleted = true; revision++;
+      }
     } else if (path === '/api/sdv/111/verify') assert.equal(method, 'PUT');
     else if (path === '/api/sdv/111') data({ eventCrfId: 111, studySubjectId: 81, sdvStatus: true, sdvUpdateId: 7 });
-    else if (path === '/api/esignature/sign') {
-      assert.equal(body.username, 'synthetic-operator'); assert.equal(body.password, 'private-password');
-      assert.equal(body.expectedObservations.snapshotHash, hash()); assert.equal(body.entityType, 'eventCrf'); assert.equal(body.entityId, 111);
-      active = { signatureId: ++signId, signerUsername: body.username, meaning: body.meaning,
-        signedAt: '2026-10-02T12:00:00Z', contentHash: createHash('sha256').update(JSON.stringify(values)).digest('hex') };
-      data({ signatureId: signId }); revision++;
-    } else if (path === '/api/esignature/status/eventCrf/111') data({ contract: 'edc-event-crf-signature-proof/1', entityId: 111,
+    else if (path === '/api/esignature/sign') assert.fail('A signed re-completion is the form signature; the API refuses a second one (FORM_ALREADY_SIGNED).'); else if (path === '/api/esignature/status/eventCrf/111') data({ contract: 'edc-event-crf-signature-proof/1', entityId: 111,
       studyId: 42, studySubjectId: 81, studyEventId: 91, isSigned: !!active, signatureIntegrityValid: defect === 'unverified-signature' ? false : !!active,
       integrityStatus: active ? 'verified' : 'unsigned', activeSignature: active });
     else if (path === '/api/data-locks/freeze/111') { assert.equal(body.signaturePassword, 'private-password'); frozen = true; revision++; }

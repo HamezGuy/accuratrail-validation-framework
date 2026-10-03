@@ -81,11 +81,11 @@ test('PQ study setup updates document.study.description and revision-aware nativ
 
 // Full workflow responses model the current native wire contracts; they are
 // transport fixtures, never a claim of official USDM or clinical qualification.
-for (const runner of ['pq', 'oq']) for (const defect of [undefined, 'activation-rejected', 'field-loss', 'subject-mismatch', 'missing-date', 'wrong-date', 'stale-review']) {
+for (const runner of ['pq', 'oq']) for (const defect of [undefined, 'activation-rejected', 'field-loss', 'range-rule-loss', 'subject-mismatch', 'missing-date', 'wrong-date', 'stale-review']) {
 test(`explicit ${runner.toUpperCase()} qualification binds native activation and enrollment: ${defect ?? 'valid'}`, async t => {
   const { activationSnapshot } = await import('./activation-review-fixtures');
   let current: StudyWorkspace | undefined, released: StudyWorkspace['revision'] | undefined;
-  let subject: any, visit: any, fields: any[] = [];
+  let subject: any, visit: any, fields: any[] = [], rule: any;
   const paths: string[] = [];
   t.mock.method(globalThis, 'fetch', async (url: string, request: RequestInit = {}) => {
     assert.ok(String(url).startsWith('http://localhost:39999/'));
@@ -102,6 +102,10 @@ test(`explicit ${runner.toUpperCase()} qualification binds native activation and
     else if (route.pathname === '/api/studies/42' && method === 'PUT') { bump(); current!.revision.content = body.content; data = current; }
     else if (route.pathname === '/api/studies/42/execution') { bump(); current!.executionContext.visits = body.visits.upsert.map((v: any) => ({ ...v, studyEventDefinitionId: 901 })); data = current; }
     else if (route.pathname === '/api/forms' && method === 'POST') { fields = body.fields.map((f: any, i: number) => ({ ...f, itemId: 100 + i })); result = { success: true, crfId: 71 }; status = 201; }
+    else if (route.pathname === '/api/validation-rules' && method === 'POST') {
+      assert.deepEqual([body.crfId, body.crfVersionId, body.itemId, body.ruleType, body.severity, body.minValue, body.maxValue], [71, 72, 102, 'range', 'error', 0, 300]);
+      rule = { ...body, validationRuleId: 501 }; result = { success: true, ruleId: 501 }; status = 201;
+    } else if (route.pathname === '/api/validation-rules/501') data = defect === 'range-rule-loss' ? { ...rule, maxValue: 299 } : rule;
     else if (route.pathname === '/api/forms/71/metadata') data = { crf: { crfId: 71, sourceStudyId: 42 }, version: { crfVersionId: 72 }, items: defect === 'field-loss' ? fields.map(f => f.name === 'weight' ? { ...f, min: undefined } : f) : fields };
     else if (route.pathname === '/api/studies/42/definition/release') { bump(); current!.revision.state = 'released'; current!.revision.validation.releaseReady = true; current!.revision.manifestHash = `sha256:${'a'.repeat(64)}`; released = cloneStudy(current!.revision); data = current; }
     else if (route.pathname === '/api/studies/42/definition/apply') { bump(); current!.executionContext.appliedDefinitionRevisionId = released!.revisionId; current!.executionContext.appliedApplicationId = '00000000-0000-4000-8000-000000000777'; current!.executionContext.appliedExecutionConfiguration = cloneStudy(released!.content.execution); data = current; }
@@ -145,6 +149,7 @@ test(`explicit ${runner.toUpperCase()} qualification binds native activation and
   assert.equal(results.length, 10); assert.equal(state.subjectId, 81); assert.equal(state.visitId, 91);
   assert.equal(paths.filter(path => path === 'POST /api/subjects').length, 2);
   assert.ok(paths.indexOf('POST /api/forms/import-study-bundle/42/activate') < paths.indexOf('POST /api/subjects'));
+  assert.ok(paths.indexOf('POST /api/validation-rules') < paths.indexOf('POST /api/studies/42/definition/release'), 'The range rule is part of the released definition.');
   assert.equal(paths.some(path => path === 'POST /api/events'), false);
   assert.equal(JSON.stringify(results).includes('synthetic-password'), false);
 });
