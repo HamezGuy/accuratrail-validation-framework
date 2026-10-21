@@ -2,6 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { EvidenceResult } from './runners/evidence-capture';
 import { SYSTEM_INFO } from './config/system-info';
+import {
+  observeTargetVersion, releaseIdentityFromInputs, setReleaseIdentity, type ReleaseComponentName, type ReleaseIdentity,
+} from './runners/release-identity';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -17,6 +20,8 @@ interface CliArgs {
   version?: string;
   baseUrl?: string;
   allowProductionTarget: boolean;
+  releaseInputs: Partial<Record<ReleaseComponentName, string>>;
+  releaseIdentity?: ReleaseIdentity;
   benchmarkRun?: string;
   benchmarkEvaluatorRoot?: string;
   p13Plan?: string;
@@ -37,6 +42,7 @@ function parseArgs(): CliArgs {
     version: undefined,
     baseUrl: undefined,
     allowProductionTarget: false,
+    releaseInputs: {},
     qualificationFlags: [],
   };
 
@@ -89,6 +95,14 @@ function parseArgs(): CliArgs {
       case '--allow-production-target':
         args.allowProductionTarget = true;
         break;
+      case '--release-api':
+      case '--release-ui':
+      case '--release-core': {
+        const value = argv[++i];
+        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a Git commit or image ID`);
+        args.releaseInputs[arg.slice('--release-'.length) as ReleaseComponentName] = value;
+        break;
+      }
       case '--benchmark-run':
       case '--p13-plan':
       case '--benchmark-evaluator-root': {
@@ -111,7 +125,12 @@ function parseArgs(): CliArgs {
   }
 
   if (args.benchmarkEvaluatorRoot && !args.benchmarkRun) throw new Error('--benchmark-evaluator-root requires --benchmark-run');
-  if (!args.docsOnly && liveRunnerSelected(args)) checkRunnerTarget(args);
+  if (!args.docsOnly && liveRunnerSelected(args)) {
+    checkRunnerTarget(args);
+    args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
+  } else if (Object.keys(args.releaseInputs).length) {
+    args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
+  }
   return args;
 }
 
@@ -239,6 +258,8 @@ async function main(): Promise<void> {
   const date = new Date().toISOString().split('T')[0];
   const version = args.version || 'v1.0';
   const outputDir = path.join(__dirname, 'output', `${date}_${version}`);
+  // Documents and evidence of this run carry the release under test.
+  setReleaseIdentity(args.releaseIdentity);
 
   fs.mkdirSync(path.join(outputDir, 'evidence', 'iq'), { recursive: true });
   fs.mkdirSync(path.join(outputDir, 'evidence', 'oq'), { recursive: true });
@@ -258,6 +279,10 @@ async function main(): Promise<void> {
   if (!args.docsOnly && (args.runIq || args.runOq || args.runPq)) {
     console.log(`Runners: ${[args.runIq && 'IQ', args.runOq && 'OQ', args.runPq && 'PQ', args.runSecurity && 'Security', args.runDr && 'DR', args.runPerf && 'Performance'].filter(Boolean).join(', ')}`);
     console.log(`Base URL: ${args.baseUrl}`);
+  }
+  if (args.releaseIdentity) {
+    const { api, ui, core } = args.releaseIdentity.components;
+    console.log(`Release under test: api ${api.identity}, ui ${ui.identity}, core ${core.identity} (${args.releaseIdentity.identityHash.slice(0, 12)})`);
   }
   console.log('');
 
@@ -345,6 +370,22 @@ async function main(): Promise<void> {
       }
     }
 
+    let releaseVerified = true;
+    if (liveRunnerSelected(args) && args.releaseIdentity) {
+      try {
+        const observed = await observeTargetVersion(args.releaseIdentity, args.baseUrl as string);
+        setReleaseIdentity(observed);
+        const target = observed.target!;
+        console.log(target.error
+          ? `  [WARN] Target version endpoint unavailable (${target.error}); release identity is operator input only.`
+          : `  [OK] Target reports version ${target.version ?? 'none'}${target.release ? ' and its release components' : ''}.`);
+      } catch (error) {
+        releaseVerified = false;
+        runnersFailed++;
+        console.error(`  [FAIL] Release identity: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
     const runners: { flag: boolean; name: string; file: string }[] = [
       { flag: args.runIq, name: 'IQ Runner', file: './runners/iq-runner' },
       { flag: args.runOq, name: 'OQ Runner', file: './runners/oq-runner' },
@@ -355,7 +396,7 @@ async function main(): Promise<void> {
     ];
 
     for (const runner of runners) {
-      if (!runner.flag) continue;
+      if (!runner.flag || !releaseVerified) continue;
       try {
         const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string, workspaceRoot: string, qualificationFlags: readonly string[]) => Promise<EvidenceResult[]> };
         const results = await mod.run(outputDir, args.baseUrl as string, WORKSPACE_ROOT, args.qualificationFlags);
@@ -483,6 +524,32 @@ function generateMasterEvidenceIndex(outputDir: string): void {
 
   const grandRate = grandTotal > 0 ? `${((grandPassed / grandTotal) * 100).toFixed(1)}%` : 'N/A';
   lines.push(`| **TOTAL** | **${grandTotal}** | **${grandPassed}** | **${grandFailed}** | — | **${grandRate}** | — |`);
+  lines.push('');
+  lines.push('## Release Under Test');
+  lines.push('');
+  lines.push('| Category | Release Identity | API | UI | Core |');
+  lines.push('| --- | --- | --- | --- | --- |');
+  const identities = new Set<string>();
+  for (const cat of categories) {
+    const identityPath = path.join(evidenceBase, cat, 'release-identity.json');
+    if (!fs.existsSync(path.join(evidenceBase, cat, `${cat}-summary.json`))) continue;
+    if (!fs.existsSync(identityPath)) {
+      lines.push(`| ${cat.toUpperCase()} | not recorded | | | |`);
+      continue;
+    }
+    try {
+      const identity = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as ReleaseIdentity;
+      identities.add(identity.identityHash);
+      const { api, ui, core } = identity.components;
+      lines.push(`| ${cat.toUpperCase()} | ${identity.identityHash} | ${api.identity} | ${ui.identity} | ${core.identity} |`);
+    } catch {
+      lines.push(`| ${cat.toUpperCase()} | unreadable | | | |`);
+    }
+  }
+  if (identities.size > 1) {
+    lines.push('');
+    lines.push('**The categories above were produced against different releases; they do not qualify one release together.**');
+  }
   lines.push('');
   lines.push('---');
   lines.push('');

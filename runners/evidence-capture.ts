@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'node:crypto';
+import { currentReleaseIdentity, releaseStamp, type ReleaseStamp } from './release-identity';
 
 export interface EvidenceResult {
   testCaseId: string;
@@ -22,6 +23,8 @@ export interface EvidenceResult {
   captureError?: string;
   /** Ordered command/readback exchanges for a multi-request qualification step. */
   relatedEvidence?: EvidenceResult[];
+  /** The API, UI and core release the record was produced against (stamped by saveEvidence). */
+  releaseUnderTest?: ReleaseStamp;
 }
 
 export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'] as const;
@@ -80,6 +83,10 @@ function requireEvidenceResults(value: unknown, source: string): asserts value i
     if (item.captureError !== undefined
       && (typeof item.captureError !== 'string' || item.passed)) {
       throw new Error(`Invalid evidence in ${source}: capture failure cannot pass`);
+    }
+    if (item.releaseUnderTest !== undefined && (!isRecord(item.releaseUnderTest)
+      || typeof item.releaseUnderTest.identityHash !== 'string' || !/^[0-9a-f]{64}$/.test(item.releaseUnderTest.identityHash))) {
+      throw new Error(`Invalid evidence in ${source}: malformed release identity at index ${index}`);
     }
     if (seen.has(item.testCaseId)) throw new Error(`Invalid evidence in ${source}: duplicate test case ${item.testCaseId}`);
     seen.add(item.testCaseId);
@@ -143,8 +150,21 @@ export function saveEvidence(
 ): string {
   requireEvidenceResults(results, category);
   results = redactEvidenceSecrets(results) as EvidenceResult[];
+  const identity = currentReleaseIdentity();
+  if (identity) {
+    const stamp = releaseStamp(identity);
+    for (const result of results) {
+      if (result.releaseUnderTest && result.releaseUnderTest.identityHash !== stamp.identityHash) {
+        throw new Error(`Evidence ${result.testCaseId} was produced against release ${result.releaseUnderTest.identityHash}, not ${stamp.identityHash}.`);
+      }
+    }
+    results = results.map(result => ({ ...result, releaseUnderTest: stamp }));
+  }
   const evidenceDir = path.join(outputDir, 'evidence', category);
   fs.mkdirSync(evidenceDir, { recursive: true });
+  if (identity) {
+    fs.writeFileSync(path.join(evidenceDir, 'release-identity.json'), JSON.stringify(identity, null, 2), 'utf-8');
+  }
 
   const filePath = path.join(evidenceDir, `${category}-results.json`);
   fs.writeFileSync(filePath, JSON.stringify(results, null, 2), 'utf-8');
@@ -165,6 +185,7 @@ export function saveEvidence(
       platform: process.platform,
       arch: process.arch,
     },
+    releaseUnderTest: identity ?? null,
     total: results.length,
     passed,
     failed,
@@ -199,6 +220,15 @@ export function saveEvidence(
     `| Failed | ${failed} |`,
     `| Manual | ${manual} |`,
     `| Pass Rate | ${summary.passRate} |`,
+    ...(identity
+      ? [
+        `| Release Identity | ${identity.identityHash} |`,
+        ...(['api', 'ui', 'core'] as const).map(name =>
+          `| Release ${name.toUpperCase()} | ${identity.components[name].kind} ${identity.components[name].identity} (${identity.components[name].source}) |`),
+        `| Target Reported Version | ${identity.target?.version ?? (identity.target?.error ? `unavailable: ${identity.target.error}` : 'not reported')} |`,
+        `| Framework Commit | ${identity.framework.commit ?? 'unknown'}${identity.framework.dirty ? ' (uncommitted changes)' : ''} |`,
+      ]
+      : ['| Release Identity | not recorded: no release under test was supplied |']),
     '',
     '---',
     '',

@@ -11,7 +11,7 @@ it does not require a browser in this runner.
 cd validation-framework
 npm install
 npm run generate:docs   # Generate all documents (no live tests)
-npm run generate:all -- --base-url http://localhost:3000   # Generate documents + run IQ/OQ/PQ tests
+npm run generate:all -- --base-url http://localhost:3000 --release-api <sha> --release-ui <sha> --release-core <sha>
 ```
 
 ## CLI Options
@@ -39,6 +39,29 @@ frontend in `config/system-info.ts`, or any other host under `accuratrials.com` 
 `acuratrials.com` that the file does not list as staging. Only an approved
 production run may pass `--allow-production-target`; that flag does not replace
 `--allow-production-qualification`, which every nonlocal qualification still needs.
+
+### Release under test
+
+Live runners also require the release they qualify: `--release-api`,
+`--release-ui` and `--release-core`, each a full 40-character Git commit or a
+`sha256:<64 hex>` container image ID of the deployed component. The run reads the
+target's `GET /health` before any runner and records what it reports. When that
+body carries `release.api`, `release.ui` or `release.core`, each must equal the
+operator input or no runner starts; today the API reports only its semantic
+version, so the identity is the operator's input and is labelled as such.
+
+Every evidence record carries `releaseUnderTest` (the three identities, their
+SHA-256 identity hash and the framework commit). Each category's summary,
+execution report and `release-identity.json` hold the full identity with the
+target's observation, generated documents list it in their metadata, and the
+master evidence index shows each category's release and flags categories
+produced against different releases. Documents generated without a release are
+marked "not recorded".
+
+```powershell
+npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification `
+  --release-api <api commit> --release-ui <ui commit> --release-core <core image id>
+```
 
 ## Output
 
@@ -133,8 +156,8 @@ The CSV export checks every expected fixture value and native subject label. PDF
 The explicit mode connects OQ-154 and PQ-001 through PQ-040 to the existing signed study-definition workflow and the current native API. Use a local qualification environment with the official CORE validator, an authorized operator, and the immutable shared package already installed. Set `OQ_USERNAME` and `OQ_PASSWORD` through the environment (PQ-specific credentials are also supported). Run:
 
 ```powershell
-npm run generate -- --pq --base-url http://localhost:3000 --synthetic-qualification
-npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification
+npm run generate -- --pq --base-url http://localhost:3000 --synthetic-qualification --release-api <sha> --release-ui <sha> --release-core <sha>
+npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification --release-api <sha> --release-ui <sha> --release-core <sha>
 ```
 
 Use the actual authorized API URL/port. This creates owned synthetic studies, native forms and observations, signed release/application/activation, enrollment and planned visits. PQ exercises field preservation, a signed query lifecycle, completion, stale-write refusal, SDV, signature invalidation/re-signing, signed freeze/unfreeze/lock, raw native value readback, and exact correction audit records. It soft-archives only its owned synthetic fixture after retention checks. OQ also soft-archives its owned fixture after all suites, including when a suite fails. Cleanup retains the canonical creation receipt and reconciles the exact identity again if the first independent readback failed. Evidence contains native commands and separate readbacks; credentials are redacted.

@@ -1,21 +1,27 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { currentReleaseIdentity, type ReleaseIdentity } from '../../runners/release-identity';
 
 export interface DocumentMeta {
   generatedAt: string;
   frameworkVersion: string;
   systemVersion: string;
   outputDir: string;
+  /** The validation framework's own commit, not the system under test. */
   gitHash?: string;
+  /** API, UI and core release under test, when the run was given one. */
+  releaseIdentity?: ReleaseIdentity;
 }
 
 export function getDocumentMeta(outputDir: string): DocumentMeta {
   let gitHash: string | undefined;
   try {
-    const raw = execSync('git rev-parse --short HEAD', {
+    // Ask the framework's own checkout, whatever the caller's working directory.
+    const raw = execFileSync('git', ['-C', path.resolve(__dirname, '..', '..'), 'rev-parse', 'HEAD'], {
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
     if (raw.length > 0) {
       gitHash = raw;
@@ -63,6 +69,7 @@ export function getDocumentMeta(outputDir: string): DocumentMeta {
     systemVersion,
     outputDir,
     gitHash,
+    releaseIdentity: currentReleaseIdentity(),
   };
 }
 
@@ -83,7 +90,17 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
   ];
 
   if (meta.gitHash) {
-    lines.push(`| Git Commit | ${meta.gitHash} |`);
+    lines.push(`| Framework Commit | ${meta.gitHash} |`);
+  }
+  const release = meta.releaseIdentity;
+  if (release) {
+    lines.push(`| Release Identity | ${release.identityHash} |`);
+    for (const name of ['api', 'ui', 'core'] as const) {
+      const component = release.components[name];
+      lines.push(`| Release ${name.toUpperCase()} | ${component.kind} ${component.identity} |`);
+    }
+  } else {
+    lines.push('| Release Identity | not recorded: no release under test was supplied |');
   }
 
   lines.push('');

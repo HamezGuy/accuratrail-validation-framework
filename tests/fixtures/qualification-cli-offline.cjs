@@ -36,6 +36,9 @@ Module._load = function (request, parent, isMain) {
         },
       };
     }
+    // The release identity module is pure apart from /health, which the
+    // offline fetch below refuses; use the real implementation.
+    if (request === './runners/release-identity') return originalLoad.call(this, request, parent, isMain);
     if (request.startsWith('./runners/')) {
       if (request === './runners/benchmark-evidence') return {
         async importP13BenchmarkEvidence(_outputDir, options) {

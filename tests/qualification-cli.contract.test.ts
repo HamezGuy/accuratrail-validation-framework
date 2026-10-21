@@ -4,12 +4,14 @@ import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 
 const root = path.resolve(__dirname, '..');
-function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid') {
+const API = 'a'.repeat(40), UI = 'b'.repeat(40), CORE = `sha256:${'c'.repeat(64)}`;
+const RELEASE = ['--release-api', API, '--release-ui', UI, '--release-core', CORE];
+function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid', release = RELEASE) {
   const result = spawnSync(process.execPath, [
     '-r', require.resolve('ts-node/register'),
     '-r', path.join(__dirname, 'fixtures', 'qualification-cli-offline.cjs'),
     path.join(root, 'generate.ts'),
-    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]),
+    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]), ...release,
   ], {
     cwd: root,
     env: { ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '' },
@@ -143,4 +145,22 @@ test('a staging or local target is accepted without the production flag', () => 
   const invalid = runCli('pass', ['--iq'], 'ftp://localhost');
   assert.equal(invalid.status, 1, invalid.output);
   assert.match(invalid.output, /must use http or https/);
+});
+
+test('live runners require the API, UI and core release under test', () => {
+  const missing = runCli('pass', ['--oq'], undefined, ['--release-api', API]);
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(missing.output, /require the release under test: pass --release-ui, --release-core/);
+  assert.doesNotMatch(missing.output, /OFFLINE_RUNNER /);
+  const short = runCli('pass', ['--oq'], undefined, ['--release-api', 'abc1234', '--release-ui', UI, '--release-core', CORE]);
+  assert.equal(short.status, 1, short.output);
+  assert.match(short.output, /--release-api must be a full 40-character Git commit/);
+  assert.equal(runCli('pass', ['--docs-only', '--all'], null, []).status, 0);
+});
+
+test('the run reports the release under test and records an unreachable version endpoint', () => {
+  const result = runCli('pass', ['--iq']);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(result.output.includes(`Release under test: api ${API}, ui ${UI}, core ${CORE}`), result.output);
+  assert.match(result.output, /Target version endpoint unavailable \(Offline CLI test attempted network access\)/);
 });
