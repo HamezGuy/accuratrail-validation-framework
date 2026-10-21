@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveTestsLiveRoot } from './workspace-paths';
 
 export interface TestEntry {
   file: string;
@@ -16,11 +17,13 @@ const FEATURE_KEYWORDS = [
 ] as const;
 
 /**
- * Reads all .ts files in tests-live/scripts/ recursively and extracts
+ * Reads all .ts files in accuratrial-tests-live/scripts/ recursively and extracts
  * test metadata: name, API endpoints called, and feature keywords.
  */
 export function collectTests(workspaceRoot: string): TestEntry[] {
-  const scriptsDir = path.join(workspaceRoot, 'tests-live', 'scripts');
+  const testsLive = resolveTestsLiveRoot(workspaceRoot);
+  if (!testsLive) return [];
+  const scriptsDir = path.join(testsLive, 'scripts');
   const pattern = path.join(scriptsDir, '**', '*.ts').replace(/\\/g, '/');
 
   let files: string[];

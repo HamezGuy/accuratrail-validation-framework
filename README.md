@@ -63,6 +63,31 @@ npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualificat
   --release-api <api commit> --release-ui <ui commit> --release-core <core image id>
 ```
 
+### OQ case registry and training evidence
+
+`config/oq-case-registry.ts` is the one list of OQ cases (OQ-001 to OQ-205 in
+twelve suites). The OQ runner records a result for exactly these IDs and the OQ
+protocol lists exactly these IDs, so the protocol cannot fall behind the runner.
+Suites 1 to 7 keep their detailed protocol steps; suites 8 to 12 are listed by
+case, with each case's description, acceptance criteria and regulatory reference
+recorded in its evidence record. OQ-073 to OQ-075 are defined but not automated;
+the runner records them as not executed.
+
+`15-training-matrix.md` is generated from the training module's own
+`training-inspection-evidence/1` capture. Pass it with
+`--training-evidence C:/path/to/capture.json`; the file is checked (contract,
+completeness, every row's SHA-256) and retained as
+`evidence/training/training-inspection-evidence.json`. The matrix shows each
+course's required roles, assigned, completed, verified and overdue obligations
+per role, refresher intervals and the module's own gaps. Without a capture the
+document says so and shows no requirement table.
+
+`config/tests-live-mapping.ts` feeds the traceability matrix's "Live Workflow
+Script Coverage" section, which lists the accuratrial-tests-live scripts that
+exercise each case and marks any mapped script missing from that checkout. The
+live suite retains only failures, so these rows are coverage pointers, not
+execution evidence.
+
 ## Output
 
 Each run creates a versioned folder under `output/`:

@@ -13,6 +13,9 @@ import {
   type SectionEntry,
 } from './helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from './helpers/version-stamper';
+import {
+  OQ_CASE_IDS, OQ_NOT_AUTOMATED, OQ_SUITES, assertOqRegistryContiguous, oqSuiteCaseIds,
+} from '../config/oq-case-registry';
 
 interface OqTestCase {
   id: string;
@@ -43,6 +46,9 @@ function oqTestCaseBlock(tc: OqTestCase): string {
     lines.push(`  ${i + 1}. ${step}`);
   });
   lines.push(`- **Expected Result:** ${tc.expectedResult}`);
+  if (OQ_NOT_AUTOMATED.has(tc.id)) {
+    lines.push('- **Execution:** Not executed by the automated OQ runner, which records it as not executed; separate execution evidence is required.');
+  }
   lines.push('- **Actual Result:** _[To be completed]_');
   lines.push('- **Pass/Fail:** _[Pending]_');
   lines.push(`- **Evidence:** _[See evidence/oq/]_`);
@@ -945,25 +951,28 @@ function part11ComplianceCases(): OqTestCase[] {
 
 
 export function generate(outputDir: string, _workspaceRoot: string): void {
-  const allCases: OqTestCase[][] = [
-    authenticationCases(),
-    accessControlCases(),
-    auditTrailCases(),
-    esignatureCases(),
-    dataOperationsCases(),
-    dataLockCases(),
-    part11ComplianceCases(),
-  ];
-
-  const sectionTitles = [
-    'Authentication Tests',
-    'Access Control Tests',
-    'Audit Trail Tests',
-    'E-Signature Tests',
-    'Data Operations Tests',
-    'Data Lock Tests',
-    'Part 11 Compliance Controls Tests',
-  ];
+  // Detailed protocol entries for the first seven suites; the later suites are
+  // listed from the shared case registry the runner also uses.
+  const detailed: Record<number, OqTestCase[]> = {
+    1: authenticationCases(),
+    2: accessControlCases(),
+    3: auditTrailCases(),
+    4: esignatureCases(),
+    5: dataOperationsCases(),
+    6: dataLockCases(),
+    7: part11ComplianceCases(),
+  };
+  assertOqRegistryContiguous();
+  const listed: string[] = [];
+  for (const suite of OQ_SUITES) {
+    const ids = detailed[suite.suite]?.map(tc => tc.id) ?? oqSuiteCaseIds(suite);
+    if (ids.join() !== oqSuiteCaseIds(suite).join()) {
+      throw new Error(`OQ protocol suite ${suite.suite} does not list exactly the registry cases ${suite.first} to ${suite.last}.`);
+    }
+    listed.push(...ids);
+  }
+  if (listed.join() !== OQ_CASE_IDS.join()) throw new Error('OQ protocol does not list exactly the registry cases.');
+  const sectionTitles = OQ_SUITES.map(suite => suite.title);
 
   const tocEntries: SectionEntry[] = [
     { level: 1, title: 'Objective' },
@@ -977,7 +986,6 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   tocEntries.push({ level: 1, title: 'Deviations' });
   tocEntries.push({ level: 1, title: 'Approval Signatures' });
 
-  const flatCases = allCases.flat();
   let content = '';
 
   content += documentHeader({
@@ -1032,18 +1040,31 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += section(2, 'Test Summary');
   content += markdownTable(
     ['Section', 'Test Cases', 'IDs'],
-    sectionTitles.map((title, i) => {
-      const cases = allCases[i];
-      return [title, String(cases.length), `${cases[0].id} – ${cases[cases.length - 1].id}`];
+    OQ_SUITES.map(suite => {
+      const ids = oqSuiteCaseIds(suite);
+      return [suite.title, String(ids.length), `${ids[0]} to ${ids[ids.length - 1]}`];
     }),
   );
-  content += `\n**Total test cases:** ${flatCases.length}\n\n`;
+  content += `\n**Total test cases:** ${OQ_CASE_IDS.length} (${OQ_CASE_IDS[0]} to ${OQ_CASE_IDS[OQ_CASE_IDS.length - 1]}), `
+    + `the same registry the OQ runner records results for. ${OQ_NOT_AUTOMATED.size} defined cases `
+    + `(${[...OQ_NOT_AUTOMATED].join(', ')}) are not executed by the automated runner and need separate execution evidence.\n\n`;
   content += hr();
 
-  for (let i = 0; i < sectionTitles.length; i++) {
-    content += section(2, sectionTitles[i]);
-    for (const tc of allCases[i]) {
-      content += oqTestCaseBlock(tc);
+  for (const suite of OQ_SUITES) {
+    content += section(2, suite.title);
+    const cases = detailed[suite.suite];
+    if (cases) {
+      for (const tc of cases) content += oqTestCaseBlock(tc);
+    } else {
+      content += `**Scope:** ${suite.scope}. **Regulatory focus:** ${suite.regulatoryFocus}.\n\n`;
+      content += 'Each case runs against the live API under the owned synthetic fixture. The runner records the '
+        + 'case description, acceptance criteria and regulatory reference in the evidence record '
+        + '(`evidence/oq/<case>.json`), and the test execution records reproduce them.\n\n';
+      content += markdownTable(
+        ['Case', 'Suite', 'Actual Result', 'Pass/Fail', 'Evidence'],
+        oqSuiteCaseIds(suite).map(id => [id, `${suite.suite}`, '_[To be completed]_', '_[Pending]_', `evidence/oq/${id}.json`]),
+      );
+      content += '\n';
     }
     content += hr();
   }

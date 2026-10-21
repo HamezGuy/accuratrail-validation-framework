@@ -43,6 +43,11 @@ export function resolveInteropMiddlewareRoot(workspaceRoot: string): string | nu
   ]);
 }
 
+/** Root of the live workflow suite (accuratrial-tests-live), if present. */
+export function resolveTestsLiveRoot(workspaceRoot: string): string | null {
+  return firstExisting(workspaceRoot, ['accuratrial-tests-live', 'tests-live']);
+}
+
 /** Root of standalone training service, if present. */
 export function resolveTrainingModuleRoot(workspaceRoot: string): string | null {
   return firstExisting(workspaceRoot, ['accura-training-module', 'training-module']);

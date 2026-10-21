@@ -11,6 +11,8 @@ import {
   riskBadge,
 } from './helpers/markdown-writer';
 import { loadRunnerEvidence, RunnerResult } from './helpers/evidence-linker';
+import { TESTS_LIVE_MAPPINGS, getAllMappedTestCaseIds, getScriptsForTestCase } from '../config/tests-live-mapping';
+import { resolveTestsLiveRoot } from '../collectors/workspace-paths';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -396,13 +398,30 @@ function overlayEvidence(rows: TraceRow[], evidenceMap: Map<string, RunnerResult
 }
 
 export function generate(outputDir: string, workspaceRoot: string): void {
-  void workspaceRoot;
   const evidenceMap = loadRunnerEvidence(outputDir);
-  const content = buildDocument(evidenceMap);
+  const content = buildDocument(evidenceMap, resolveTestsLiveRoot(workspaceRoot));
   fs.writeFileSync(path.join(outputDir, '06-traceability-matrix.md'), content);
 }
 
-function buildDocument(evidenceMap: Map<string, RunnerResult>): string {
+/** Which live workflow scripts exercise each case, from config/tests-live-mapping.ts.
+ * The suite retains only failures, so a mapping points to coverage; it is not evidence. */
+export function liveWorkflowCoverage(testsLiveRoot: string | null): string {
+  let c = section(2, 'Live Workflow Script Coverage');
+  c += 'The live workflow suite (accuratrial-tests-live) exercises the cases below through the scripts listed. '
+    + 'It keeps only failures (`logs/test-errors.json`) and no structured pass record, so these rows show where a case '
+    + 'is exercised end to end; they are not execution evidence and do not change any verification status above.\n\n';
+  const missing = testsLiveRoot
+    ? new Set(TESTS_LIVE_MAPPINGS.map(m => m.scriptPath).filter(script => !fs.existsSync(path.join(testsLiveRoot, script))))
+    : null;
+  if (!testsLiveRoot) c += '**The tests-live checkout was not found in this workspace; script presence is unchecked.**\n\n';
+  else if (missing && missing.size) c += `**${missing.size} mapped script(s) are missing from the tests-live checkout and are marked below.**\n\n`;
+  c += markdownTable(['Case', 'Live workflow scripts'], getAllMappedTestCaseIds().map(id => [id,
+    getScriptsForTestCase(id).map(m => `${m.scriptPath}${missing?.has(m.scriptPath) ? ' (missing)' : ''}`).join('<br>')]));
+  c += '\n';
+  return c;
+}
+
+function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: string | null = null): string {
   const p11 = part11Rows();
   const audit = auditTrailRows();
   const access = accessControlRows();
@@ -495,6 +514,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>): string {
     { level: 2, title: 'Coverage Statistics' },
     { level: 2, title: 'Risk Distribution' },
     { level: 2, title: 'Gaps Identified' },
+    { level: 1, title: 'Live Workflow Script Coverage' },
     { level: 1, title: 'Document Cross-References' },
     { level: 1, title: 'Approval Signatures' },
   ]) + '\n';
@@ -723,6 +743,9 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>): string {
     }
     c += '\n\n';
   }
+  c += hr();
+
+  c += liveWorkflowCoverage(testsLiveRoot);
   c += hr();
 
   // Document Cross-References

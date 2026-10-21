@@ -25,6 +25,7 @@ interface CliArgs {
   benchmarkRun?: string;
   benchmarkEvaluatorRoot?: string;
   p13Plan?: string;
+  trainingEvidence?: string;
   qualificationFlags: string[];
 }
 
@@ -105,11 +106,13 @@ function parseArgs(): CliArgs {
       }
       case '--benchmark-run':
       case '--p13-plan':
+      case '--training-evidence':
       case '--benchmark-evaluator-root': {
         const value = argv[++i];
         if (!value || value.startsWith('--')) throw new Error(`${arg} requires a path`);
         if (arg === '--benchmark-run') args.benchmarkRun = value;
         else if (arg === '--p13-plan') args.p13Plan = value;
+        else if (arg === '--training-evidence') args.trainingEvidence = value;
         else args.benchmarkEvaluatorRoot = value;
         break;
       }
@@ -300,6 +303,12 @@ async function main(): Promise<void> {
     }
   }
   console.log('');
+
+  // The training matrix is generated from the training module's own capture.
+  if (args.trainingEvidence) {
+    const { retainTrainingInspectionEvidence } = require('./generators/15-training-matrix') as typeof import('./generators/15-training-matrix');
+    console.log(`Training evidence retained: ${retainTrainingInspectionEvidence(args.trainingEvidence, outputDir)}`);
+  }
 
   // Phase 2: Run generators
   console.log('--- Generators ---');

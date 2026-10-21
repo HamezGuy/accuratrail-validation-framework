@@ -1,5 +1,6 @@
 import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { OQ_CASE_IDS, OQ_NOT_AUTOMATED } from '../config/oq-case-registry';
 /**
  * OQ Runner — Operational Qualification test execution.
  * Executes the 205-case OQ catalog and retains unmet evidence as failures.
@@ -2526,7 +2527,8 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   }
 
   allResults.push(await runRateLimitTest(baseUrl));
-  for (let id = 1; id <= 205; id++) { const testCaseId = `OQ-${String(id).padStart(3, '0')}`; if (!allResults.some(row => row.testCaseId === testCaseId)) allResults.push({ ...manualResult(testCaseId, 'This OQ case did not execute.'), method: 'CONTRACT' }); }
+  // Every registry case has a result; the OQ protocol lists the same registry.
+  for (const testCaseId of OQ_CASE_IDS) { if (!allResults.some(row => row.testCaseId === testCaseId)) allResults.push({ ...manualResult(testCaseId, OQ_NOT_AUTOMATED.has(testCaseId) ? 'This OQ case is not automated; separate execution evidence is required.' : 'This OQ case did not execute.'), method: 'CONTRACT' }); }
   allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
 
   const passed = allResults.filter(r => r.passed).length;
