@@ -4,15 +4,15 @@ import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 
 const root = path.resolve(__dirname, '..');
-function runCli(scenario: string, flags = ['--all']) {
+function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid') {
   const result = spawnSync(process.execPath, [
     '-r', require.resolve('ts-node/register'),
     '-r', path.join(__dirname, 'fixtures', 'qualification-cli-offline.cjs'),
     path.join(root, 'generate.ts'),
-    ...flags, '--base-url', 'https://qualification.invalid',
+    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]),
   ], {
     cwd: root,
-    env: { ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario },
+    env: { ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '' },
     encoding: 'utf8',
     timeout: 20_000,
   });
@@ -101,4 +101,46 @@ test('P13 docs-only performs no retrieval and a missing plan argument fails', ()
   assert.equal(result.status, 0, result.output);
   assert.doesNotMatch(result.output, /OFFLINE_P13/);
   assert.equal(runCli('pass', ['--p13-plan']).status, 1);
+});
+
+test('live runners have no default target and refuse to start without --base-url', () => {
+  const result = runCli('pass', ['--oq'], null);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Live runners require an explicit --base-url/);
+  assert.doesNotMatch(result.output, /OFFLINE_RUNNER |api\.accuratrials\.com/);
+  const missingValue = runCli('pass', ['--oq', '--base-url'], null);
+  assert.equal(missingValue.status, 1, missingValue.output);
+  assert.match(missingValue.output, /--base-url requires a URL/);
+});
+
+test('documents and offline evidence need no target', () => {
+  assert.equal(runCli('pass', ['--docs-only', '--all'], null).status, 0);
+  const benchmark = runCli('pass', ['--benchmark-run', 'offline-fixture'], null);
+  assert.equal(benchmark.status, 0, benchmark.output);
+});
+
+for (const target of ['https://api.accuratrials.com', 'https://app.accuratrials.com/', 'https://API.AccuraTrials.com:443', 'https://www.acuratrials.com']) {
+  test(`production host ${target} is refused without the explicit production flag`, () => {
+    const refused = runCli('pass', ['--all', '--synthetic-qualification', '--allow-production-qualification'], target);
+    assert.equal(refused.status, 1, refused.output);
+    assert.match(refused.output, /Refusing production host .*--allow-production-target/);
+    assert.doesNotMatch(refused.output, /OFFLINE_RUNNER /);
+  });
+}
+
+test('the explicit production flag reaches the runners with the given target only', () => {
+  const allowed = runCli('pass', ['--iq', '--allow-production-target'], 'https://api.accuratrials.com');
+  assert.equal(allowed.status, 0, allowed.output);
+  assert.match(allowed.output, /OFFLINE_TARGET https:\/\/api\.accuratrials\.com/);
+});
+
+test('a staging or local target is accepted without the production flag', () => {
+  for (const target of ['https://staging-api.accuratrials.com', 'http://localhost:3000']) {
+    const result = runCli('pass', ['--iq'], target);
+    assert.equal(result.status, 0, result.output);
+    assert.ok(result.output.includes(`OFFLINE_TARGET ${target}`), result.output);
+  }
+  const invalid = runCli('pass', ['--iq'], 'ftp://localhost');
+  assert.equal(invalid.status, 1, invalid.output);
+  assert.match(invalid.output, /must use http or https/);
 });

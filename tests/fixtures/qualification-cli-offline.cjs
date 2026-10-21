@@ -49,8 +49,9 @@ Module._load = function (request, parent, isMain) {
       };
       return {
         async run(_outputDir, baseUrl, _workspaceRoot, flags) {
-          if (baseUrl !== 'https://qualification.invalid') throw new Error('Unexpected test target');
+          if (!['https://qualification.invalid', process.env.QUALIFICATION_CLI_TEST_TARGET].includes(baseUrl)) throw new Error('Unexpected test target');
           console.log(`OFFLINE_RUNNER ${request}`);
+          console.log(`OFFLINE_TARGET ${baseUrl}`);
           if (flags?.length) console.log(`QUALIFICATION_FLAGS ${flags.join(",")}`);
           if (request.endsWith('/iq-runner')) {
             if (scenario === 'throw') throw new Error('Synthetic runner failure');

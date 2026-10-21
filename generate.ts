@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EvidenceResult } from './runners/evidence-capture';
+import { SYSTEM_INFO } from './config/system-info';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -14,7 +15,8 @@ interface CliArgs {
   runPerf: boolean;
   only?: string;
   version?: string;
-  baseUrl: string;
+  baseUrl?: string;
+  allowProductionTarget: boolean;
   benchmarkRun?: string;
   benchmarkEvaluatorRoot?: string;
   p13Plan?: string;
@@ -33,7 +35,8 @@ function parseArgs(): CliArgs {
     runPerf: false,
     only: undefined,
     version: undefined,
-    baseUrl: 'https://api.accuratrials.com',
+    baseUrl: undefined,
+    allowProductionTarget: false,
     qualificationFlags: [],
   };
 
@@ -77,9 +80,14 @@ function parseArgs(): CliArgs {
         i++;
         args.version = argv[i];
         break;
-      case '--base-url':
-        i++;
-        args.baseUrl = argv[i];
+      case '--base-url': {
+        const value = argv[++i];
+        if (!value || value.startsWith('--')) throw new Error('--base-url requires a URL');
+        args.baseUrl = value;
+        break;
+      }
+      case '--allow-production-target':
+        args.allowProductionTarget = true;
         break;
       case '--benchmark-run':
       case '--p13-plan':
@@ -103,7 +111,43 @@ function parseArgs(): CliArgs {
   }
 
   if (args.benchmarkEvaluatorRoot && !args.benchmarkRun) throw new Error('--benchmark-evaluator-root requires --benchmark-run');
+  if (!args.docsOnly && liveRunnerSelected(args)) checkRunnerTarget(args);
   return args;
+}
+
+function liveRunnerSelected(args: CliArgs): boolean {
+  return args.runIq || args.runOq || args.runPq || args.runSecurity || args.runDr || args.runPerf;
+}
+
+/** Owner domains whose hosts are production unless the system information
+ * lists them as a staging host. */
+const OWNER_DOMAINS = ['accuratrials.com', 'acuratrials.com'];
+
+function isProductionHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  const hostOf = (url: string) => new URL(url).hostname.toLowerCase();
+  const { production, staging } = SYSTEM_INFO.environments;
+  if ([production.apiUrl, production.frontendUrl].map(hostOf).includes(host)) return true;
+  if ([staging.apiUrl, staging.frontendUrl].map(hostOf).includes(host)) return false;
+  return OWNER_DOMAINS.some(domain => host === domain || host.endsWith(`.${domain}`));
+}
+
+/** Live runners write and read through the target. There is no default target,
+ * and the production host is refused unless the operator passes the documented
+ * --allow-production-target flag. */
+function checkRunnerTarget(args: CliArgs): void {
+  if (!args.baseUrl) {
+    throw new Error('Live runners require an explicit --base-url (for example http://localhost:3000). There is no default target.');
+  }
+  let target: URL;
+  try { target = new URL(args.baseUrl); }
+  catch { throw new Error(`--base-url is not a valid URL: ${args.baseUrl}`); }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    throw new Error(`--base-url must use http or https: ${args.baseUrl}`);
+  }
+  if (isProductionHost(target.hostname) && !args.allowProductionTarget) {
+    throw new Error(`Refusing production host ${target.hostname}. Pass --allow-production-target only for an approved production run.`);
+  }
 }
 
 interface GeneratorEntry {
@@ -314,7 +358,7 @@ async function main(): Promise<void> {
       if (!runner.flag) continue;
       try {
         const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string, workspaceRoot: string, qualificationFlags: readonly string[]) => Promise<EvidenceResult[]> };
-        const results = await mod.run(outputDir, args.baseUrl, WORKSPACE_ROOT, args.qualificationFlags);
+        const results = await mod.run(outputDir, args.baseUrl as string, WORKSPACE_ROOT, args.qualificationFlags);
         const failedCases = failedRunnerCases(results);
         if (failedCases.length > 0) {
           runnersFailed++;

@@ -11,7 +11,7 @@ it does not require a browser in this runner.
 cd validation-framework
 npm install
 npm run generate:docs   # Generate all documents (no live tests)
-npm run generate:all    # Generate documents + run IQ/OQ/PQ tests
+npm run generate:all -- --base-url http://localhost:3000   # Generate documents + run IQ/OQ/PQ tests
 ```
 
 ## CLI Options
@@ -26,6 +26,19 @@ npx ts-node generate.ts --only traceability-matrix  # Single document
 npx ts-node generate.ts --version "v2.1"     # Custom version label
 npx ts-node generate.ts --benchmark-run "C:/path/to/retained-run" --version "benchmark-001"
 ```
+
+### Target system
+
+Live runners (`--iq`, `--oq`, `--pq`, `--security`, `--dr`, `--perf`, `--all`) have no
+default target. Pass `--base-url` with the API under test, for example
+`--base-url http://localhost:3000`; the command stops before any runner when it is
+missing. Documents only and offline benchmark imports need no target.
+
+The production host is refused. A production host is the production API or
+frontend in `config/system-info.ts`, or any other host under `accuratrials.com` or
+`acuratrials.com` that the file does not list as staging. Only an approved
+production run may pass `--allow-production-target`; that flag does not replace
+`--allow-production-qualification`, which every nonlocal qualification still needs.
 
 ## Output
 
