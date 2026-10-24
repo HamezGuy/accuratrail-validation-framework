@@ -276,11 +276,14 @@ export function composeServiceEnvironment(text: string, service: string): Source
   while (end < lines.length && !(isContent(lines[end]) && indentOf(lines[end]) <= serviceIndent)) end++;
   const block = lines.slice(start + 1, end);
   const entries = new Map<string, EnvironmentEntry>();
-  let complete = !block.some(line => /^\s*env_file:/.test(line));
-  const environment = block.findIndex(line => /^\s*environment:\s*(?:#.*)?$/.test(line));
+  // The service's own keys sit at its first child level; a deeper environment: belongs to something else.
+  const childIndent = indentOf(block.find(isContent) ?? '');
+  const ownKey = (line: string, key: RegExp) => isContent(line) && indentOf(line) === childIndent && key.test(line);
+  let complete = !block.some(line => ownKey(line, /^\s*env_file:/));
+  const environment = block.findIndex(line => ownKey(line, /^\s*environment:\s*(?:#.*)?$/));
   if (environment < 0) {
     // No environment, or an inline one this reader does not parse: nothing is known to be unset.
-    return { entries, complete: complete && !block.some(line => /^\s*environment:/.test(line)) };
+    return { entries, complete: complete && !block.some(line => ownKey(line, /^\s*environment:/)) };
   }
   const environmentIndent = indentOf(block[environment]);
   const body: Array<{ text: string; line: number }> = [];

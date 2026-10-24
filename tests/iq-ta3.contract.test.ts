@@ -388,6 +388,9 @@ test('the environment readers follow compose map and list forms, env files and t
   assert.equal(sourceFlagValue(map, 'ESIG_ACKNOWLEDGEMENT_ENFORCED'), false, 'absent from a complete environment: the code default');
   const merged = composeServiceEnvironment(['services:', '  core-api:', '    environment:', '      <<: *common', '      NODE_ENV: test', ''].join('\n'), 'core-api')!;
   assert.equal(merged.complete, false);
+  const nested = composeServiceEnvironment(['services:', '  core-api:', '    build:', '      environment:', '        DECOY: "1"',
+    '    environment:', '      NODE_ENV: test', ''].join('\n'), 'core-api')!;
+  assert.deepEqual([...nested.entries.keys()], ['NODE_ENV'], 'only the service\'s own environment key is read');
   const env = dotenvEnvironment(['export NODE_ENV=production', 'ENABLE_DATA_CLEANING= "true" # quoted', 'TRAINING_SERVICE_URL=',
     'PROTOCOL_SOURCE_URL=${CONTROL}/il', '#ENABLE_DEVIATION_ENGINE=true', ''].join('\r\n'));
   assert.deepEqual([...env.entries].map(([key, entry]) => [key, entry.value, entry.line]),
