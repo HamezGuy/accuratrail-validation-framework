@@ -10,8 +10,9 @@ import {
   hr,
   riskBadge,
 } from './helpers/markdown-writer';
-import { loadRunnerEvidence, RunnerResult } from './helpers/evidence-linker';
+import { loadRunnerEvidence, mappedCaseState, runnerCaseCheck, RunnerResult } from './helpers/evidence-linker';
 import { TESTS_LIVE_MAPPINGS, getAllMappedTestCaseIds, getScriptsForTestCase } from '../config/tests-live-mapping';
+import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
 import { resolveTestsLiveRoot } from '../collectors/workspace-paths';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
@@ -338,6 +339,25 @@ function disasterRecoveryRows(): TraceRow[] {
   ];
 }
 
+// --- Section 17: TA3 Platform Operations ---
+/** One row per TA3 requirement (config/ta3-requirements.ts): its implementation is the functional requirement's,
+ * its test cases those of the requirement's planned verification, each a catalogued runner case. The status reads
+ * each case's retained state, so a case recorded not executed (for example NO_TA3_PLAN, or a suite not selected)
+ * leaves the row Pending, never Fail; a requirement no case verifies is a GAP row. */
+function ta3Rows(evidenceMap: Map<string, RunnerResult>): TraceRow[] {
+  return TA3_REQUIREMENTS.map((r): TraceRow => {
+    const cases = ta3RequirementCases(r);
+    const reference = [...r.part11Ref.split(', ').map(sectionId => `§${sectionId}`), 'ICH E6(R3)'].join(', ');
+    if (!cases.length) return [`${r.id}: ${r.title}`, reference, riskBadge(r.risk), r.frs.implementation, 'GAP', 'Pending', 'None', 'None', 'Pending'];
+    const states = cases.map(id => { runnerCaseCheck(id); return mappedCaseState(id, evidenceMap); });
+    const [result, status] = states.includes('failed') ? ['Fail', 'Non-Compliant']
+      : states.every(state => state === 'passed') ? ['Pass', 'Verified']
+        : states.includes('passed') ? ['Partial', 'Pending']
+          : states.every(state => state === 'missing') ? ['Pending', 'Pending'] : ['Not executed', 'Pending'];
+    return [`${r.id}: ${r.title}`, reference, riskBadge(r.risk), r.frs.implementation, cases.join(', '), result, 'evidence/oq/', 'None', status];
+  });
+}
+
 function parseTestCaseIds(testCaseStr: string): string[] {
   const ids: string[] = [];
   const parts = testCaseStr.split(',').map(p => p.trim());
@@ -447,6 +467,8 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
   for (const rows of allSectionRows) {
     overlayEvidence(rows, evidenceMap);
   }
+  // The TA3 rows carry their status from each case's retained state already.
+  const ta3 = ta3Rows(evidenceMap);
 
   const allSections = [
     { name: 'Part 11 Requirements', rows: p11 },
@@ -466,6 +488,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
     { name: 'Security Testing', rows: security },
     { name: 'Performance Testing', rows: performance },
     { name: 'Disaster Recovery', rows: disasterRecovery },
+    { name: 'TA3 Platform Operations', rows: ta3 },
   ];
 
   const allRows = allSections.flatMap((s) => s.rows);
@@ -513,6 +536,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
     { level: 1, title: 'Security Testing' },
     { level: 1, title: 'Performance Testing' },
     { level: 1, title: 'Disaster Recovery' },
+    { level: 1, title: 'TA3 Platform Operations' },
     { level: 1, title: 'Traceability Summary' },
     { level: 2, title: 'Coverage Statistics' },
     { level: 2, title: 'Risk Distribution' },
@@ -684,6 +708,18 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
   c += '\n';
   c += hr();
 
+  // TA3 Platform Operations
+  c += section(2, 'TA3 Platform Operations');
+  c += `Traceability for the **TA3 Platform Operations** requirements URS-081 to URS-101 (**${ta3.length}** requirements), `;
+  c += 'each with the implementation of its functional requirement (FRS-087 to FRS-107) and the OQ cases of suites 13 to 18 ';
+  c += 'its planned verification cites.\n\n';
+  c += '> These cases run against the designated armed synthetic study a ta3-oq-plan/1 names. A case recorded not executed ';
+  c += '(a setup gap such as NO_TA3_PLAN, or a suite not selected) leaves its row Pending, never Fail; a case that met a ';
+  c += 'feature switched off or absent at the release failed with its outcome code. A GAP row has no runner case.\n\n';
+  c += markdownTable(TRACE_HEADERS, ta3);
+  c += '\n';
+  c += hr();
+
   // Traceability Summary
   c += section(2, 'Traceability Summary');
 
@@ -709,6 +745,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
       ['Security Testing Items', String(security.length)],
       ['Performance Testing Items', String(performance.length)],
       ['Disaster Recovery Items', String(disasterRecovery.length)],
+      ['TA3 Platform Operations Requirements', String(ta3.length)],
       ['Requirements Verified (Passed)', String(verifiedCount)],
       ['Requirements Pending Verification', String(pendingCount)],
       ['Requirements Non-Compliant (Failed)', String(nonCompliantCount)],
@@ -730,6 +767,8 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
 
   c += '### Gaps Identified\n\n';
   c += 'All previously identified SOP gaps have been remediated. See the SOP Gap Analysis (13-sop-gap-analysis.md) for the full coverage assessment.\n\n';
+  const ta3Gaps = ta3.filter((row) => row[4] === 'GAP').map((row) => row[0].split(':')[0]);
+  if (ta3Gaps.length) c += `TA3 requirements no runner case verifies: ${ta3Gaps.join(', ')} (see TA3 Platform Operations).\n\n`;
 
   if (verifiedCount === 0 && nonCompliantCount === 0) {
     c += '> **Note:** This traceability matrix will be updated as validation execution progresses. ';

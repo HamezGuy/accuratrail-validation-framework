@@ -478,6 +478,24 @@ function buildCriticalMitigations(criticalFeatures: FeatureRisk[]): MitigationCo
       controls: 'Anomaly detection in audit logs; notification.service.ts for breach alerts; documented breach notification procedures (SOP); 60-day notification window compliance',
       residualRisk: 'Medium — breach detection is heuristic; regular review of detection rules recommended',
     },
+    // TA3 Platform Operations: designed controls of the EDC; the residual stays pending until the retained
+    // OQ evidence of suites 13 to 18 exists at the release under test (VAL-1).
+    'FEAT-160': {
+      controls: 'deviation-evaluation.service.ts evaluates the subject after the save commits and never blocks the save; a deviation is logged only when a rule newly changes to violated and is never closed by the engine; receipts in acc_deviation_evaluations carry spec hash, submission hash and actor and are append-only by trigger; ENABLE_DEVIATION_ENGINE stays off in the live trial until change control (D-04)',
+      residualRisk: 'Pending reassessment: requires the retained OQ evidence of suite 13 at the release under test (VAL-1)',
+    },
+    'FEAT-161': {
+      controls: 'deviation-sweep.service.ts evaluates every subject with no outcome or outcomes older than 23 hours as the system actor; stage 5 of the study-task worker runs every minute while ENABLE_STUDY_TASK_CRON is not false; manual-review and missing-data outcomes never count as a pass',
+      residualRisk: 'Pending reassessment: requires the retained OQ evidence of OQ-209 and OQ-210 at the release under test (VAL-1)',
+    },
+    'FEAT-163': {
+      controls: 'An assessment is refused to the logger and without password re-entry (DEVIATION_ASSESSMENT_MEANING); a not-a-deviation closure is refused to the assessor (DEVIATION_CLOSURE_MEANING); every deviation carries its occurrence date and basis, spec hashes and capture source (O-1); the decision routes answer 503 while ENABLE_DEVIATION_DECISIONS is off',
+      residualRisk: 'Pending reassessment: requires the retained OQ evidence of suite 15 at the release under test (VAL-1)',
+    },
+    'FEAT-168': {
+      controls: 'Flat copies edc-inspection-copy/1 and /2 are served as exact bytes with X-Source-SHA256; generation, history and download are limited to administrators and data managers with export authority; evaluation receipts are only in the segmented copy edc-inspection-copy/3; the flat TA3 inventory sits behind INSPECTION_COPY_TA3_INVENTORY (W-1, not landed at the EDC head)',
+      residualRisk: 'Pending reassessment: requires the retained OQ evidence of suite 18, and W-1 in the release under test (VAL-1)',
+    },
   };
 
   return criticalFeatures.map((f) => {

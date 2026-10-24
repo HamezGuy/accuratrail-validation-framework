@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { E6_R3_REFERENCES, REGULATORY_SCOPE, e6r3 } from '../config/regulatory-scope';
+import { FEATURE_RISKS } from '../config/risk-ratings';
 import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
 import { TA3_OQ_CASES } from '../config/ta3-oq-cases';
+import { saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import { runnerCaseCheck } from '../generators/helpers/evidence-linker';
 import { generate as generateApplicability } from '../generators/01-applicability-assessment';
 import { generate as generateUrs } from '../generators/03-user-requirements-spec';
 import { generate as generateFrs } from '../generators/04-functional-requirements-spec';
+import { generate as generateRiskAssessment } from '../generators/05-risk-assessment';
+import { generate as generateTraceability } from '../generators/06-traceability-matrix';
+import { generate as generateCsa } from '../generators/19-csa-feature-assurance';
 import { temporaryDirectory } from './generated-documents';
 
 /** The TA3 requirements, records and mappings of TA3 plan item VAL-1 (spec P20 3.6). */
@@ -27,6 +32,26 @@ function generated(directory: string, file: string): string {
 function rows(content: string, prefix: string): string[][] {
   return content.split('\n').filter(line => line.startsWith(`| ${prefix}`)).map(line => line.slice(2, -2).split(' | '));
 }
+
+/** One `## <id>:` section of a generated document. */
+function sectionOf(content: string, id: string): string {
+  const start = content.indexOf(`\n## ${id}:`);
+  assert.ok(start >= 0, `${id} section`);
+  const end = content.indexOf('\n## ', start + 1);
+  return content.slice(start, end < 0 ? undefined : end);
+}
+
+/** A synthetic TA3 OQ record: executed (passing unless overridden) or, with notExecuted, recorded not executed. */
+function record(testCaseId: string, overrides: Partial<EvidenceResult> = {}): EvidenceResult {
+  return {
+    testCaseId, timestamp: '2026-10-24T00:00:00.000Z', endpoint: 'http://127.0.0.1:3100/api/synthetic', method: 'GET',
+    responseStatus: 200, responseBody: { synthetic: true }, passed: true, notes: 'Synthetic TA3 evidence', ...overrides,
+  };
+}
+const notExecuted = (testCaseId: string) => record(testCaseId, {
+  endpoint: 'N/A', method: 'CONTRACT', responseStatus: 0, responseBody: null, passed: false, outcomeCode: 'NO_TA3_PLAN',
+  notes: 'Synthetic: no ta3-oq-plan/1 was given; no request was made.',
+});
 
 test('the regulated records run from REC-001 to REC-028 without a gap, the TA3 records kept for 15 years', () => {
   const records = REGULATORY_SCOPE.regulatedRecords;
@@ -129,4 +154,89 @@ test('the generated URS and FRS carry the TA3 requirements, their ICH E6(R3) ref
   const applicability = generated(directory, '01-applicability-assessment.md');
   for (const record of REGULATORY_SCOPE.regulatedRecords.slice(15)) assert.ok(applicability.includes(`| ${record.id} | ${record.name} |`), record.id);
   assert.match(applicability, /All 28 record types are regulated electronic records/);
+});
+
+test('FEAT-160 to FEAT-169 rate the TA3 features, and their CSA records cite every TA3 OQ case and only catalogued cases', t => {
+  const ta3 = FEATURE_RISKS.filter(feature => feature.featureId >= 'FEAT-160');
+  assert.deepEqual(ta3.map(feature => feature.featureId), ids('FEAT', 160, 169));
+  assert.deepEqual(Object.fromEntries(ta3.map(feature => [feature.featureId, feature.riskLevel])), {
+    'FEAT-160': 'Critical', 'FEAT-161': 'Critical', 'FEAT-162': 'High', 'FEAT-163': 'Critical', 'FEAT-164': 'High',
+    'FEAT-165': 'High', 'FEAT-166': 'High', 'FEAT-167': 'High', 'FEAT-168': 'Critical', 'FEAT-169': 'High',
+  });
+  for (const feature of ta3) {
+    assert.ok(feature.part11Section, feature.featureId);
+    assert.doesNotMatch(`${feature.feature} ${feature.justification}`, DASH, feature.featureId);
+  }
+
+  const directory = temporaryDirectory(t, 'accura-csa-ta3-');
+  generateCsa(directory, directory);
+  const content = generated(directory, '19-csa-feature-assurance.md');
+  const cited = new Set<string>();
+  for (const feature of ta3) {
+    const csa = sectionOf(content, feature.featureId);
+    assert.match(csa, /\*\*CSA Classification:\*\* High Process Risk/, feature.featureId);
+    // The activity rows: planned activity, mapped case, its actual check, observed description, status.
+    for (const cells of rows(csa, '').filter(cells => /^OQ-\d{3}$/.test(cells[1] ?? ''))) {
+      assert.ok(cells[2].startsWith(runnerCaseCheck(cells[1]).check), `${feature.featureId} prints the check of ${cells[1]}`);
+      cited.add(cells[1]);
+    }
+  }
+  assert.deepEqual([...cited].sort(), TA3_OQ_CASES.map(entry => entry.id), 'the TA3 CSA records cite every TA3 OQ case');
+  // Without retained evidence nothing is concluded, and the validation record has no runner case at all.
+  assert.ok(sectionOf(content, 'FEAT-160').includes('no conclusion: none of the 7 mapped cases (OQ-206, OQ-207, OQ-208, OQ-211, OQ-212, OQ-213, OQ-214)'));
+  assert.match(sectionOf(content, 'FEAT-169'), /No assurance conclusion: no executed runner case is mapped/);
+  assert.match(sectionOf(content, 'FEAT-167'), /Open gap \(N-STORE\)/);
+
+  // The risk assessment rates every TA3 feature and names the designed controls of the critical ones, whose
+  // residual risk stays pending until their OQ evidence is retained.
+  generateRiskAssessment(directory, directory);
+  const risk = generated(directory, '05-risk-assessment.md');
+  for (const feature of ta3) assert.ok(risk.includes(`| ${feature.featureId} | ${feature.feature} |`), feature.featureId);
+  for (const id of ta3.filter(feature => feature.riskLevel === 'Critical').map(feature => feature.featureId)) {
+    const start = risk.indexOf(`### ${id}:`);
+    const mitigation = risk.slice(start, risk.indexOf('\n### ', start + 4));
+    assert.match(mitigation, /\*\*Residual Risk After Controls:\*\* Pending reassessment: requires the retained OQ evidence/, id);
+    assert.doesNotMatch(mitigation, /Controls documented in system design/, id);
+  }
+});
+
+test('the TA3 traceability rows and CSA records read each case\'s retained state: not executed stays Pending, a failure fails', t => {
+  const directory = temporaryDirectory(t, 'accura-trace-ta3-');
+  saveEvidence(directory, 'oq', TA3_OQ_CASES.map(entry => {
+    if (entry.suite === 14 || entry.id === 'OQ-233') return record(entry.id);
+    if (entry.id === 'OQ-207') return record(entry.id, { passed: false, outcomeCode: 'ENGINE_DISABLED', notes: 'Synthetic engine refusal' });
+    return notExecuted(entry.id);
+  }));
+  generateTraceability(directory, directory);
+  generateCsa(directory, directory);
+  const trace = generated(directory, '06-traceability-matrix.md');
+  assert.match(trace, /^## TA3 Platform Operations$/m);
+  assert.match(trace, /\| TA3 Platform Operations Requirements \| 21 \|/);
+  const row = (id: string) => {
+    const found = rows(trace, `${id}:`);
+    assert.equal(found.length, 1, id);
+    return found[0];
+  };
+  for (const requirement of TA3_REQUIREMENTS) {
+    const cells = row(requirement.id);
+    assert.equal(cells[0], `${requirement.id}: ${requirement.title}`);
+    assert.equal(cells[3], requirement.frs.implementation);
+    const cases = ta3RequirementCases(requirement);
+    assert.equal(cells[4], cases.length ? cases.join(', ') : 'GAP', requirement.id);
+  }
+  // Result and Status columns.
+  const state = (id: string) => [row(id)[5], row(id)[8]];
+  assert.deepEqual(state('URS-084'), ['Pass', 'Verified']);
+  assert.deepEqual(state('URS-081'), ['Fail', 'Non-Compliant']);
+  assert.deepEqual(state('URS-096'), ['Partial', 'Pending']);
+  // NO_TA3_PLAN is a setup gap: it never reads as a release failure.
+  assert.deepEqual(state('URS-088'), ['Not executed', 'Pending']);
+  assert.deepEqual(state('URS-100'), ['Pending', 'Pending']);
+  assert.match(trace, /TA3 requirements no runner case verifies: URS-099, URS-100, URS-101/);
+
+  const csa = generated(directory, '19-csa-feature-assurance.md');
+  assert.match(sectionOf(csa, 'FEAT-160'), /Not acceptable: 1 of 7 mapped checks failed in the retained run \(OQ-207\)/);
+  assert.match(sectionOf(csa, 'FEAT-162'), /All 4 mapped checks passed in the retained run/);
+  assert.match(sectionOf(csa, 'FEAT-165'), /Did not execute in the retained run/);
+  assert.match(sectionOf(csa, 'FEAT-165'), /5 cases did not execute in the retained run \(OQ-227, OQ-228, OQ-229, OQ-230, OQ-231\)/);
 });

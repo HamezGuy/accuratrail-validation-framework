@@ -735,6 +735,243 @@ FEATURE_DATA.set('FEAT-052', {
   ],
 });
 
+// TA3 Platform Operations (FEAT-160 to FEAT-169), verified by OQ suites 13 to 18 against the designated armed
+// synthetic study a ta3-oq-plan/1 names. A case that met a feature switched off or absent at the release failed
+// with its outcome code; a setup gap (NO_TA3_PLAN and the like) did not execute, so the feature stays incomplete.
+const TA3_TEST_TYPE = 'Robust Scripted Testing (per CSA Guidance Table 1); OQ suites 13 to 18 on a synthetic test stack';
+
+FEATURE_DATA.set('FEAT-160', {
+  intendedUse:
+    'Evaluates the governing deviation rules of a subject after every clinical save commits, without ever blocking the save, logs a machine ' +
+    'deviation only when a rule newly changes to violated, and keeps each evaluation as an append-only receipt with its spec hash, submission ' +
+    `hash and actor (${e6r3('nonCompliance')}; 21 CFR Part 11 §11.10(a) and §11.10(e)). The engine is on only where ENABLE_DEVIATION_ENGINE is true.`,
+  analysisText:
+    'High Process Risk because the engine decides which protocol deviations the trial records. A missed detection hides noncompliance, a ' +
+    'duplicate floods the log, and a changed receipt removes the evidence of what was evaluated; each foreseeably compromises the ' +
+    'deviation record of the trial.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/deviation-engine/deviation-evaluation.service.ts', 'Evaluation after the committed save; transition-only logging; no automatic closure'],
+    ['libreclinicaapi/src/services/deviation-engine/deviation-v2-migration.ts', 'acc_deviation_evaluations receipts, append-only by trigger'],
+    ['libreclinicaapi/src/routes/deviation-engine.routes.ts', 'Spec, outcome, evaluate and receipt routes; HTTP 503 while the engine is off'],
+  ],
+  activities: [
+    covered('The engine answers for the study with its active spec, and the receipts carry the expected spec hash', ['OQ-206']),
+    covered('A violating save is accepted and detected with exactly one machine deviation', ['OQ-207']),
+    covered('A compliant save is evaluated as passed and logs no deviation', ['OQ-208']),
+    covered('Re-evaluation of unchanged data adds no second deviation', ['OQ-211']),
+    covered('Receipts cannot be changed or deleted', ['OQ-212'], 'API refusal only; the database triggers are evidence of the EDC native suites.'),
+    covered('A correction keeps the violated state in history and the deviation open', ['OQ-213']),
+    covered('A machine deviation raises the configured follow-up task', ['OQ-214'], 'ENABLE_DOMAIN_EVENTS is off by default.'),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-161', {
+  intendedUse:
+    'Evaluates absence rules (missed visits, visit windows, visits after disposition) by a sweep of every subject without an outcome or with ' +
+    'outcomes older than 23 hours, as the system actor, from stage 5 of the study-task worker, and never reports an unevaluated subject as ' +
+    `compliant (${e6r3('nonCompliance')}; 21 CFR Part 11 §11.10(a)).`,
+  analysisText:
+    'High Process Risk because a visit that never happened produces no save; without the sweep its deviation is never found, and an ' +
+    'unevaluated subject read as compliant hides it. Either foreseeably compromises the completeness of the deviation record.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/deviation-engine/deviation-sweep.service.ts', 'Selection of unevaluated and stale subjects; evaluation as system user 1'],
+    ['libreclinicaapi/src/services/study-task-cron.service.ts', 'Stage 5 of the study-task worker, every minute while ENABLE_STUDY_TASK_CRON is not false'],
+  ],
+  activities: [
+    covered('A subject without visit data is evaluated by the sweep and its absence rule logs one machine deviation', ['OQ-210'],
+      'the wait is bounded by the plan (SWEEP_NOT_OBSERVED otherwise).'),
+    covered('A subject never evaluated shows no passed outcome', ['OQ-209']),
+    gap('The sweep runs at least daily on the deployed configuration',
+      'No case observes a whole day; IQ-033 records the declared ENABLE_STUDY_TASK_CRON value.'),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-162', {
+  intendedUse:
+    'Chooses the governing protocol version per site and planned visit from applicability records with stated effective, ethics approval and ' +
+    'documented dates, recorded only by administrators and data managers, and reports a version not yet established as unresolved ' +
+    `(${e6r3('protocolAndRecords')}; 21 CFR Part 11 §11.10(a) and §11.10(g)).`,
+  analysisText:
+    'High Process Risk because the governing version decides which rules apply to a visit. Evaluating under the wrong version, or falling ' +
+    'back silently when it is unknown, foreseeably records deviations that did not happen or misses ones that did.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/deviation-engine/protocol-applicability.ts', 'acc_protocol_version_applicability; established and unresolved versions'],
+    ['libreclinicaapi/src/routes/deviation-engine.routes.ts', 'Protocol-applicability routes restricted to SOURCE_ROLES'],
+  ],
+  activities: [
+    covered('Recording is refused to the monitor and accepted for a study builder', ['OQ-215']),
+    covered('Stated dates read back exactly, not the system date', ['OQ-216']),
+    covered('The governing version follows the planned visit date at the site', ['OQ-217']),
+    covered('An unresolved version is reported unresolved, never a silent fallback', ['OQ-218']),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-163', {
+  intendedUse:
+    'Records each deviation with its occurrence date and basis, spec hashes and capture source, lists a platform study\'s deviations with those ' +
+    'of its sites, and has an authorized person other than the logger assess disposition and importance under a Part 11 signature, with a ' +
+    `not-a-deviation closure by a second person (${e6r3('nonCompliance')}; FDA draft guidance on protocol deviations, December 2024; ` +
+    '21 CFR Part 11 §11.50, §11.70 and §11.200). The decision routes answer 503 while ENABLE_DEVIATION_DECISIONS is off.',
+  analysisText:
+    'High Process Risk because the assessment decides whether a deviation is important to the trial and the closure whether it is a deviation ' +
+    'at all. An unsigned or self assessment, or a dismissal without a second person, foreseeably compromises the integrity of the deviation record.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/routes/protocol-deviation.routes.ts', 'Assessment, close and list routes (O-1); DEVIATION_ASSESSMENT_MEANING and DEVIATION_CLOSURE_MEANING'],
+    ['libreclinicaapi/src/services/database/deviation-corrective-actions.service.ts', 'Assess and close events in the append-only decision history'],
+    ['libreclinicaapi/src/services/database/deviation-record-completeness-migration.ts', 'Occurrence date and basis, spec hashes and capture source on acc_protocol_deviations'],
+    ['libreclinicaapi/src/services/database/protocol-deviation.service.ts', 'The platform read with includeSites'],
+  ],
+  activities: [
+    covered('The platform list includes the deviations of its sites', ['OQ-219']),
+    covered('Each deviation carries its occurrence date and the basis of that date', ['OQ-220']),
+    covered('An unsigned assessment and the logger\'s own assessment are refused', ['OQ-221']),
+    covered('A signed assessment by another person is in force with its manifestation', ['OQ-222']),
+    covered('Importance is stated exactly when a deviation is confirmed', ['OQ-223']),
+    covered('A not-a-deviation closure is made by a second person under signature', ['OQ-224']),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-164', {
+  intendedUse:
+    'Keeps corrective-action plans, completions, effectiveness reviews, closures and reopenings as append-only events, refuses an effectiveness ' +
+    'review by the planner, owner or completer, requires a signature on it once an assessment is in force, and refuses a decision on a stale ' +
+    `revision or source hash (${e6r3('qualityManagement')}; 21 CFR Part 11 §11.10(g) and §11.50).`,
+  analysisText:
+    'High Process Risk because an effectiveness review by the person who did the work is no independent check, and a decision on stale evidence ' +
+    'can close a deviation whose facts have changed; both foreseeably compromise the corrective-action record.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/database/deviation-corrective-actions.service.ts', 'Independent review; revision and source-hash checks; append-only events'],
+    ['libreclinicaapi/src/services/database/deviation-corrective-actions-migration.ts', 'acc_deviation_action_events and acc_deviation_action_evidence'],
+  ],
+  activities: [
+    covered('The effectiveness review is refused to the planner, owner and completer and signed once an assessment is in force', ['OQ-225']),
+    covered('A decision on a stale revision or source hash is refused and appends nothing', ['OQ-226']),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-165', {
+  intendedUse:
+    'Escalates unassessed deviations and overdue corrective actions under the platform study\'s signed policy, in force only after a different ' +
+    'person\'s signed review: one escalate event and one deviation_escalation task for the named role per level, recording codes and no ' +
+    `treatment arm (${e6r3('qualityManagement')}; ${e6r3('blinding')}; 21 CFR Part 11 §11.10(a), §11.10(e) and §11.50). O-2 runs only while ` +
+    'ENABLE_DEVIATION_DECISIONS is on.',
+  analysisText:
+    'High Process Risk because a deviation nobody assesses, or a corrective action nobody completes, must reach a responsible person on a clock; ' +
+    'a missed or repeated escalation, or an escalation that names an arm, foreseeably compromises oversight or blinding.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/database/deviation-escalation.service.ts', 'Policy proposal and review; the escalation stage of the study-task worker'],
+    ['libreclinicaapi/src/services/deviation-engine/deviation-escalation-policy.ts', 'edc-deviation-escalation-policy/1 and the due levels'],
+    ['libreclinicaapi/src/services/database/deviation-escalation-migration.ts', 'acc_deviation_escalation_policy_event and acc_deviation_escalation_attempt'],
+  ],
+  activities: [
+    covered('The policy is in force only after another person\'s signed review', ['OQ-227']),
+    covered('An unassessed deviation escalates once at level 1 with one task', ['OQ-228'],
+      'needs a wait of at least 70 minutes and a confirmed recipient.'),
+    covered('No level escalates twice', ['OQ-229']),
+    covered('An overdue corrective action escalates once', ['OQ-230']),
+    covered('Escalate events and tasks carry codes and no arm', ['OQ-231']),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-166', {
+  intendedUse:
+    'Records typed operational milestones (for example contract.sent) with a retained original under Part 11 signature, in force only after a ' +
+    `different person\'s signed review (${e6r3('signatures')}; 21 CFR Part 11 §11.10(e) and §11.50). The TA3 timing metrics are computed from them.`,
+  analysisText:
+    'High Process Risk because a milestone typed without signature or review would let one person set the dates the TA3 metrics are judged on, ' +
+    'which foreseeably compromises the reported measurements.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/database/operational-milestone.service.ts', 'Record and review, the reviewer independent of the recorder'],
+    ['libreclinicaapi/src/services/database/operational-milestone-migration.ts', 'acc_operational_milestone_event'],
+  ],
+  activities: [
+    covered('A milestone is recorded under signature, refused review by its recorder and in force after another person\'s signed review', ['OQ-232']),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-167', {
+  intendedUse:
+    'Retains milestone measurements, effort ledgers, latency measurements and, with M-2, the one-snapshot TA3 ledger as exact, hash-identified ' +
+    'documents that replay under their request key, are never rewritten, and withhold arm grouping from blinded readers ' +
+    `(${e6r3('retention')}; ${e6r3('blinding')}; 21 CFR Part 11 §11.10(b) and §11.10(c)).`,
+  analysisText:
+    'High Process Risk because every TA3 metric value names the document and hash it came from; a rewritten document, or arm detail given to a ' +
+    'blinded reader, foreseeably compromises the measurements or the blind.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/data-factory/catalog/milestone-measurement.service.ts', 'Milestone measurement documents'],
+    ['libreclinicaapi/src/services/data-factory/catalog/effort-ledger.service.ts', 'Effort ledger documents; arm grouping withheld from blinded readers'],
+    ['libreclinicaapi/src/services/data-factory/catalog/latency-measurement.service.ts', 'Latency measurement documents; arm grouping withheld from blinded readers'],
+    ['libreclinicaapi/src/services/data-factory/catalog/retained-document.ts', 'acc_retained_document: exact bytes, hash, request key, arm grouping'],
+    ['libreclinicaapi/src/services/data-factory/catalog/artifact-store.ts', 'Document bytes under DATA_CUT_ARTIFACT_PATH'],
+  ],
+  activities: [
+    covered('Milestone, effort and latency documents read back as exact bytes that replay under their request key', ['OQ-233', 'OQ-234', 'OQ-235']),
+    covered('A different body under a used request key is refused and the bytes stay unchanged', ['OQ-238']),
+    covered('Blinded readers receive withheld documents and are refused included ones', ['OQ-236']),
+    covered('The one-snapshot TA3 ledger is retained as exact bytes of its contract', ['OQ-237'], 'needs M-2, which has not landed at the EDC head.'),
+    gap('Retained documents survive a redeployment of the API service',
+      'Open gap (N-STORE): the bytes are on container disk and the PostgreSQL copy is off in the production profile; no case redeploys.'),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-168', {
+  intendedUse:
+    'Produces retained, hash-identified inspection copies of the trial records, deviation records and their decision history included, with ' +
+    'the TA3 inventory when INSPECTION_COPY_TA3_INVENTORY is on and the evaluation receipts in the segmented copy only, for administrators and ' +
+    `data managers with export authority (${e6r3('essentialRecords')}; 21 CFR Part 11 §11.10(b), §11.10(c) and §11.10(d)).`,
+  analysisText:
+    'High Process Risk because the inspection copy is what an inspector reviews; a copy that is incomplete, altered or available to the wrong ' +
+    'role foreseeably compromises inspection readiness and the confidentiality of the records.',
+  testType: TA3_TEST_TYPE,
+  implFiles: [
+    ['libreclinicaapi/src/services/database/fda-inspection-export.service.ts', 'Flat copies edc-inspection-copy/1 and /2; INSPECTION_STORES'],
+    ['libreclinicaapi/src/services/database/inspection-segment-generation.service.ts', 'The segmented copy edc-inspection-copy/3'],
+    ['libreclinicaapi/src/routes/regulatory-export.routes.ts', 'Generation, history and download for administrators and data managers'],
+    ['libreclinicaapi/src/controllers/regulatory-export.controller.ts', 'Exact download bytes with X-Source-SHA256'],
+  ],
+  activities: [
+    covered('The flat copy is retrieved byte for byte with its hash and replays under its request key', ['OQ-239']),
+    covered('Every deviation and its action events are in the copy', ['OQ-240']),
+    covered('The flat TA3 inventory follows INSPECTION_COPY_TA3_INVENTORY', ['OQ-241'], 'needs W-1, which has not landed at the EDC head.'),
+    covered('Receipts are in the segmented copy only, which is generated on request', ['OQ-242'], 'needs W-1.'),
+    covered('The segmented copy holds every receipt and a valid audit-chain result', ['OQ-243'],
+      'recorded not executed (SEGMENTED_READ_NOT_EXPOSED) until a user route downloads segmented copies.'),
+    covered('A monitor is refused generation and history', ['OQ-244']),
+  ],
+});
+
+FEATURE_DATA.set('FEAT-169', {
+  intendedUse:
+    'States, for every computerised system used for a TA3 purpose, its validation evidence verified by hash or its gap with the plan item ' +
+    '(document 22), and retains executed evidence in packages created exclusively and sealed by a hashed manifest, which QA approves in the ' +
+    `eTMF (${e6r3('validation')}; 21 CFR Part 11 §11.10(a) and §11.10(c)).`,
+  analysisText:
+    'High Process Risk because the validation status of the platform rests on this record; evidence that can be overwritten, or a system shown ' +
+    'without its gap, foreseeably compromises every conclusion drawn from the package.',
+  testType: 'Scripted contract tests of this framework (tests/platform-summary.contract.test.ts, tests/evidence-package.contract.test.ts); no runner case',
+  implFiles: [
+    ['accuratrail-validation-framework/generators/22-platform-validation-summary.ts', 'The platform validation summary, document 22'],
+    ['accuratrail-validation-framework/runners/evidence-package.ts', 'Exclusive creation, sealing and verification of retained packages'],
+    ['accuratrail-validation-framework/scripts/verify-package.ts', 'npm run verify:package'],
+    ['accuratrail-validation-framework/generators/helpers/tmf-filing.ts', 'TMF-FILING.md: how the package is filed and approved'],
+  ],
+  activities: [
+    gap('Every system used for a TA3 purpose shows its evidence or its gap',
+      'Not a runner case: the framework\'s contract and cross-repo tests check document 22.'),
+    gap('Executed evidence is retained in sealed packages that cannot be overwritten',
+      'Not a runner case: tests/evidence-package.contract.test.ts checks the packages and npm run verify:package each retained one.'),
+    gap('QA approves the package in the eTMF', 'A person\'s act in the Intelligence Layer eTMF; this framework signs nothing (D-21).'),
+  ],
+});
+
 const GAP_STATUS = 'Gap — no executed case mapped; not qualified';
 
 const STATUS: Record<MappedCaseState, string> = {
