@@ -74,6 +74,18 @@ export function getDocumentMeta(outputDir: string): DocumentMeta {
   };
 }
 
+/** Stated for any part of the environment under test that the run did not observe. */
+export const RECORDED_AT_EXECUTION = 'Recorded at execution';
+
+/** The API a protocol or execution record names as the environment under test:
+ * the target the run's release identity observed, else "Recorded at execution".
+ * Never the production URL from config/system-info.ts, whatever the target. */
+export function recordedTargetUrl(release: ReleaseIdentity | undefined = currentReleaseIdentity()): string {
+  const target = release?.target;
+  if (!target?.url) return RECORDED_AT_EXECUTION;
+  return `${target.url.replace(/\/health$/, '')} (target in the release identity, observed ${target.observedAt})`;
+}
+
 export function stampDocument(content: string, meta: DocumentMeta): string {
   const lines: string[] = [
     content.trimEnd(),

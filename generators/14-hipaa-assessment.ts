@@ -207,7 +207,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += markdownTable(
     ['Service Provider', 'Service', 'ePHI Access', 'BAA Status'],
     [
-      ['Amazon Web Services (AWS)', 'Cloud hosting — Lightsail (backend, database)', 'Stores and processes ePHI', 'Required — AWS HIPAA BAA available'],
+      ['Amazon Web Services (AWS)', 'Cloud hosting: ECS Fargate (API, core and training services) and RDS PostgreSQL (database) in us-east-2', 'Stores and processes ePHI', 'Required — AWS HIPAA BAA available'],
       ['Vercel', 'Frontend hosting and CDN', 'No direct ePHI access (SPA serves static assets; all data via API)', 'Evaluate — may not be required if no ePHI transits Vercel'],
       ['GitHub', 'Source code repository and CI/CD', 'No ePHI in source code (data is in database only)', 'Not required — no ePHI access'],
     ],

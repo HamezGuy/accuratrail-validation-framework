@@ -224,7 +224,7 @@ function installationRows(): TraceRow[] {
     ['TypeScript version 5.x', '§11.10(a)', riskBadge('Medium'), 'package.json typescript', 'IQ-006', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['npm dependencies integrity', '§11.10(a)', riskBadge('High'), 'npm audit, package-lock.json', 'IQ-007', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Shared-types package built', '§11.10(a)', riskBadge('High'), 'shared-types/dist/ present', 'IQ-008', 'Pending', 'evidence/iq/', 'None', 'Pending'],
-    ['PostgreSQL version 15+', '§11.10(a)', riskBadge('Critical'), 'Database version check', 'IQ-009', 'Pending', 'evidence/iq/', 'None', 'Pending'],
+    [`PostgreSQL version ${SYSTEM_INFO.architecture.database.version}`, '§11.10(a)', riskBadge('Critical'), 'Database version check', 'IQ-009', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Database accessible', '§11.10(a)', riskBadge('Critical'), 'Database connectivity', 'IQ-010', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['acc_audit_log table schema', '§11.10(e)', riskBadge('Critical'), 'migrations.ts table creation', 'IQ-011', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['acc_esignatures table schema', '§11.50', riskBadge('Critical'), 'migrations.ts table creation', 'IQ-012', 'Pending', 'evidence/iq/', 'None', 'Pending'],

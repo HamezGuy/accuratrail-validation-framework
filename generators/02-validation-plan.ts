@@ -111,7 +111,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   // Section 3: System Architecture
   content += section(2, 'System Architecture');
-  content += `The ${SYSTEM_INFO.fullName} comprises five TypeScript projects and one Python pipeline:\n\n`;
+  content += `The ${SYSTEM_INFO.fullName} comprises the components below. The Intelligence Layer, which turns ` +
+    'protocols into study builds, is a separate system outside this EDC release; it is listed for its interface only.\n\n';
 
   const archItems: [string, string, string, string][] = [
     [
@@ -148,8 +149,9 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
       'AI Pipeline',
       SYSTEM_INFO.architecture.aiPipeline.name,
       SYSTEM_INFO.architecture.aiPipeline.version,
-      'Protocol document parsing and CRF generation via LangGraph agents. FastAPI server. ' +
-      'All AI-generated outputs require human review before use in regulated workflows.',
+      'Protocol document parsing and study build generation in the Intelligence Layer, a separate system ' +
+      'outside this EDC release (see the platform inventory). All AI-generated outputs require human review ' +
+      'before use in regulated workflows.',
     ],
   ];
 

@@ -157,7 +157,7 @@ function generateDataFlowDiagram(): string {
   c += '│                       │  SQL (parameterized queries)            │\n';
   c += '│                       ▼                                         │\n';
   c += '│  ┌──────────────────────────────────────────┐                   │\n';
-  c += '│  │         PostgreSQL 15+ Database            │                 │\n';
+  c += '│  │         PostgreSQL 14 (AWS RDS)            │                 │\n';
   c += '│  │                                            │                 │\n';
   c += '│  │  Regulated Tables:                         │                 │\n';
   c += '│  │  - audit_log_event (immutable audit trail) │                 │\n';

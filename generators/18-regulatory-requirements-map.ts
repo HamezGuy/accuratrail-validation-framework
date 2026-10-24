@@ -950,13 +950,13 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += section(1, 'System Architecture Summary');
   c += '\nThe following table summarizes the system components relevant to regulatory compliance:\n\n';
   c += markdownTable(['Component', 'Technology', 'Regulatory Role', 'Key Files'], [
-    ['Frontend SPA', 'Angular 19', 'User interface for data entry, review, and e-signatures', 'ElectronicDataCaptureReal/src/app/'],
+    ['Frontend SPA', 'Angular 19', 'User interface for data entry, review, and e-signatures', 'EDCProjectCompliant/src/app/'],
     ['REST API', 'Express/Node.js', 'Business logic, access control, audit logging, e-signatures', 'libreclinicaapi/src/'],
-    ['Database', 'PostgreSQL 15+', 'Persistent storage of records, audit trails, credentials', 'acc_* extension tables'],
-    ['Shared Types', 'TypeScript', 'Data contract enforcement between frontend and backend', 'shared-types/src/'],
+    ['Database', `${SYSTEM_INFO.architecture.database.name} ${SYSTEM_INFO.architecture.database.version}`, 'Persistent storage of records, audit trails, credentials', 'acc_* extension tables'],
+    ['Shared Types', 'TypeScript', 'Data contract enforcement between frontend and backend', 'accuratrial-shared-types/src/'],
     ['Backup System', 'AES-256 + Cloud', 'Record protection, disaster recovery, retention enforcement', 'backup/*.service.ts'],
-    ['Interop Layer', 'InversifyJS + FHIR', 'External EHR integration with security controls', 'interop-middleware/src/'],
-    ['AI Pipeline', 'Python + LangGraph', 'Protocol parsing (not ePHI-processing; isolated)', 'protocol-ai-pipeline/'],
+    ['Interop Layer', 'InversifyJS + FHIR', 'External EHR integration with security controls', 'accuratrial-interop-middleware/src/'],
+    ['AI Pipeline', SYSTEM_INFO.architecture.aiPipeline.name, 'Protocol parsing (not ePHI-processing; isolated)', 'IntellegenceLayer/EDCProtocolToECRF (outside this release)'],
   ]);
   c += '\n';
   c += '**Security Boundaries:**\n\n';

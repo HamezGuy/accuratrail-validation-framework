@@ -63,6 +63,17 @@ npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualificat
   --release-api <api commit> --release-ui <ui commit> --release-core <core image id>
 ```
 
+### System description and test environment
+
+`config/system-info.ts` describes production as libreclinicaapi
+`production-deployment/DEPLOY_ECS.md` documents it: ECS Fargate in us-east-2 for
+the API, core and training services, RDS PostgreSQL 14 (`accuratrials-hipaa-db`)
+and the frontend on Vercel. The Intelligence Layer is a separate system outside
+this release. The OQ and PQ protocols and the execution records never print the
+production environment as the environment under test: the API is the target the
+run's release identity observed, and every other environment detail reads
+"Recorded at execution".
+
 ### OQ case registry and training evidence
 
 `config/oq-case-registry.ts` is the one list of OQ cases (OQ-001 to OQ-205 in

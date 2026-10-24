@@ -41,19 +41,20 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   // System Architecture
   c += section(2, 'System Architecture Overview');
-  c += `The **${SYSTEM_INFO.fullName}** is composed of five TypeScript projects and one Python pipeline.\n\n`;
+  c += `The **${SYSTEM_INFO.fullName}** is composed of the components below. The Intelligence Layer that ` +
+    'builds studies from protocols is a separate system outside this release.\n\n';
   c += markdownTable(
     ['Component', 'Technology', 'Version', 'Purpose'],
     [
       ['Frontend', 'Angular 19 SPA', '19', 'Clinical UI - eCRF entry, review, signatures, dashboards'],
       ['Backend API', 'Express/Node.js', 'Node 20+', 'REST API - auth, authorization, business logic, audit trails'],
-      ['Database', 'PostgreSQL', '15+', 'Persistent storage of all regulated electronic records'],
+      ['Database', SYSTEM_INFO.architecture.database.name, SYSTEM_INFO.architecture.database.version, 'Persistent storage of all regulated electronic records'],
       ['Shared Types', '@accura-trial/shared-types', 'TS 5.x', 'Canonical DTOs for type-safe API contracts'],
       ['Interop Middleware', 'InversifyJS + Axios', '6.x', 'EHR/FHIR integration via hexagonal architecture'],
-      ['AI Pipeline', 'LangGraph + FastAPI', 'Python 3.11+', 'Protocol parsing (human-reviewed, not auto-applied)'],
+      ['AI Pipeline', SYSTEM_INFO.architecture.aiPipeline.name, SYSTEM_INFO.architecture.aiPipeline.version, 'Protocol parsing (human-reviewed, not auto-applied)'],
     ],
   );
-  c += '\nData flow: Browser -> Angular SPA (Vercel) -> HTTPS REST API (AWS Lightsail) -> Route -> Middleware -> Controller -> Service -> PostgreSQL\n\n';
+  c += '\nData flow: Browser -> Angular SPA (Vercel) -> HTTPS REST API (AWS ECS Fargate behind an application load balancer) -> Route -> Middleware -> Controller -> Service -> PostgreSQL (AWS RDS)\n\n';
   c += hr();
 
   // Database Design
@@ -153,9 +154,10 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += markdownTable(
     ['Component', 'Platform', 'Details'],
     [
-      ['Backend API', 'AWS Lightsail', 'Docker container with Express/Node.js'],
+      ['Backend API', 'AWS ECS Fargate (us-east-2)', 'Docker image from ECR, service accuratrials-api-v2 behind an application load balancer'],
+      ['Core and training services', 'AWS ECS Fargate (us-east-2)', 'accuratrials-core and accuratrials-training services in the same cluster'],
       ['Frontend', 'Vercel', 'Angular 19 SPA with CDN distribution'],
-      ['Database', 'PostgreSQL on Lightsail', 'Persistent volume with automated backups'],
+      ['Database', 'AWS RDS PostgreSQL 14', 'Instance accuratrials-hipaa-db'],
       ['CI/CD', 'GitHub Actions', 'Automated build, test, deploy pipelines'],
     ],
   );

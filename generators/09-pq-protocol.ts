@@ -12,7 +12,7 @@ import {
   riskBadge,
   type SectionEntry,
 } from './helpers/markdown-writer';
-import { getDocumentMeta, stampDocument } from './helpers/version-stamper';
+import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
 
 interface PqTestCase {
   id: string;
@@ -595,19 +595,21 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   /* Section 3 — Test Environment */
   content += section(2, 'Test Environment');
+  content += 'This protocol does not assume the production environment. The API URL is the target recorded in the ' +
+    'release identity of the run; the other environment details are recorded at execution.\n\n';
   content += markdownTable(
     ['Component', 'Detail'],
     [
       ['System', SYSTEM_INFO.fullName],
       ['Version', SYSTEM_INFO.version],
-      ['API URL', SYSTEM_INFO.environments.production.apiUrl],
-      ['Frontend URL', SYSTEM_INFO.environments.production.frontendUrl],
-      ['Database Host', SYSTEM_INFO.environments.production.databaseHost],
+      ['API URL', recordedTargetUrl()],
+      ['Frontend URL', RECORDED_AT_EXECUTION],
+      ['Database Host', RECORDED_AT_EXECUTION],
       ['Backend', `${SYSTEM_INFO.architecture.backend.name} (${SYSTEM_INFO.architecture.backend.version})`],
       ['Frontend', `${SYSTEM_INFO.architecture.frontend.name} (${SYSTEM_INFO.architecture.frontend.version})`],
       ['Database', `${SYSTEM_INFO.architecture.database.name} (${SYSTEM_INFO.architecture.database.version})`],
-      ['Hosting', SYSTEM_INFO.infrastructure.hosting],
-      ['Containerization', SYSTEM_INFO.infrastructure.containerization],
+      ['Hosting', RECORDED_AT_EXECUTION],
+      ['Containerization', RECORDED_AT_EXECUTION],
     ],
   );
   content += '\n';

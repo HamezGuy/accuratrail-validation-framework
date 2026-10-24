@@ -16,6 +16,7 @@ import {
 } from './helpers/markdown-writer';
 import { SYSTEM_INFO } from '../config/system-info';
 import { e6r3 } from '../config/regulatory-scope';
+import { RECORDED_AT_EXECUTION, recordedTargetUrl } from './helpers/version-stamper';
 import {
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
   loadEvidence as loadCategoryResults,
@@ -215,14 +216,14 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   // --- Section 2: Scope and Methodology ---
   content += section(2, 'Scope and Methodology');
   content += section(3, 'Test Environment');
-  content += `- **API Endpoint:** ${SYSTEM_INFO.environments.production.apiUrl}\n`;
-  content += `- **Frontend URL:** ${SYSTEM_INFO.environments.production.frontendUrl}\n`;
-  content += `- **Database:** ${SYSTEM_INFO.environments.production.databaseHost}\n`;
+  content += `- **API Endpoint:** ${recordedTargetUrl()}\n`;
+  content += `- **Frontend URL:** ${RECORDED_AT_EXECUTION}\n`;
+  content += `- **Database:** ${RECORDED_AT_EXECUTION}\n`;
   content += `- **Test Execution Date:** ${DOC_DATE}\n`;
   content += `- **System Version:** ${SYSTEM_INFO.version}\n\n`;
 
   content += section(3, 'Test Execution Approach');
-  content += 'All tests were executed against the production-equivalent environment using automated test scripts ';
+  content += 'All tests were executed against the API endpoint recorded above using automated test scripts ';
   content += '(`tests-live/` framework). Each test case:\n\n';
   content += '1. Sends HTTP requests to the live API with controlled inputs\n';
   content += '2. Captures the full request/response cycle including headers, status codes, and body\n';

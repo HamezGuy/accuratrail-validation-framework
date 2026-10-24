@@ -144,16 +144,16 @@ function databaseInstallationCases(): IqTestCase[] {
   return [
     {
       id: 'IQ-009',
-      title: 'PostgreSQL version is 15+',
-      requirement: 'Database server runs PostgreSQL 15 or higher as specified',
+      title: `PostgreSQL version is ${SYSTEM_INFO.architecture.database.version}`,
+      requirement: `Database server runs PostgreSQL ${SYSTEM_INFO.architecture.database.version}, the version the system description specifies`,
       cfr: '§11.10(a) — Validation',
       steps: [
         'Connect to the PostgreSQL instance.',
         'Execute `SELECT version();` or check via API health endpoint if exposed.',
         'Parse the major version number.',
-        'Verify major version is >= 15.',
+        `Verify the major version is ${SYSTEM_INFO.architecture.database.version}.`,
       ],
-      expectedResult: 'PostgreSQL major version is 15 or higher.',
+      expectedResult: `PostgreSQL major version is ${SYSTEM_INFO.architecture.database.version}.`,
       evidence: 'See evidence/iq/IQ-009.json',
     },
     {

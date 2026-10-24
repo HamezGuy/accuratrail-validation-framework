@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   E6_R3_REFERENCES, E6_R3_SECTION_STATUS, ICH_E6_R3, REGULATORY_SCOPE, e6r3, type E6R3Key,
 } from '../config/regulatory-scope';
+import { generateAllDocuments, temporaryDirectory } from './generated-documents';
 
 const root = path.resolve(__dirname, '..');
 // The superseded revision, built from parts so that this file never contains it.
@@ -16,28 +16,6 @@ const STATUS_ROW = `| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION
 function trackedFiles(): string[] {
   return execFileSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'utf8', windowsHide: true })
     .split('\0').filter(Boolean);
-}
-
-function workspace(t: { after(callback: () => void): void }): string {
-  const base = fs.realpathSync(os.tmpdir());
-  const directory = fs.mkdtempSync(path.join(base, 'accura-e6r3-'));
-  t.after(() => {
-    assert.equal(path.dirname(path.resolve(directory)), base);
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-  return directory;
-}
-
-/** A documents-only run of every numbered generator. The temporary directory is
- * also the workspace root, so no sibling checkout is read. */
-function generateAll(directory: string): Map<string, string> {
-  const generators = path.join(root, 'generators');
-  for (const file of fs.readdirSync(generators).filter(name => /^\d{2}-.+\.ts$/.test(name)).sort()) {
-    const generator = require(path.join(generators, file)) as { generate(outputDir: string, workspaceRoot: string): void };
-    generator.generate(directory, directory);
-  }
-  return new Map(fs.readdirSync(directory).filter(name => name.endsWith('.md')).sort()
-    .map((name): [string, string] => [name, fs.readFileSync(path.join(directory, name), 'utf8')]));
 }
 
 test('no tracked file outside vendor/ cites the superseded ICH E6 revision', () => {
@@ -51,7 +29,7 @@ test('no tracked file outside vendor/ cites the superseded ICH E6 revision', () 
 });
 
 test('a documents-only generation cites ICH E6(R3) only and states the verification status in every document', t => {
-  const documents = generateAll(workspace(t));
+  const documents = generateAllDocuments(temporaryDirectory(t, 'accura-e6r3-'));
   assert.ok(documents.size >= 21, `${documents.size} documents generated`);
   for (const [name, content] of documents) {
     assert.doesNotMatch(content, SUPERSEDED, name);
