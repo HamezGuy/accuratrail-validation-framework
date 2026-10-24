@@ -24,6 +24,10 @@ import {
   type EvidenceResult as EvidenceRecord,
   type EvidenceCategory,
 } from '../runners/evidence-capture';
+import { DEVIATION_DETECTION_CONTRACT, TA3_PQ_CASES } from '../config/ta3-pq-cases';
+
+/** The section of the TA3 PQ cases tied to the O-7 run (spec P20 3.5), recorded only by the O-7 import. */
+const TA3_PQ_RECORDS = 'TA3 Deviation Detection PQ (PQT-001 to PQT-006)';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -58,6 +62,14 @@ function deriveStatus(record: EvidenceRecord): PassFail {
 
 function deriveProcedureSteps(record: EvidenceRecord): string[] {
   const steps: string[] = [];
+  // A TA3 PQ case (manual or not executed included) follows its catalogued steps, never a request line.
+  const pqCase = TA3_PQ_CASES.find(entry => entry.id === record.testCaseId);
+  if (pqCase) {
+    return [pqCase.method === 'MANUAL'
+      ? 'Manual case: a qualified person\'s act outside the framework; no automated check passes it'
+      : `Derive the case from the reconstructed O-7 run in ${record.endpoint} without re-scoring; no product or API request is sent`,
+    ...pqCase.steps, `Verify: ${pqCase.passesWhen}`];
+  }
   if (record.method === 'OFFLINE') {
     steps.push(`Reconstruct retained benchmark artifacts in ${record.endpoint}; no product or API request is sent`);
   } else if (record.method === 'ATTACHMENT') {
@@ -143,6 +155,34 @@ function renderExecutionRecord(record: EvidenceRecord, category: EvidenceCategor
   return block;
 }
 
+/** A TA3 PQ case as this package records it: a manual case is pending, never failed, and a case without a
+ * reconstruction is not executed. */
+function pqtResult(record: EvidenceRecord | undefined): string {
+  if (!record) return 'Not executed (no O-7 import)';
+  if (record.passed) return 'Pass';
+  if (record.method === 'MANUAL') return 'Manual verification pending';
+  return record.method === 'CONTRACT' ? 'Not executed' : 'Fail';
+}
+
+function ta3PqRecords(benchmark: EvidenceRecord[]): string {
+  const recorded = new Map(benchmark.filter(record => TA3_PQ_CASES.some(entry => entry.id === record.testCaseId))
+    .map(record => [record.testCaseId, record]));
+  let block = section(2, TA3_PQ_RECORDS);
+  block += `These cases are recorded only by an imported O-7 run (summary contract \`${DEVIATION_DETECTION_CONTRACT}\`), `
+    + 'derived from the reconstructed run without re-scoring. The answer key stays a draft, unadjudicated self-review until a '
+    + 'qualified person adjudicates it, so PQT-006 never passes automatically. Each record follows in the benchmark execution '
+    + 'records below.\n\n';
+  if (!recorded.size) block += 'No O-7 import is in this package: PQT-001 to PQT-006 are not executed.\n\n';
+  block += markdownTable(
+    ['Test ID', 'Title', 'Result', 'Outcome Code'],
+    TA3_PQ_CASES.map(entry => {
+      const record = recorded.get(entry.id);
+      return [entry.id, entry.title, pqtResult(record), record?.outcomeCode ?? 'none'];
+    }),
+  );
+  return `${block}\n${hr()}`;
+}
+
 interface CategoryStats {
   category: EvidenceCategory;
   label: string;
@@ -172,6 +212,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     { level: 1, title: 'Introduction' },
     { level: 1, title: 'Scope and Methodology' },
     { level: 1, title: 'Evidence Summary' },
+    { level: 1, title: TA3_PQ_RECORDS },
   ];
 
   for (const cat of ALL_CATEGORIES) {
@@ -274,6 +315,9 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   );
   content += '\n';
   content += hr();
+
+  // --- TA3 PQ cases tied to the O-7 run ---
+  content += ta3PqRecords(categoryRecords.get('benchmark') ?? []);
 
   // --- Per-category execution records ---
   for (const cat of ALL_CATEGORIES) {

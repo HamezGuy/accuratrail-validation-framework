@@ -8,6 +8,9 @@ import { loadEvidence, setEvidenceMarking, type EvidenceResult } from '../runner
 import { benchmarkRunInputs, createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
 import { loadRunnerEvidence, mappedCaseState, RUNNER_CASE_CHECKS } from '../generators/helpers/evidence-linker';
 import { recordedPqRelease } from '../generators/22-platform-validation-summary';
+import { generate as generatePqProtocol, TA3_PQ_SECTION } from '../generators/09-pq-protocol';
+import { generate as generateSummary } from '../generators/12-validation-summary';
+import { generate as generateExecutionRecords } from '../generators/20-test-execution-records';
 import {
   BENCHMARK_RECONSTRUCTION_ENTRY, DEVIATION_DETECTION_CONTRACT, DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY,
   RELEASE_PQ_CASE, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY,
@@ -295,6 +298,49 @@ test('a retained package keeps the O-7 import, its eight rows and its inputs, an
   for (const result of loadEvidence(evidencePackage.dir, 'benchmark')) assert.equal(result.synthetic, true, result.testCaseId);
   const record = JSON.parse(fs.readFileSync(path.join(evidencePackage.dir, 'evidence', 'benchmark', `${RELEASE_PQ_CASE}.json`), 'utf8'));
   assert.deepEqual(recordedPqRelease(record), { kind: 'git-commit', identity: API });
+});
+
+test('the PQ protocol, the validation summary and the execution records carry the PQT cases', async t => {
+  const empty = temporaryDirectory(t, 'accura-pqt-docs-');
+  generatePqProtocol(empty, empty);
+  const protocol = fs.readFileSync(path.join(empty, '09-pq-protocol.md'), 'utf8');
+  const start = protocol.indexOf(`## ${TA3_PQ_SECTION}`);
+  assert.ok(start > 0, 'the PQ protocol has the TA3 section');
+  const pqSection = protocol.slice(start, protocol.indexOf('\n## ', start + 4));
+  assert.match(pqSection, /These cases are satisfied only by an imported O-7 run/);
+  assert.match(pqSection, /stays a draft, unadjudicated self-review until a qualified person adjudicates it/);
+  for (const pqCase of TA3_PQ_CASES) assert.ok(pqSection.includes(`### ${pqCase.id}: ${pqCase.title}`), pqCase.id);
+  assert.doesNotMatch(pqSection, DASH);
+  assert.match(protocol, /- TA3 deviation detection on public protocols \(PQT-001 to PQT-006\)/);
+  generateSummary(empty, empty);
+  const pending = fs.readFileSync(path.join(empty, '12-validation-summary.md'), 'utf8');
+  for (const id of PQT_IDS) assert.match(pending, new RegExp(`\\| ${id} \\| [^|]+ \\| Pending: no O-7 import in this package \\|`), id);
+  generateExecutionRecords(empty, empty);
+  assert.match(fs.readFileSync(path.join(empty, '20-test-execution-records.md'), 'utf8'), /No O-7 import is in this package: PQT-001 to PQT-006 are not executed\./);
+
+  const dir = temporaryDirectory(t, 'accura-pqt-'), cc = fakeCommandCenter(dir), output = path.join(dir, 'qualification');
+  await importBenchmarkEvidence(output, { runDir: deviationRun(dir), commandCenterRoot: cc });
+  generateSummary(output, output);
+  const summary = fs.readFileSync(path.join(output, '12-validation-summary.md'), 'utf8');
+  assert.match(summary, /\| PQT-001 \| Deviation Detection Run Reconstructed \| PASS \|/);
+  assert.match(summary, /\| PQT-006 \| Answer Key Adjudicated by a Qualified Person \| Manual verification pending \|/);
+  generateExecutionRecords(output, output);
+  const records = fs.readFileSync(path.join(output, '20-test-execution-records.md'), 'utf8');
+  assert.match(records, /\| PQT-005 \| Run States Its EDC API Release \| Pass \| none \|/);
+  assert.match(records, /\| PQT-006 \| Answer Key Adjudicated by a Qualified Person \| Manual verification pending \| none \|/);
+  assert.match(records, /### PQT-006: Answer Key Adjudicated by a Qualified Person/);
+  assert.match(records, /1\. Manual case: a qualified person's act outside the framework/);
+  assert.doesNotMatch(records, /Send (MANUAL|CONTRACT|OFFLINE) request/);
+
+  const failedOutput = path.join(dir, 'qualification-failed'), empty2 = path.join(dir, 'command-center-empty');
+  fs.mkdirSync(empty2);
+  await importBenchmarkEvidence(failedOutput, { runDir: deviationRun(dir, () => {}, 'run-2'), commandCenterRoot: empty2 });
+  generateSummary(failedOutput, failedOutput);
+  const failedSummary = fs.readFileSync(path.join(failedOutput, '12-validation-summary.md'), 'utf8');
+  assert.match(failedSummary, /\| PQT-001 \| [^|]+ \| FAIL \(RECONSTRUCTION_FAILED\) \|/);
+  assert.match(failedSummary, /\| PQT-002 \| [^|]+ \| Not executed \(RECONSTRUCTION_FAILED\) \|/);
+  generateExecutionRecords(failedOutput, failedOutput);
+  assert.match(fs.readFileSync(path.join(failedOutput, '20-test-execution-records.md'), 'utf8'), /\| PQT-003 \| Every Machine Class Reported \| Not executed \| RECONSTRUCTION_FAILED \|/);
 });
 
 test('every PQT case has its catalogued check, PQT-006 alone manual, and no case text holds a dash', () => {

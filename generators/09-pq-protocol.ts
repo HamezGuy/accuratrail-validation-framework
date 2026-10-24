@@ -13,6 +13,10 @@ import {
   type SectionEntry,
 } from './helpers/markdown-writer';
 import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
+import { ta3RegulatoryRef } from '../config/ta3-oq-cases';
+import {
+  DEVIATION_DETECTION_CONTRACT, DEVIATION_RECONSTRUCTION_ENTRY, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, type Ta3PqCase,
+} from '../config/ta3-pq-cases';
 
 interface PqTestCase {
   id: string;
@@ -517,6 +521,55 @@ function archiveRecoveryCases(): PqTestCase[] {
 }
 
 /* ------------------------------------------------------------------ */
+/*  TA3 Deviation Detection on Public Protocols (PQT-001 to PQT-006)   */
+/* ------------------------------------------------------------------ */
+
+/** The section title of the TA3 PQ cases tied to the O-7 run (spec P20 3.5). */
+export const TA3_PQ_SECTION = 'TA3 Deviation Detection on Public Protocols (PQT-001 to PQT-006)';
+
+function pqtCaseBlock(tc: Ta3PqCase): string {
+  const lines: string[] = [
+    `### ${tc.id}: ${tc.title}`,
+    '',
+    `- **Requirement:** ${tc.requirement}`,
+    `- **Regulatory Reference:** ${ta3RegulatoryRef(tc)}`,
+    `- **Risk Level:** ${riskBadge(tc.riskLevel)}`,
+    `- **Method:** ${tc.method === 'MANUAL' ? 'Manual: a qualified person\'s act; the import records it and never passes it' : 'Derived by the O-7 import from the reconstructed run, without re-scoring'}`,
+    `- **Preconditions:** ${tc.preconditions}`,
+    '- **Steps:**',
+    ...tc.steps.map((step, i) => `  ${i + 1}. ${step}`),
+    `- **Passes when:** ${tc.passesWhen}`,
+    `- **Outcome code otherwise:** ${tc.failureCode ? `\`${tc.failureCode}\`` : 'none: the case never passes automatically'}`,
+    `- **Expected Result:** ${tc.expectedResult}`,
+    '- **Actual Result:** _[Recorded by the O-7 import]_',
+    `- **Evidence:** _[evidence/benchmark/${tc.id}.json of the package that holds the O-7 import]_`,
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function ta3PqSection(): string {
+  let content = section(2, TA3_PQ_SECTION);
+  content += 'These cases are satisfied only by an imported O-7 run: a CommandCenter deviation detection run on a public '
+    + `protocol whose run-summary.json states the contract \`${DEVIATION_DETECTION_CONTRACT}\`, imported with \`--benchmark-run\` `
+    + `(TA3 plan items O-7 and VAL-1). The import reconstructs the run through \`${DEVIATION_RECONSTRUCTION_ENTRY}\` and derives `
+    + 'each case from the reconstructed summary without re-scoring. No live runner and no other benchmark import records them; '
+    + 'a run of any other contract keeps its two benchmark rows. A member, value or shape the import does not recognise in the '
+    + `part of the summary a case reads records \`${UNSUPPORTED_DEVIATION_SUMMARY}\`, never a guess.\n\n`;
+  content += 'The answer key of an O-7 run stays a draft, unadjudicated self-review until a qualified person adjudicates it (D-10). '
+    + 'PQT-006 is therefore manual and never passes automatically, and the detection figures PQT-003 reads are synthetic '
+    + 'engineering evidence: not clinical accuracy, independent validation or SURPASS attainment. PQT-005 records only the '
+    + 'release the run states; the platform validation summary (document 22) compares it with the release the OQ qualified.\n\n';
+  content += markdownTable(
+    ['Case', 'Title', 'Passes when', 'Outcome code otherwise', 'Method'],
+    TA3_PQ_CASES.map(tc => [tc.id, tc.title, tc.passesWhen, tc.failureCode ?? 'none (manual)', tc.method]),
+  );
+  content += '\n';
+  for (const tc of TA3_PQ_CASES) content += pqtCaseBlock(tc);
+  return content;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Generator entry point                                             */
 /* ------------------------------------------------------------------ */
 
@@ -547,6 +600,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   for (const title of sectionTitles) {
     tocEntries.push({ level: 1, title });
   }
+  tocEntries.push({ level: 1, title: TA3_PQ_SECTION });
   tocEntries.push({ level: 1, title: 'Acceptance Criteria' });
   tocEntries.push({ level: 1, title: 'Deviations' });
   tocEntries.push({ level: 1, title: 'Approval Signatures' });
@@ -587,11 +641,12 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Electronic signatures and form sign-off\n';
   content += '- Data locks (casebook freeze, casebook lock, study database lock)\n';
   content += '- Final data export with completeness verification\n';
-  content += '- Backup execution and data recovery\n\n';
+  content += '- Backup execution and data recovery\n';
+  content += '- TA3 deviation detection on public protocols (PQT-001 to PQT-006), recorded only from an imported O-7 run\n\n';
   content += `**Applicable regulations:** ${REGULATORY_SCOPE.part11Applicable ? '21 CFR Part 11' : ''}` +
     `${REGULATORY_SCOPE.hipaaApplicable ? ', HIPAA Security Rule' : ''}\n\n`;
 
-  content += '**Evidence identity:** PQM-001 through PQM-022 below are the broader manual/UI protocol. Automated synthetic native API cases use PQ-000 through PQ-040 in 20-test-execution-records.md, with exact procedures and command/readback evidence. A passing automated case does not satisfy a same-numbered manual case. No backup/restore, clinical effectiveness, independent validation or human-effort claim follows from the synthetic workflow. Missing manual evidence remains pending.\n\n';
+  content += '**Evidence identity:** PQM-001 through PQM-022 below are the broader manual/UI protocol. Automated synthetic native API cases use PQ-000 through PQ-040 in 20-test-execution-records.md, with exact procedures and command/readback evidence. A passing automated case does not satisfy a same-numbered manual case. No backup/restore, clinical effectiveness, independent validation or human-effort claim follows from the synthetic workflow. Missing manual evidence remains pending. PQT-001 through PQT-006 are recorded only by the O-7 benchmark import, in evidence/benchmark/ (section ' + TA3_PQ_SECTION + ').\n\n';
 
   /* Section 3 — Test Environment */
   content += section(2, 'Test Environment');
@@ -635,13 +690,19 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     content += hr();
   }
 
+  /* TA3 PQ cases tied to the O-7 run */
+  content += ta3PqSection();
+  content += hr();
+
   /* Acceptance Criteria */
   content += section(2, 'Acceptance Criteria');
   content += '- All **Critical** and **High** risk test cases MUST pass.\n';
   content += '- Overall pass rate must be **95% or higher** across all test cases.\n';
   content += '- Any failed Critical test case requires immediate remediation and re-test before approval.\n';
   content += '- Any failed High test case requires documented deviation with impact assessment.\n';
-  content += '- Failed Medium/Low test cases must be documented with remediation timeline.\n\n';
+  content += '- Failed Medium/Low test cases must be documented with remediation timeline.\n';
+  content += '- PQT-001 to PQT-005 pass only from an imported O-7 run; PQT-006 passes only through a qualified person\'s '
+    + 'adjudication record of the answer key, which the framework never creates or passes.\n\n';
 
   content += markdownTable(
     ['Metric', 'Value'],

@@ -10,11 +10,29 @@ import {
   tableOfContents,
   hr,
 } from './helpers/markdown-writer';
-import { EvidenceStats, loadRunnerEvidence, tryLoadEvidence } from './helpers/evidence-linker';
+import {
+  EvidenceStats, loadRunnerEvidence, mappedCaseState, runnerCaseCheck, tryLoadEvidence, type RunnerResult,
+} from './helpers/evidence-linker';
 import { complianceRow, E6_R3_MAPPINGS, HIPAA_MAPPINGS, PART11_MAPPINGS, TA3_USE_MAPPINGS } from './helpers/compliance-mapping';
+import { DEVIATION_DETECTION_CONTRACT, TA3_PQ_CASES } from '../config/ta3-pq-cases';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
+const TA3_PQ_SECTION = 'TA3 Deviation Detection PQ';
+
+/** A TA3 PQ case's status from its retained record (spec P20 3.5): a manual case stays pending and a case the
+ * import could not derive is not executed, never passed. */
+function pqtStatus(testCaseId: string, evidenceMap: Map<string, RunnerResult>): string {
+  const code = evidenceMap.get(testCaseId)?.outcomeCode;
+  const coded = code ? ` (${code})` : '';
+  switch (mappedCaseState(testCaseId, evidenceMap)) {
+    case 'passed': return 'PASS';
+    case 'failed': return `FAIL${coded}`;
+    case 'manual-pending': return 'Manual verification pending';
+    case 'not-executed': return `Not executed${coded}`;
+    default: return 'Pending: no O-7 import in this package';
+  }
+}
 
 function formatEvidenceRow(label: string, stats: EvidenceStats): string[] {
   if (stats.total === 0) {
@@ -42,6 +60,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     { level: 1, title: 'HIPAA Compliance Verification' },
     { level: 1, title: `${ICH_E6_R3.citation} Verification` },
     { level: 1, title: 'TA3 Use Verification' },
+    { level: 1, title: TA3_PQ_SECTION },
     { level: 1, title: 'Deviations Summary' },
     { level: 1, title: 'CAPA Summary' },
     { level: 1, title: 'Traceability Verification' },
@@ -168,7 +187,9 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Multi-user concurrent access scenarios\n';
   content += '- Data integrity under load\n';
   content += '- Backup and restore cycle with data verification\n';
-  content += '- User acceptance testing with representative clinical workflows\n\n';
+  content += '- User acceptance testing with representative clinical workflows\n';
+  content += '- TA3 deviation detection on public protocols (PQT-001 to PQT-006), derived only from an imported O-7 run without '
+    + 're-scoring; PQT-006, the answer key\'s adjudication by a qualified person, is manual\n\n';
   content += 'Reference: **09-pq-protocol.md**\n\n';
   content += hr();
 
@@ -253,6 +274,21 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += markdownTable(
     ['TA3 Plan Section', 'TA3 Use', 'Status', 'Mapped cases and what they verify'],
     TA3_USE_MAPPINGS.map((m) => complianceRow(m, evidenceMap)),
+  );
+  content += '\n';
+  content += hr();
+
+  // TA3 PQ cases tied to the O-7 run
+  content += section(2, TA3_PQ_SECTION);
+  content += 'PQT-001 to PQT-006 tie the PQ to the O-7 run (TA3 plan VAL-1, spec P20 3.5). Only an imported O-7 run (summary '
+    + `contract \`${DEVIATION_DETECTION_CONTRACT}\`) records them, derived from the reconstructed run without re-scoring; a `
+    + 'package without that import leaves them pending. The answer key stays a draft, unadjudicated self-review until a '
+    + 'qualified person adjudicates it, so PQT-006 stays manual and the detection figures are synthetic engineering evidence, '
+    + 'not clinical accuracy. The release PQT-005 records is compared with the OQ release in the platform validation summary '
+    + '(22-platform-validation-summary.md).\n\n';
+  content += markdownTable(
+    ['Case', 'Title', 'Status', 'What the import checks'],
+    TA3_PQ_CASES.map(entry => [entry.id, entry.title, pqtStatus(entry.id, evidenceMap), runnerCaseCheck(entry.id).check]),
   );
   content += '\n';
   content += hr();
