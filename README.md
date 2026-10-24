@@ -248,7 +248,8 @@ row; an owned protocol version is withdrawn again, so the study stays usable
 for the next run. The plan names five different synthetic people (operator,
 reviewer, third person, blinded, monitor) by the environment variables that
 hold their credentials; the operator defaults to `OQ_USERNAME` and
-`OQ_PASSWORD`.
+`OQ_PASSWORD`. Two accounts whose variables hold the same username are refused
+before any request, suite 1 included.
 
 A plan needs `--oq`, `--synthetic-qualification` (the suites write owned
 records, as the owned fixture does) and `--release-training` (the training
@@ -279,7 +280,10 @@ cannot be made is recorded not executed with its code: `NO_TA3_PLAN`,
 `FOLLOW_UP_TASK_NOT_CONFIGURED`, `OPERATOR_NOT_UNBLINDED`, `SWEEP_RACED` or
 `PREREQUISITE_MISSING`. OQ-243 stays not executed (`SEGMENTED_READ_NOT_EXPOSED`)
 until a user route downloads segmented copies. Without a plan no request is
-made and every TA3 case records `NO_TA3_PLAN`.
+made and every TA3 case records `NO_TA3_PLAN`. Should the TA3 run itself throw
+(a suite records its own failures), an `OQ-TA3-EXECUTION` row names the
+exception, every selected TA3 case records `PREREQUISITE_MISSING` and the base
+suites' records are kept.
 
 ```powershell
 npm run generate -- --oq --base-url http://127.0.0.1:<port> --synthetic-qualification `
