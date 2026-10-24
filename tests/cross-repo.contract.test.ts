@@ -8,7 +8,8 @@ import { buildPlatformSummary } from '../generators/22-platform-validation-summa
 import { SYSTEM_INFO } from '../config/system-info';
 import { TA3_INSPECTION_COVERAGE } from '../config/ta3-inspection-coverage';
 import { checkDeadSettings, checkSoftwareInstallation, checkVendoredReceipts, declaredMajor, SHARED_TYPES_VERIFIER } from '../runners/iq-runner';
-import { EDC_SIGNATURE_MEANINGS, ta3LedgerProblems, TA3_LEDGER_REQUIRED } from '../runners/oq-ta3-runner';
+import { EDC_SIGNATURE_MEANINGS, RECIPIENT_ROLE_NAMES, ta3LedgerProblems, TA3_LEDGER_REQUIRED } from '../runners/oq-ta3-runner';
+import { RECIPIENT_ROLES } from '../runners/ta3-oq-plan';
 import { DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY } from '../config/ta3-pq-cases';
 
 // Checks against sibling checkouts of the estate (npm run test:cross-repo). A
@@ -132,6 +133,25 @@ test('the signature meanings the TA3 cases expect are the EDC\'s own', () => {
     const match = new RegExp(`export const ${name} = '([^']+)'`).exec(text);
     assert.ok(match, `${middleware} defines ${name}`);
     assert.equal(match[1], meaning, name);
+  }
+});
+
+test('the escalation recipient role names are the ones O-2 resolves holders by, through the EDC\'s auth-core', () => {
+  // O-2 (deviation-escalation.service.ts lockRecipients) keeps a study role row whose getRoleByName(role_name).name is the
+  // recipient role; the OQ recipient and policy decider checks match staff list roles against RECIPIENT_ROLE_NAMES.
+  const edc = resolveLibreclinicaApiRoot(defaultWorkspaceRoot());
+  const policyFile = path.join(edc, 'src', 'services', 'deviation-engine', 'deviation-escalation-policy.ts');
+  const declared = /export const DEVIATION_ESCALATION_RECIPIENT_ROLES = \[([^\]]*)\]/.exec(sibling(policyFile).toString('utf8'));
+  assert.ok(declared, `${policyFile} declares DEVIATION_ESCALATION_RECIPIENT_ROLES`);
+  const roles = [...declared[1].matchAll(/'([a-z_]+)'/g)].map(match => match[1]);
+  assert.deepEqual(roles, [...RECIPIENT_ROLES], `${policyFile}: the recipient roles differ from runners/ta3-oq-plan.ts`);
+  assert.deepEqual(Object.keys(RECIPIENT_ROLE_NAMES), roles, 'RECIPIENT_ROLE_NAMES names every recipient role, in order');
+  const authCore = path.join(edc, 'node_modules', '@accura-trial', 'auth-core');
+  sibling(path.join(authCore, 'package.json'));
+  const { getRoleByName, expandRoleAliases } = require(authCore) as { getRoleByName(name: string): { name: string }; expandRoleAliases(role: string): string[] };
+  for (const role of roles) {
+    assert.deepEqual([...RECIPIENT_ROLE_NAMES[role]].sort(), [...expandRoleAliases(role)].sort(), `${role}: the EDC's auth-core role names`);
+    for (const name of RECIPIENT_ROLE_NAMES[role]) assert.equal(getRoleByName(name).name, role, `getRoleByName('${name}')`);
   }
 });
 

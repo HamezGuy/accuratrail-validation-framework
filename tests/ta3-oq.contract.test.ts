@@ -40,12 +40,12 @@ const planJson = ta3PlanJson;
 const plan = (overrides: Record<string, unknown> = {}): Ta3OqPlan => parseTa3OqPlan(planJson(overrides));
 
 async function runAgainst(t: { after(callback: () => unknown): void }, edcOptions: Partial<FakeEdcOptions> = {},
-  options: { selection?: number[]; declaredFlags?: DeclaredFlags | null; plan?: Ta3OqPlan } = {}) {
+  options: { selection?: number[]; declaredFlags?: DeclaredFlags | null; plan?: Ta3OqPlan; env?: Record<string, string> } = {}) {
   const clock = fakeClock();
   const thePlan = options.plan ?? plan();
   const edc = await startFakeEdc({ plan: thePlan, users: USERS, clock, ...edcOptions });
   t.after(() => edc.close());
-  const results = await runTa3Suites(edc.baseUrl, thePlan, options.selection ?? ALL, { env: ENV, clock, pollIntervalMs: 30_000,
+  const results = await runTa3Suites(edc.baseUrl, thePlan, options.selection ?? ALL, { env: options.env ?? ENV, clock, pollIntervalMs: 30_000,
     declaredFlags: options.declaredFlags === null ? undefined : options.declaredFlags ?? DECLARED });
   const row = (id: string): EvidenceResult => {
     const found = results.find(result => result.testCaseId === id);
@@ -77,6 +77,12 @@ test('every TA3 suite passes against an EDC with O-1, O-2, M-2 and W-1, and OQ-2
   const owned = results.filter(result => result.testCaseId.startsWith('OQ-TA3-SUITE-')).flatMap(result => (result.responseBody as { owned: Array<{ kind: string; caseId: string }> }).owned);
   assert.ok(owned.some(entry => entry.kind === 'subject' && entry.caseId === 'OQ-207'));
   assert.ok(owned.some(entry => entry.kind === 'escalation-policy-proposal' && entry.caseId === 'OQ-227'));
+  // The accepted OQ policy cannot be retired by the run: suite 16's row says it stays in force.
+  const suite16 = row('OQ-TA3-SUITE-16');
+  assert.deepEqual((suite16.responseBody as { persisting: Array<{ kind: string; caseId: string; studyId: number }> }).persisting
+    .map(entry => [entry.kind, entry.caseId, entry.studyId]), [['escalation-policy', 'OQ-227', 100]]);
+  assert.match(suite16.notes, /Left in effect on study 100: escalation-policy oq-ta3-[0-9a-f]{8} \(OQ-227\); O-2 retires a policy only by a later signed policy/);
+  assert.match(row('OQ-228').notes, /recipients 12, among them ta3-recipient, user 12/);
   const text = JSON.stringify(results);
   for (const secret of SECRETS) assert.equal(text.includes(secret), false, 'no password is retained');
   assert.doesNotMatch(text, /"accessToken":"[^[]/);
@@ -184,6 +190,87 @@ test('the escalation window not waited and a recipient without the role are setu
   const parentHolder = await runAgainst(t, { recipientHoldsRole: false, recipientAtParent: true }, { selection: [16] });
   for (const id of ['OQ-228', 'OQ-230']) assert.deepEqual(outcome(parentHolder.row(id)), [false, false, null], `${id}: ${parentHolder.row(id).notes}`);
   assert.ok(parentHolder.edc.calls.includes(`GET /api/sites/${plan().study.studyId}/staff`), 'the parent study\'s staff list was read');
+});
+
+test('RECIPIENT_UNAVAILABLE needs O-2\'s held attempt so coded or both staff lists read; an unread list alone is a failure', async t => {
+  // The OQ site's staff list is unread and O-2 holds no attempt: the missing escalation is the release's.
+  const unread = await runAgainst(t, { recipientHoldsRole: false, siteStaffStatus: 403, heldAttempts: false }, { selection: [16] });
+  for (const id of ['OQ-228', 'OQ-230']) {
+    assert.deepEqual(outcome(unread.row(id)), [false, false, null], `${id}: ${unread.row(id).notes}`);
+    assert.match(unread.row(id).notes, /A staff list was not read, so the recipient is unconfirmed, and O-2 holds no attempt of the level as RECIPIENT_UNAVAILABLE/);
+  }
+  // The same unread list, with O-2 holding the level as RECIPIENT_UNAVAILABLE: a setup gap.
+  const held = await runAgainst(t, { recipientHoldsRole: false, siteStaffStatus: 403 }, { selection: [16] });
+  for (const id of ['OQ-228', 'OQ-230']) {
+    assert.deepEqual(outcome(held.row(id)), [false, true, TA3_OUTCOME.RECIPIENT_UNAVAILABLE], `${id}: ${held.row(id).notes}`);
+    assert.match(held.row(id).notes, /O-2 holds the level \(escalationAttempts: clock (assessment|corrective-action:\d+) level 1 held RECIPIENT_UNAVAILABLE/);
+  }
+  // Both lists read without the recipient in the role, and no held attempt: a setup gap too.
+  const unlisted = await runAgainst(t, { recipientHoldsRole: false, heldAttempts: false }, { selection: [16] });
+  for (const id of ['OQ-228', 'OQ-230']) {
+    assert.deepEqual(outcome(unlisted.row(id)), [false, true, TA3_OUTCOME.RECIPIENT_UNAVAILABLE], `${id}: ${unlisted.row(id).notes}`);
+    assert.match(unlisted.row(id).notes, /holds no investigator role in the staff lists of the OQ site and its parent study, both read/);
+  }
+});
+
+test('OQ-228 fails when the escalation names another recipient role or leaves the recipient out of its recipientUserIds', async t => {
+  const { row } = await runAgainst(t, { escalationRecipientUserIds: [99] }, { selection: [16] });
+  assert.deepEqual(outcome(row('OQ-228')), [false, false, null]);
+  assert.match(row('OQ-228').notes, /recipientUserIds \[99\] do not include ta3-recipient, user 12 in the OQ site's staff list/);
+  const otherRole = await runAgainst(t, { escalationRecipientRole: 'monitor' }, { selection: [16] });
+  assert.deepEqual(outcome(otherRole.row('OQ-228')), [false, false, null]);
+  assert.match(otherRole.row('OQ-228').notes, /names recipient role "monitor", not the policy's investigator/);
+});
+
+test('OQ-227 sends no policy decision unless the platform staff list shows the operator and the reviewer as investigator or data manager', async t => {
+  const { row, edc } = await runAgainst(t, { platformStaff: [{ username: 'ta3-operator', role: 'study_director', userId: 7 }, { username: 'ta3-reviewer', role: 'monitor', userId: 8 }] },
+    { selection: [16] });
+  assert.deepEqual(outcome(row('OQ-227')), [false, true, TA3_OUTCOME.POLICY_DECIDER_UNAVAILABLE]);
+  assert.match(row('OQ-227').notes, /shows no investigator or data manager role for the reviewer \(ta3-reviewer\)/);
+  assert.equal(edc.calls.filter(call => call === 'POST /api/protocol-deviations/escalation-policy').length, 0, 'no policy decision was sent');
+  for (const id of ['OQ-228', 'OQ-229', 'OQ-230', 'OQ-231']) assert.deepEqual(outcome(row(id)), [false, true, TA3_OUTCOME.PREREQUISITE_MISSING], `${id}: ${row(id).notes}`);
+  assert.deepEqual((row('OQ-TA3-SUITE-16').responseBody as { persisting: unknown[] }).persisting, [], 'no policy was put in force');
+});
+
+test('suite 16 runs only on a study the plan declares a duplicate, and makes no request otherwise', async t => {
+  const { results, edc, row } = await runAgainst(t, {}, { selection: [16], plan: plan({ study: { studyId: 100, siteStudyId: 101, expectedSpecHash: 'e'.repeat(64) } }) });
+  for (const id of idsOf(227, 231)) {
+    assert.deepEqual(outcome(row(id)), [false, true, TA3_OUTCOME.DUPLICATE_STUDY_NOT_DECLARED], `${id}: ${row(id).notes}`);
+    assert.match(row(id).notes, /names no study\.duplicateOf, so study 100 is not declared a duplicate/);
+  }
+  assert.deepEqual(edc.calls, [], 'no login and no request');
+  assert.equal(results.some(result => result.testCaseId === 'OQ-TA3-SUITE-16'), false);
+});
+
+test('suite 14 writes nothing at an OQ site whose applicability records are all its parent\'s', async t => {
+  const { row, edc } = await runAgainst(t, { applicabilityAtParent: true }, { selection: [14] });
+  for (const id of idsOf(215, 218)) assert.deepEqual(outcome(row(id)), [false, true, TA3_OUTCOME.VERSION_FIXTURE_ABSENT], `${id}: ${row(id).notes}`);
+  for (const id of ['OQ-215', 'OQ-216', 'OQ-218']) assert.match(row(id).notes, /The OQ site 101 has no applicability record of its own/);
+  assert.equal(edc.calls.filter(call => call.startsWith('POST ') && !call.startsWith('POST /api/auth/')).length, 0, 'no record, subject or evaluation was written');
+});
+
+test('a 401 of an ended session logs in again and retries once; a refused signature is the answer and is not resent', async t => {
+  const revoked = await runAgainst(t, { revokeFirstSessionOf: 'ta3-operator' }, { selection: [13] });
+  for (const id of idsOf(206, 214)) assert.equal(revoked.row(id).passed, true, `${id}: ${revoked.row(id).notes}`);
+  assert.equal(revoked.edc.logins.get('ta3-operator'), 2, 'one new login after SESSION_REVOKED');
+
+  const refused = await runAgainst(t, { signatureRefused: ['ta3-operator'] }, { selection: [16] });
+  assert.deepEqual(outcome(refused.row('OQ-227')), [false, false, null]);
+  assert.match(refused.row('OQ-227').notes, /The operator's signed policy proposal: expected HTTP 201, got 401 \(Invalid electronic signature credentials\)/);
+  assert.equal(refused.edc.calls.filter(call => call === 'POST /api/protocol-deviations/escalation-policy').length, 1, 'the signed proposal was sent once');
+  assert.equal(refused.edc.logins.get('ta3-operator'), 1, 'a refused signature starts no new login');
+});
+
+test('two plan accounts are one person when their usernames match as the EDC trims them or the EDC answers one user id', async t => {
+  await assert.rejects(runTa3Suites('http://127.0.0.1:9', plan(), ALL, { env: { ...ENV, TA3_TEST_THIRD_USERNAME: ' ta3-reviewer\n' } }),
+    /reviewer and thirdPerson accounts are the same user/);
+  const alias: FakeUser = { username: 'ta3-reviewer-alias', password: 'synthetic-alias-secret', userId: 8, role: 'investigator', unblinded: true };
+  const { row } = await runAgainst(t, { users: [...USERS, alias] }, { selection: [13, 15],
+    env: { ...ENV, TA3_TEST_THIRD_USERNAME: alias.username, TA3_TEST_THIRD_PASSWORD: alias.password } });
+  assert.equal(row('OQ-207').passed, true, 'suite 13 does not act as the third person');
+  for (const id of idsOf(219, 226)) assert.deepEqual(outcome(row(id)), [false, true, TA3_OUTCOME.ACCOUNTS_NOT_DISTINCT], `${id}: ${row(id).notes}`);
+  assert.equal(row('OQ-TA3-SUITE-15').passed, false);
+  assert.match(row('OQ-TA3-SUITE-15').notes, /The EDC answered the (reviewer and thirdPerson|thirdPerson and reviewer) accounts with one user id \(8\)/);
 });
 
 test('O-2 and M-2 absent at the release fail their cases with FEATURE_ABSENT_AT_RELEASE', async t => {

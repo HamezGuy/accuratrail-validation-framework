@@ -23,9 +23,9 @@ export { loadTa3OqPlan, parseTa3OqPlan, TA3_OQ_PLAN_CONTRACT, type Ta3OqPlan } f
  * accounts it needs and logs each of them out at its end. Before any use after a
  * wait, an account whose token expires within two minutes, or whose session has
  * been idle for more than 25 minutes, logs in again (EDC defaults: a one-hour
- * token, a 30-minute idle timeout); a 401 gets one new login and one retry; a
- * transport error on a write is never resent. Suite 16 (escalation, the longest
- * wait) runs last.
+ * token, a 30-minute idle timeout); a 401 of an ended session gets one new login
+ * and one retry, any other 401 (a refused signature) none; a transport error on
+ * a write is never resent. Suite 16 (escalation, the longest wait) runs last.
  *
  * Outcomes (VD-5, F-p): a case whose feature is absent at the release or off at
  * the target fails with its code, never passes or skips; a case whose setup
@@ -58,6 +58,9 @@ export const TA3_OUTCOME = {
   FOLLOW_UP_TASK_NOT_CONFIGURED: 'FOLLOW_UP_TASK_NOT_CONFIGURED',
   OPERATOR_NOT_UNBLINDED: 'OPERATOR_NOT_UNBLINDED',
   PREREQUISITE_MISSING: 'PREREQUISITE_MISSING',
+  POLICY_DECIDER_UNAVAILABLE: 'POLICY_DECIDER_UNAVAILABLE',
+  DUPLICATE_STUDY_NOT_DECLARED: 'DUPLICATE_STUDY_NOT_DECLARED',
+  ACCOUNTS_NOT_DISTINCT: 'ACCOUNTS_NOT_DISTINCT',
 } as const;
 export type Ta3OutcomeCode = typeof TA3_OUTCOME[keyof typeof TA3_OUTCOME];
 const OUTCOME = TA3_OUTCOME;
@@ -67,6 +70,7 @@ const OUTCOME = TA3_OUTCOME;
 export const EDC_SIGNATURE_MEANINGS = {
   DEVIATION_ASSESSMENT_MEANING: 'I reviewed this exact protocol deviation record, its source and the protocol requirement it cites, and determine its disposition and importance as stated',
   DEVIATION_CLOSURE_MEANING: 'I reviewed this exact protocol deviation, its current assessment and its corrective-action or not-a-deviation evidence, and authorize its closure as stated',
+  DEVIATION_ESCALATION_POLICY_MEANING: 'I approve this exact protocol deviation escalation policy, its assessment and closure requirements, matching rules, time limits, recipients and reporting obligations',
 } as const;
 
 /** The deviation sweep evaluates as the system actor, user 1 (deviation-sweep.service.ts). */
@@ -95,13 +99,20 @@ const MAX_PAGES = 10;
 const ROUTE_NOT_FOUND = /^Route (GET|POST|PUT|PATCH|DELETE) \S+ not found$/;
 /** The flat inspection route's refusal of any member but requestKey and includeTraining (regulatory-export.controller.ts). */
 const FLAT_COPY_MEMBER_REFUSAL = 'Supply a UUID requestKey and optional boolean includeTraining';
-/** The role names the EDC accepts for each escalation recipient role (libreclinicaapi src/middleware/authorization.middleware.ts ROLE_ALIASES). */
-const RECIPIENT_ROLE_NAMES: Record<string, readonly string[]> = {
+/** The study role names that mean each escalation recipient role, as O-2 resolves holders (libreclinicaapi
+ * deviation-escalation.service.ts lockRecipients, through auth-core getRoleByName); npm run test:cross-repo compares
+ * them with the EDC's auth-core expandRoleAliases. Matched case-insensitively, as getRoleByName does. */
+export const RECIPIENT_ROLE_NAMES: Record<string, readonly string[]> = {
   investigator: ['investigator', 'site_investigator'],
   data_manager: ['data_manager', 'study_coordinator', 'site_study_coordinator', 'director', 'study_director', 'site_study_director'],
   monitor: ['monitor', 'site_monitor'],
   coordinator: ['coordinator', 'clinical_research_coordinator', 'crc', 'ra', 'ra2', 'data_entry', 'data_entry_person', 'site_data_entry_person', 'site_data_entry_person2', 'user'],
 };
+/** The roles that decide an O-2 policy on the platform study (deviation-escalation.service.ts requirePolicyDecider). */
+const POLICY_DECIDER_ROLES = ['investigator', 'data_manager'] as const;
+/** The 401 codes of an ended session (libreclinicaapi auth.middleware.ts): only these get a new login and one retry. Any
+ * other 401, the Part 11 signature refusal (part11.middleware.ts, no code) among them, is the answer to the request. */
+const SESSION_ENDED_CODES: readonly string[] = ['INVALID_TOKEN', 'TOKEN_REVOKED', 'SESSION_REVOKED', 'SESSION_NOT_ACTIVE', 'SESSION_TIMEOUT'];
 
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const nativeId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
@@ -367,8 +378,8 @@ class CaseRun {
     }
     await session.ensureFresh();
     let reply = await this.exchange(session, method, path, body, options);
-    if (reply.status === 401 && !reply.captureError) {
-      // Refused before processing, so one new login and one retry change nothing twice.
+    if (reply.status === 401 && !reply.captureError && SESSION_ENDED_CODES.includes(codeOf(reply) ?? '')) {
+      // The session ended, refused before processing, so one new login and one retry change nothing twice.
       await session.renew(`HTTP 401 on ${method} ${path}`);
       reply = await this.exchange(session, method, path, body, options);
     }
@@ -453,6 +464,10 @@ class Ta3Context {
   readonly results = new Map<string, EvidenceResult>();
   readonly sessions = new Map<Ta3Account, Ta3Session>();
   readonly owned: Owned[] = [];
+  /** Owned records this run leaves in effect at the target, because the EDC offers no way to retire them that the run takes. */
+  readonly persisting: Array<Owned & { studyId: number; reason: string }> = [];
+  /** The user id the EDC answered at login for each plan account, over the whole run. */
+  readonly accountUserIds = new Map<Ta3Account, number>();
   readonly facts: Ta3Facts = { deviations: {}, documents: {}, observedItems: new Set(), escalations: [] };
   /** Observed once per run by the first case that needs the engine. */
   engine: 'on' | 'off' | undefined;
@@ -568,19 +583,38 @@ export function ta3StoppedRecords(selection: readonly number[], reason: string, 
 /** The order the suites run in: escalation (16), the longest wait, last. */
 export const TA3_SUITE_ORDER: readonly number[] = [13, 14, 15, 17, 18, 16];
 
+/** A plan account's username as the EDC reads it: login trims it (libreclinicaapi auth.controller.ts login). */
+const accountUsername = (env: Readonly<Record<string, string | undefined>>, variable: string): string => (env[variable] ?? '').trim();
+
 /** The usernames the plan's account variables hold, refused before any request when two accounts
- * are one person: the independence cases mean nothing then. An unset variable is left to the
- * account's login, which records ACCOUNT_LOGIN_FAILED. */
+ * are one person: the independence cases mean nothing then. Usernames are compared as the EDC
+ * reads them, trimmed. An unset variable is left to the account's login, which records
+ * ACCOUNT_LOGIN_FAILED. */
 export function ta3AccountUsernames(plan: Ta3OqPlan, env: Readonly<Record<string, string | undefined>> = process.env): Map<string, Ta3Account> {
   const usernames = new Map<string, Ta3Account>();
   for (const [account, names] of Object.entries(ta3AccountVariables(plan)) as Array<[Ta3Account, { username: string; password: string }]>) {
-    const username = env[names.username] ?? '';
+    const username = accountUsername(env, names.username);
     if (username && usernames.has(username)) {
       throw new Error(`The TA3 plan's ${usernames.get(username)} and ${account} accounts are the same user; the TA3 cases need five different people.`);
     }
     if (username) usernames.set(username, account);
   }
   return usernames;
+}
+
+/** After a suite's logins: the plan accounts the EDC answered with one user id, when one of them is
+ * this suite's, else null. Two usernames can still be one person at the EDC, so the ids are compared
+ * over the run (each suite logs in only the accounts it needs). */
+function sharedUser(ctx: Ta3Context): string | null {
+  for (const session of ctx.sessions.values()) if (nativeId(session.userId)) ctx.accountUserIds.set(session.account, session.userId);
+  for (const session of ctx.sessions.values()) {
+    const other = [...ctx.accountUserIds].find(([account, userId]) => account !== session.account && userId === session.userId);
+    if (other) {
+      return `The EDC answered the ${other[0]} and ${session.account} accounts with one user id (${session.userId}): they are one person, and the TA3 `
+        + 'cases need five different people.';
+    }
+  }
+  return null;
 }
 
 /** Runs the selected TA3 suites against the study `plan` names and returns one record for every
@@ -600,17 +634,31 @@ export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, sele
   const rows: EvidenceResult[] = [];
   for (const suite of TA3_SUITE_ORDER) {
     if (!selected.has(suite)) continue;
-    const accounts = [...new Set(TA3_OQ_CASES.filter(entry => entry.suite === suite).flatMap(entry => entry.accounts))];
+    const entries = TA3_OQ_CASES.filter(entry => entry.suite === suite);
+    if (suite === 16 && plan.study.duplicateOf === undefined) {
+      // OQ-227 puts a policy in force on the study that this run cannot retire (see OQ-TA3-SUITE-16), so only a declared duplicate takes it.
+      for (const entry of entries) {
+        ctx.results.set(entry.id, contractRecord(entry, OUTCOME.DUPLICATE_STUDY_NOT_DECLARED, `The plan names no study.duplicateOf, so study ${plan.study.studyId} `
+          + 'is not declared a duplicate. Suite 16 leaves its escalation policy in force on the study, matching every deviation of the OQ site, so it runs only '
+          + 'on a declared duplicate; no request was made.', clock));
+      }
+      continue;
+    }
+    const accounts = [...new Set(entries.flatMap(entry => entry.accounts))];
     ctx.sessions.clear();
     for (const account of accounts) {
       const names = variables[account];
-      const session = new Ta3Session(ctx, account, env[names.username] ?? '', env[names.password] ?? '', names);
+      const session = new Ta3Session(ctx, account, accountUsername(env, names.username), env[names.password] ?? '', names);
       ctx.sessions.set(account, session);
       await session.open(`suite ${suite}`);
     }
-    const ownedBefore = ctx.owned.length;
-    try { await SUITES[suite](ctx); }
-    catch (error) {
+    const shared = sharedUser(ctx);
+    const ownedBefore = ctx.owned.length, persistingBefore = ctx.persisting.length;
+    try {
+      if (shared) {
+        for (const entry of entries) ctx.results.set(entry.id, contractRecord(entry, OUTCOME.ACCOUNTS_NOT_DISTINCT, `${shared} No request of this suite was made.`, clock));
+      } else await SUITES[suite](ctx);
+    } catch (error) {
       // A suite never loses its cases: whatever did not record is recorded as not executed below.
       console.error(`  TA3 suite ${suite} stopped: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -620,17 +668,21 @@ export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, sele
     const failedLogins = sessions.filter(session => session.failure);
     const failedLogouts = sessions.reduce((count, session) => count + session.logoutFailures, 0);
     const suiteInfo = OQ_SUITES.find(entry => entry.suite === suite)!;
+    const persisting = ctx.persisting.slice(persistingBefore);
     rows.push({
       testCaseId: `OQ-TA3-SUITE-${suite}`, timestamp: new Date(clock.now()).toISOString(), endpoint: '/api/auth/login', method: 'POST',
-      responseStatus: 0, passed: failedLogins.length === 0 && failedLogouts === 0,
+      responseStatus: 0, passed: failedLogins.length === 0 && failedLogouts === 0 && !shared,
       notes: `TA3 suite ${suite} (${suiteInfo.title}) sessions and owned records, run ${ctx.runId} (${plan.runLabel}). `
         + (failedLogins.length ? `Accounts without a session: ${failedLogins.map(session => `${session.account} (${session.failure})`).join('; ')}. ` : 'Every account logged in. ')
+        + (shared ? `${shared} ` : '')
         + (failedLogouts ? `${plural(failedLogouts, 'logout')} not answered 200.` : 'Every session was logged out.')
-        + sessions.filter(session => session.ended.length).map(session => ` The ${session.account} session had already ended at the EDC (${session.ended.join('; ')}), so no logout was sent.`).join(''),
+        + sessions.filter(session => session.ended.length).map(session => ` The ${session.account} session had already ended at the EDC (${session.ended.join('; ')}), so no logout was sent.`).join('')
+        + persisting.map(entry => ` Left in effect on study ${entry.studyId}: ${entry.kind} ${entry.label ?? entry.id} (${entry.caseId}); ${entry.reason}`).join(''),
       responseBody: {
         runId: ctx.runId, runLabel: plan.runLabel, study: plan.study,
         accounts: Object.fromEntries(sessions.map(session => [session.account, { username: session.username || null, userId: session.userId }])),
         owned: ctx.owned.slice(ownedBefore),
+        persisting,
       },
       relatedEvidence: sessions.flatMap(session => session.exchanges),
     });
@@ -1084,11 +1136,22 @@ async function suite14(ctx: Ta3Context): Promise<void> {
       return false;
     }
   };
+  /** A subject's versions come from its site's own records, or from the spec study's when the site has none
+   * (libreclinicaapi protocol-applicability.ts readSubjectApplicability). A record written at a site without
+   * records of its own, a withdrawn one too, would end that inheritance for good, so nothing is written there. */
+  const requireOwnRecords = async (run: CaseRun, session: Ta3Session): Promise<void> => {
+    const own = (await recordsAt(run, session)).filter(entry => entry.studyId === ctx.site);
+    if (!own.length) {
+      notExecuted(OUTCOME.VERSION_FIXTURE_ABSENT, `The OQ site ${ctx.site} has no applicability record of its own, so its subjects take the platform study's; `
+        + 'an owned record written there, even withdrawn, would end that for every later evaluation at the site, so this case writes nothing.');
+    }
+  };
   let statedId: number | undefined;
 
   await ctx.runCase('OQ-215', async run => {
     const op = ctx.session('operator'), monitor = ctx.session('monitor');
     await requireEngine(run, op);
+    await requireOwnRecords(run, op);
     const body = { protocolVersion: statedVersion, status: 'established', ...stated };
     const refused = await record(run, monitor, body);
     demand(refused.status === 403, `The monitor's applicability record answered HTTP ${refused.status}, not 403.`);
@@ -1105,6 +1168,7 @@ async function suite14(ctx: Ta3Context): Promise<void> {
   await ctx.runCase('OQ-216', async run => {
     const op = ctx.session('operator');
     await requireEngine(run, op);
+    if (statedId === undefined) await requireOwnRecords(run, op);
     const id = statedId ?? prerequisite('OQ-215', 'The owned applicability record');
     const row = (await recordsAt(run, op)).find(entry => entry.applicabilityId === id);
     demand(row, `Applicability record ${id} is not listed at the OQ site.`);
@@ -1148,6 +1212,7 @@ async function suite14(ctx: Ta3Context): Promise<void> {
   await ctx.runCase('OQ-218', async run => {
     const op = ctx.session('operator');
     await requireEngine(run, op);
+    await requireOwnRecords(run, op);
     const subjectId = ctx.facts.save?.subjectId ?? await enrollOwned(run, op, isoDay(ctx.clock.now()));
     const recorded = await record(run, op, { protocolVersion: unresolvedVersion, status: 'unresolved' });
     run.expect(recorded, [201], 'Recording the owned version unresolved');
@@ -1432,22 +1497,55 @@ function escalationPolicy(ctx: Ta3Context, rowId: string): Record<string, unknow
   };
 }
 
+/** A staff list entry (GET /api/sites/:siteId/staff, study_user_role rows of that study, active only) whose username
+ * holds one of the roles, by the EDC's role names. */
+function staffHolding(staff: unknown[], username: string, roles: readonly string[]): Record<string, any> | undefined {
+  const names = roles.flatMap(role => RECIPIENT_ROLE_NAMES[role] ?? [role]);
+  return staff.find((entry: unknown): entry is Record<string, any> => isRecord(entry) && entry.username === username
+    && names.includes(String(entry.role ?? '').toLowerCase()));
+}
+
+/** What the staff lists show of the plan's recipient. */
+interface RecipientCheck {
+  /** Where the recipient holds the recipient role, with the user id the staff list gives. */
+  holder: { scope: string; userId: unknown } | null;
+  /** Every staff list O-2 reads for holders was read. */
+  allRead: boolean;
+}
+
 /** Whether the plan's recipient holds the recipient role at the OQ site or its parent study, where O-2 looks for holders
- * (spec P20 F-m): the site's staff list, then the parent's (study_user_role rows of that study, active only). */
-async function recipientHoldsRole(run: CaseRun, session: Ta3Session): Promise<boolean> {
+ * (spec P20 F-m, deviation-escalation.service.ts lockRecipients): the site's staff list, then the parent's. */
+async function recipientCheck(run: CaseRun, session: Ta3Session): Promise<RecipientCheck> {
   const { recipientRole, recipientUsername } = run.ctx.plan.escalation;
-  const names = RECIPIENT_ROLE_NAMES[recipientRole] ?? [recipientRole];
   const unread: string[] = [];
   const scopes: Array<[string, number]> = [['OQ site', run.ctx.site], ...(run.ctx.root !== run.ctx.site ? [['parent study', run.ctx.root] as [string, number]] : [])];
   for (const [scope, studyId] of scopes) {
     const reply = await run.call(session, 'GET', `/api/sites/${studyId}/staff`);
     const staff = dataOf(reply);
     if (reply.status !== 200 || !Array.isArray(staff)) { unread.push(`the ${scope}'s (HTTP ${reply.status})`); continue; }
-    if (staff.some((entry: unknown) => isRecord(entry) && entry.username === recipientUsername && names.includes(String(entry.role ?? '').toLowerCase()))) return true;
+    const entry = staffHolding(staff, recipientUsername, [recipientRole]);
+    if (entry) return { holder: { scope, userId: entry.userId }, allRead: unread.length === 0 };
   }
   run.remark(`${recipientUsername} holds no ${recipientRole} role in the staff list of the OQ site or its parent study`
     + `${unread.length ? `; unread staff lists: ${unread.join(', ')}, so the role is unconfirmed there` : ''}.`);
-  return false;
+  return { holder: null, allRead: unread.length === 0 };
+}
+
+/** OQ-227 needs both deciders on the platform study's staff list as investigator or data manager, where O-2 requires them
+ * (deviation-escalation.service.ts requirePolicyDecider): otherwise their decisions are refused, a setup gap. */
+async function requirePolicyDeciders(run: CaseRun, sessions: readonly Ta3Session[]): Promise<void> {
+  const { ctx } = run;
+  const reply = await run.call(sessions[0], 'GET', `/api/sites/${ctx.root}/staff`);
+  const staff = dataOf(reply);
+  if (reply.status !== 200 || !Array.isArray(staff)) {
+    notExecuted(OUTCOME.POLICY_DECIDER_UNAVAILABLE, `The staff list of the platform study ${ctx.root} answered HTTP ${reply.status}, so the policy deciders are unconfirmed; no policy decision was sent.`);
+  }
+  const missing = sessions.filter(session => !staffHolding(staff, session.username, POLICY_DECIDER_ROLES));
+  if (missing.length) {
+    notExecuted(OUTCOME.POLICY_DECIDER_UNAVAILABLE, `The staff list of the platform study ${ctx.root} shows no investigator or data manager role for the `
+      + `${missing.map(session => `${session.account} (${session.username})`).join(' and ')}; O-2 refuses a policy decision by anyone else, an `
+      + 'administrator included, so no policy decision was sent: a setup gap and not a release result.');
+  }
 }
 
 async function escalateEvents(run: CaseRun, session: Ta3Session, deviationId: number): Promise<Record<string, any>[]> {
@@ -1493,13 +1591,30 @@ async function suite16(ctx: Ta3Context): Promise<void> {
   };
   const notWaited = (needed: number): never => notExecuted(OUTCOME.ESCALATION_WINDOW_NOT_WAITED,
     `The plan allows ${wait} minutes of escalation wait (escalation.maxWaitMinutes); this case needs at least ${needed}.`);
-  const unobserved = (recipient: boolean, what: string): never => (recipient
-    ? fail(what)
-    : notExecuted(OUTCOME.RECIPIENT_UNAVAILABLE, `${what} ${escalation.recipientUsername} is not confirmed to hold ${escalation.recipientRole} at the OQ site; O-2 records a held attempt and creates no task when nobody holds the role, a setup gap and not a release result.`));
+  /** No escalation was observed. A setup gap (RECIPIENT_UNAVAILABLE) only where O-2 says so, by an attempt it holds with that
+   * code (escalationAttempts), or where both staff lists were read and neither shows the recipient in the role; otherwise
+   * the missing escalation is a failure. */
+  const unobserved = async (run: CaseRun, session: Ta3Session, recipient: RecipientCheck, deviationId: number,
+    clock: (clockKey: string, level: number) => boolean, what: string): Promise<never> => {
+    const attempts = (await workspaceOf(run, session, deviationId)).escalationAttempts;
+    const held = (Array.isArray(attempts) ? attempts : []).find((attempt: unknown) => isRecord(attempt) && attempt.status === 'held'
+      && attempt.code === OUTCOME.RECIPIENT_UNAVAILABLE && clock(String(attempt.clockKey), Number(attempt.level)));
+    if (held) {
+      notExecuted(OUTCOME.RECIPIENT_UNAVAILABLE, `${what} O-2 holds the level (escalationAttempts: clock ${String(held.clockKey)} level ${String(held.level)} held `
+        + `RECIPIENT_UNAVAILABLE, last tried ${String(held.lastAttemptAt)}): nobody it can task holds ${escalation.recipientRole} at the OQ site or its parent, a setup gap and not a release result.`);
+    }
+    if (!recipient.holder && recipient.allRead) {
+      notExecuted(OUTCOME.RECIPIENT_UNAVAILABLE, `${what} ${escalation.recipientUsername} holds no ${escalation.recipientRole} role in the staff lists of the OQ site `
+        + 'and its parent study, both read; O-2 records a held attempt and creates no task when nobody holds the role, a setup gap and not a release result.');
+    }
+    return fail(`${what} ${recipient.holder ? `${escalation.recipientUsername} holds ${escalation.recipientRole} in the ${recipient.holder.scope}'s staff list`
+      : 'A staff list was not read, so the recipient is unconfirmed'}, and O-2 holds no attempt of the level as RECIPIENT_UNAVAILABLE.`);
+  };
 
   await ctx.runCase('OQ-227', async run => {
     const op = ctx.session('operator'), reviewer = ctx.session('reviewer');
     const rowId = `oq-ta3-${ctx.runId.slice(0, 8)}`;
+    await requirePolicyDeciders(run, [op, reviewer]);
     const decide = async (session: Ta3Session, workspace: Record<string, any>, input: Record<string, unknown>): Promise<Reply> => {
       const reply = await run.call(session, 'POST', '/api/protocol-deviations/escalation-policy', { studyId: ctx.root, requestKey: randomUUID(),
         revision: workspace.revision, sourceHash: workspace.sourceHash, reason: `${rowId} synthetic qualification policy decision; test stack only`,
@@ -1526,6 +1641,10 @@ async function suite16(ctx: Ta3Context): Promise<void> {
     const stillPending = await policyWorkspace(run, op);
     demand(!inForceRowIds(stillPending).includes(rowId), 'The proposer\'s refused review put the policy in force.');
     run.expect(await decide(reviewer, stillPending, { kind: 'review', proposeEventId, accepted: true }), [201], 'The reviewer\'s signed acceptance');
+    // Accepted, the policy stays: O-2 retires one only by a later signed policy and another person's signed acceptance.
+    ctx.persisting.push({ kind: 'escalation-policy', id: proposeEventId, label: rowId, caseId: run.caseId, studyId: ctx.root,
+      reason: 'O-2 retires a policy only by a later signed policy and another person\'s signed acceptance, which this run does not make; its row escalates '
+        + `every deviation of the OQ site ${ctx.site} to ${escalation.recipientRole} until then.` });
     demand(inForceRowIds(await policyWorkspace(run, op)).includes(rowId), 'The accepted policy is not in force.');
     ctx.o2 = 'present';
     ctx.crossCheck(run, 'ENABLE_DEVIATION_DECISIONS', true);
@@ -1540,7 +1659,7 @@ async function suite16(ctx: Ta3Context): Promise<void> {
     await requirePolicy(run, op);
     if (wait < ESCALATION_CORRECTIVE_WAIT_MINUTES) notWaited(ESCALATION_CORRECTIVE_WAIT_MINUTES);
     demand(nativeId(op.userId), 'The operator login did not identify its user, so it cannot be named the action owner.');
-    const recipient = await recipientHoldsRole(run, op);
+    const recipient = await recipientCheck(run, op);
     const deviationId = await manualDeviation(run, op, 'overdue');
     const workspace = await workspaceOf(run, op, deviationId);
     const planned = await run.call(op, 'POST', `/api/protocol-deviations/${deviationId}/corrective-action`, { revision: workspace.revision, sourceHash: workspace.sourceHash,
@@ -1557,7 +1676,10 @@ async function suite16(ctx: Ta3Context): Promise<void> {
       if (events.length || ctx.clock.now() >= deadline) break;
       await ctx.clock.sleep(ctx.pollMs);
     }
-    if (!events.length) unobserved(recipient, `No corrective-action escalate event for deviation ${deviationId} within three cron cycles of its passed due date.`);
+    if (!events.length) {
+      await unobserved(run, op, recipient, deviationId, clockKey => clockKey.startsWith('corrective-action'),
+        `No corrective-action escalate event for deviation ${deviationId} within three cron cycles of its passed due date.`);
+    }
     demand(events.length === 1, `${plural(events.length, 'corrective-action escalate event')} exist for deviation ${deviationId}; one is expected.`);
     ctx.facts.escalations.push({ deviationId, event: events[0] });
     Object.assign(run.facts, { deviationId, eventId: events[0].eventId, clockKey: events[0].payload?.clockKey, taskId: events[0].payload?.taskId });
@@ -1568,7 +1690,7 @@ async function suite16(ctx: Ta3Context): Promise<void> {
     const op = ctx.session('operator');
     await requirePolicy(run, op);
     if (wait < ESCALATION_ASSESSMENT_WAIT_MINUTES) notWaited(ESCALATION_ASSESSMENT_WAIT_MINUTES);
-    const recipient = await recipientHoldsRole(run, op);
+    const recipient = await recipientCheck(run, op);
     const deviationId = await manualDeviation(run, op, 'escalation');
     const createdAt = Date.parse(String((await deviationOf(run, op, deviationId)).dateCreated));
     const started = ctx.clock.now(), deadline = started + wait * 60_000;
@@ -1583,17 +1705,30 @@ async function suite16(ctx: Ta3Context): Promise<void> {
       if (events.length || ctx.clock.now() >= deadline) break;
       await ctx.clock.sleep(ctx.pollMs);
     }
-    if (!events.length) unobserved(recipient, `No level-1 assessment escalation of the unassessed deviation ${deviationId} within ${wait} minutes.`);
+    if (!events.length) {
+      await unobserved(run, op, recipient, deviationId, (clockKey, level) => clockKey === 'assessment' && level === 1,
+        `No level-1 assessment escalation of the unassessed deviation ${deviationId} within ${wait} minutes.`);
+    }
     demand(events.length === 1, `${plural(events.length, 'level-1 escalate event')} exist for deviation ${deviationId}; one is expected.`);
     const event = events[0];
     const elapsedMinutes = Number.isFinite(createdAt) ? (Date.parse(String(event.createdAt)) - createdAt) / 60_000 : NaN;
     demand(!Number.isFinite(elapsedMinutes) || elapsedMinutes >= 59, `The escalation came ${elapsedMinutes.toFixed(1)} minutes after the deviation was logged, before its hour.`);
+    // The task goes to the plan's recipient: the role the policy row names, and the recipient among the holders O-2 tasked.
+    demand(event.payload?.recipientRole === escalation.recipientRole,
+      `The escalation names recipient role ${JSON.stringify(event.payload?.recipientRole)}, not the policy's ${escalation.recipientRole}.`);
+    const holder = recipient.holder ?? fail(`Deviation ${deviationId} escalated, but ${escalation.recipientUsername} is not confirmed in a staff list read, so the `
+      + 'recipient\'s user id cannot be compared with the escalation\'s recipientUserIds.');
+    const recipientUserIds: unknown[] = Array.isArray(event.payload?.recipientUserIds) ? event.payload.recipientUserIds : [];
+    demand(nativeId(holder.userId) && recipientUserIds.map(Number).includes(holder.userId),
+      `The escalation's recipientUserIds ${JSON.stringify(event.payload?.recipientUserIds ?? null)} do not include ${escalation.recipientUsername}, user ${String(holder.userId)} in the ${holder.scope}'s staff list.`);
     const tasks = await escalationTasks(run, op, deviationId);
     demand(tasks.length === 1 && String(tasks[0].taskId ?? tasks[0].id) === String(event.payload?.taskId),
       `The escalation names task ${String(event.payload?.taskId)}, and ${plural(tasks.length, 'escalation task')} exist for deviation ${deviationId}.`);
     ctx.facts.escalations.push({ deviationId, event });
-    Object.assign(run.facts, { deviationId, eventId: event.eventId, taskId: event.payload?.taskId, elapsedMinutes: Number.isFinite(elapsedMinutes) ? Math.round(elapsedMinutes * 10) / 10 : null });
-    return `The unassessed deviation ${deviationId} escalated once at level 1 (event ${String(event.eventId)}, task ${String(event.payload?.taskId)} for ${escalation.recipientRole}).`;
+    Object.assign(run.facts, { deviationId, eventId: event.eventId, taskId: event.payload?.taskId, recipientRole: event.payload?.recipientRole, recipientUserIds,
+      elapsedMinutes: Number.isFinite(elapsedMinutes) ? Math.round(elapsedMinutes * 10) / 10 : null });
+    return `The unassessed deviation ${deviationId} escalated once at level 1 (event ${String(event.eventId)}, task ${String(event.payload?.taskId)} for `
+      + `${escalation.recipientRole}, recipients ${recipientUserIds.join(', ')}, among them ${escalation.recipientUsername}, user ${String(holder.userId)}).`;
   });
 
   await ctx.runCase('OQ-229', async run => {

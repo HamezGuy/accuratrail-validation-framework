@@ -177,14 +177,16 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-214': { check: 'The plan\'s follow-up study task must be an action trigger on deviation.logged (else FOLLOW_UP_TASK_NOT_CONFIGURED); within two '
     + 'cron cycles and 30 seconds exactly one workflow task from it must name the OQ-207 deviation (else TASK_NOT_OBSERVED). ENABLE_DOMAIN_EVENTS '
     + 'declared false records FEATURE_DISABLED_AT_TARGET after one read, or CONFIGURATION_MISMATCH when a task exists.' },
-  'OQ-215': { check: 'POST /api/deviation-engine/protocol-applicability for the OQ site must answer 403 to the monitor and 201 with an applicabilityId '
-    + 'to the operator, for an owned version established from 2099-12-31.' },
+  'OQ-215': { check: 'The OQ site must hold applicability records of its own (else VERSION_FIXTURE_ABSENT and nothing is written, since a record '
+    + 'at a site without any ends its inheritance of the platform study\'s); POST /api/deviation-engine/protocol-applicability for the OQ site must '
+    + 'answer 403 to the monitor and 201 with an applicabilityId to the operator, for an owned version established from 2099-12-31.' },
   'OQ-216': { check: 'The OQ-215 record must read back effectiveFrom 2099-12-31, ethicsApprovalDate 2099-12-30 and documentedOn 2099-12-31 exactly; '
     + 'a withdrawn record of the owned version must answer 201 and leave it not current.' },
   'OQ-217': { check: 'Both plan versions must be current and established at the OQ site from their effectiveFrom (else VERSION_FIXTURE_ABSENT); for '
     + 'owned subjects enrolled at the plan\'s early and late dates and evaluated, the versioned rule\'s applicability must name the first version for a '
     + 'target date before the second effectiveFrom and the second version for one on or after it.' },
-  'OQ-218': { check: 'With an owned version recorded unresolved at the OQ site, a re-evaluated owned subject must have outcomes that state '
+  'OQ-218': { check: 'With the OQ site holding applicability records of its own (else VERSION_FIXTURE_ABSENT, as in OQ-215) and an owned version '
+    + 'recorded unresolved there, a re-evaluated owned subject must have outcomes that state '
     + 'applicability, each with version_status unresolved and protocol_version null and one listing the owned version as a candidate; the owned '
     + 'version is then withdrawn.' },
   'OQ-219': { check: 'GET /api/protocol-deviations?studyId=<study>&includeSites=true must list every owned deviation of the OQ site; rows or an owned '
@@ -205,18 +207,22 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
     + 'independence part runs and the signature part fails FEATURE_ABSENT_AT_RELEASE or FEATURE_DISABLED_AT_TARGET.' },
   'OQ-226': { check: 'A corrective-action plan with a stale revision must answer 409 and, unless O-1 is absent or off, a signed assessment with a stale '
     + 'source hash 409; the deviation\'s history and revision must be unchanged.' },
-  'OQ-227': { check: 'O-2 (spec P09 5.2.5): the policy workspace must read (a head answer, the deviation-id 400 or the unknown-route 404, fails '
-    + 'FEATURE_ABSENT_AT_RELEASE); the operator\'s signed proposal must answer 201 and not be in force, the proposer\'s signed review 403, and the '
-    + 'reviewer\'s signed acceptance 201, after which the OQ row is in force. 503 DEVIATION_DECISIONS_DISABLED fails FEATURE_DISABLED_AT_TARGET.' },
+  'OQ-227': { check: 'O-2 (spec P09 5.2.5), only on a study the plan declares a duplicate (study.duplicateOf; else suite 16 records '
+    + 'DUPLICATE_STUDY_NOT_DECLARED and makes no request): the platform study\'s staff list must show the operator and the reviewer as investigator '
+    + 'or data manager (else POLICY_DECIDER_UNAVAILABLE and no decision is sent); the policy workspace must read (a head answer, the deviation-id 400 '
+    + 'or the unknown-route 404, fails FEATURE_ABSENT_AT_RELEASE); the operator\'s signed proposal must answer 201 and not be in force, the '
+    + 'proposer\'s signed review 403, and the reviewer\'s signed acceptance 201, after which the OQ row is in force. 503 DEVIATION_DECISIONS_DISABLED '
+    + 'fails FEATURE_DISABLED_AT_TARGET. The accepted policy stays in force, and OQ-TA3-SUITE-16 lists it as persisting.' },
   'OQ-228': { check: 'With the OQ policy in force and escalation.maxWaitMinutes at least 70 (else ESCALATION_WINDOW_NOT_WAITED), a fresh owned '
     + 'deviation must show no escalation at 58 minutes, then exactly one escalate event (clock assessment, level 1) at least 59 minutes after it was '
-    + 'logged, naming the one deviation_escalation task listed for it. None while the recipient is unconfirmed in the site staff list records '
-    + 'RECIPIENT_UNAVAILABLE.' },
+    + 'logged, naming the policy\'s recipient role, the recipient\'s staff list user id among its recipientUserIds, and the one deviation_escalation '
+    + 'task listed for it. None records RECIPIENT_UNAVAILABLE only when O-2 holds the level with that code (escalationAttempts) or when the staff '
+    + 'lists of the OQ site and its parent were both read without the recipient in the role; otherwise none is a failure.' },
   'OQ-229': { check: 'Two cron cycles and 15 seconds after the OQ-228 escalation the deviation must still have one level-1 assessment escalate event '
     + 'and one deviation_escalation task.' },
   'OQ-230': { check: 'With the OQ policy in force and at least four minutes allowed, a fresh owned deviation with a corrective-action plan due a minute '
     + 'ago (a refusal naming the due date records DUE_AT_REFUSED) must show exactly one escalate event on a corrective-action clock within three '
-    + 'cron cycles and 30 seconds (RECIPIENT_UNAVAILABLE as in OQ-228).' },
+    + 'cron cycles and 30 seconds (none records RECIPIENT_UNAVAILABLE under the same two conditions as in OQ-228).' },
   'OQ-231': { check: 'Every escalate event of the OQ-228 and OQ-230 deviations and the task it names must carry no arm member (arm, armId, '
     + 'studyGroupId, treatment and the like) and must not repeat the deviation description.' },
   'OQ-232': { check: 'With a synthetic original in the OQ site\'s lifecycle evidence, the operator\'s signed contract.sent record must answer 201 and '

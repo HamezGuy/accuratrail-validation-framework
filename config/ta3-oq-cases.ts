@@ -143,7 +143,7 @@ export const TA3_OQ_CASES: readonly Ta3OqCase[] = [
   {
     id: 'OQ-215', suite: 14, title: 'Applicability Recording Is Restricted', requirement: 'URS-084', cfr: '11.10(g)',
     e6r3: ['protocolAndRecords'], riskLevel: 'High', needs: 'exists', accounts: ['operator', 'monitor'],
-    preconditions: `${ENGINE}.`,
+    preconditions: `${ENGINE}; the OQ site holds applicability records of its own (a site without any takes the platform study's, and a record written there would end that).`,
     steps: [
       'As the monitor, POST /api/deviation-engine/protocol-applicability for the OQ site: HTTP 403.',
       'As the operator (administrator or data manager), POST the owned record, an OQ version whose stated dates lie in 2099 so that no evaluation sees it: HTTP 201.',
@@ -175,7 +175,7 @@ export const TA3_OQ_CASES: readonly Ta3OqCase[] = [
   {
     id: 'OQ-218', suite: 14, title: 'Unresolved Applicability Is Explicit', requirement: 'URS-084', cfr: '11.10(a)',
     e6r3: ['protocolAndRecords', 'nonCompliance'], riskLevel: 'High', needs: 'exists', accounts: ['operator'],
-    preconditions: 'OQ-207 left an owned subject with a scheduled visit.',
+    preconditions: 'OQ-207 left an owned subject with a scheduled visit; the OQ site holds applicability records of its own (a site without any takes the platform study\'s, and a record written there would end that).',
     steps: [
       'Record an owned version unresolved at the OQ site.',
       'Re-evaluate the owned subject and verify that the rule\'s applicability reports version_status unresolved with no governing version, never a silent fallback.',
@@ -272,7 +272,7 @@ export const TA3_OQ_CASES: readonly Ta3OqCase[] = [
   {
     id: 'OQ-227', suite: 16, title: 'Escalation Policy Needs Two Signed People', requirement: 'URS-088', cfr: '11.10(g), 11.50',
     e6r3: ['qualityManagement', 'nonCompliance'], riskLevel: 'High', needs: 'O-2', accounts: ['operator', 'reviewer'],
-    preconditions: `${DECISIONS}.`,
+    preconditions: `${DECISIONS}; the plan declares the OQ study a duplicate (study.duplicateOf), since the accepted policy stays in force; the operator and the reviewer hold an investigator or data manager role on the platform study.`,
     steps: [
       'Propose the OQ escalation policy, signed, as the operator (one row for the OQ site: assessment level 1 after 1 hour, corrective action level 1 at 0 hours past due, the plan\'s recipient role).',
       'Review it as the proposer: refused; the proposal is not in force.',
@@ -286,8 +286,8 @@ export const TA3_OQ_CASES: readonly Ta3OqCase[] = [
     preconditions: 'OQ-227 put the policy in force; the plan allows a wait of at least 70 minutes; the recipient holds the recipient role at the OQ site or its parent.',
     steps: [
       'Create a fresh unassessed owned deviation at the OQ site.',
-      'Poll every 30 seconds within escalation.maxWaitMinutes for its escalate event (clock assessment, level 1) and its task for the recipient role.',
-      'Fewer than 70 minutes allowed records ESCALATION_WINDOW_NOT_WAITED; a recipient without the role records RECIPIENT_UNAVAILABLE.',
+      'Poll every 30 seconds within escalation.maxWaitMinutes for its escalate event (clock assessment, level 1), naming the recipient role and the recipient among its recipientUserIds, and its task.',
+      'Fewer than 70 minutes allowed records ESCALATION_WINDOW_NOT_WAITED; no escalation records RECIPIENT_UNAVAILABLE when O-2 holds the level so coded, or when both staff lists show nobody in the role.',
     ],
     expectedResult: 'Exactly one escalate event and one task for level 1.',
   },

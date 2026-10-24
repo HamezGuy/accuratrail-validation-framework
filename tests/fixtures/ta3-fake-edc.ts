@@ -37,6 +37,25 @@ export interface FakeEdcOptions {
   /** The recipient holds the role in the parent study's staff list; with recipientHoldsRole false this models an
    * escalation stage that ignores a parent holder, which O-2 must not (it resolves holders at the site or its parent). */
   recipientAtParent?: boolean;
+  /** The recipient's user id in the staff lists; the escalation names it among recipientUserIds. */
+  recipientUserId?: number;
+  /** A defect: the recipientUserIds an escalation names, whoever holds the role. */
+  escalationRecipientUserIds?: number[];
+  /** A defect: the recipientRole an escalation names. */
+  escalationRecipientRole?: string;
+  /** With nobody holding the role at the site or its parent, O-2 holds the level as RECIPIENT_UNAVAILABLE (escalationAttempts). */
+  heldAttempts?: boolean;
+  /** The status the OQ site's staff list answers (200 by default). */
+  siteStaffStatus?: number;
+  /** The platform study's own staff (the policy deciders, and the recipient when recipientAtParent). By default every user
+   * whose role is investigator or data manager as that role, and an admin user as study_director (a data manager alias). */
+  platformStaff?: Array<{ username: string; role: string; userId?: number }>;
+  /** The plan's established versions are recorded at the platform study, so the OQ site has no applicability record of its own. */
+  applicabilityAtParent?: boolean;
+  /** Usernames whose signed requests are refused as the Part 11 middleware refuses wrong credentials: 401 with no code. */
+  signatureRefused?: string[];
+  /** The first session of this username is revoked at the EDC: its second request answers 401 SESSION_REVOKED. */
+  revokeFirstSessionOf?: string;
 }
 
 export interface FakeClock { now(): number; sleep(ms: number): Promise<void>; onTick(listener: () => void): void }
@@ -73,6 +92,11 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
   const root = plan.study.studyId, site = plan.study.siteStudyId;
   const users = new Map(options.users.map(user => [user.username, user]));
   const byId = new Map(options.users.map(user => [user.userId, user]));
+  const recipientUserId = options.recipientUserId ?? 12;
+  const recipientEntry = { userId: recipientUserId, username: plan.escalation.recipientUsername, role: plan.escalation.recipientRole };
+  const platformStaff = options.platformStaff ?? options.users.filter(user => user.role !== 'monitor')
+    .map(user => ({ userId: user.userId, username: user.username, role: user.role === 'admin' ? 'study_director' : user.role }));
+  let revokedOnce = false, requestsBeforeRevocation = 0;
   let nextId = 1000;
   const id = () => ++nextId;
   const state = {
@@ -87,6 +111,7 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
     followUps: new Set<number>(),
     policy: { revision: 0, proposals: [] as any[], inForce: null as any },
     milestones: { revision: 0, records: [] as any[] },
+    attempts: new Map<number, any[]>(),
     uploads: new Set<string>(),
     documents: new Map<string, any[]>(),
     packages: [] as any[],
@@ -97,7 +122,7 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
 
   // The plan's two established versions are recorded at the OQ site by VAL-1/validation-run step 0.
   for (const version of plan.applicability?.versions ?? []) {
-    state.applicability.push({ applicabilityId: id(), studyId: site, protocolVersion: version.protocolVersion, status: 'established',
+    state.applicability.push({ applicabilityId: id(), studyId: options.applicabilityAtParent ? root : site, protocolVersion: version.protocolVersion, status: 'established',
       effectiveFrom: version.effectiveFrom, ethicsApprovalDate: null, documentedOn: null, basis: 'step 0', recordedBy: 1, recordedAt: new Date(clock.now()).toISOString() });
   }
 
@@ -181,15 +206,24 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
       }
     }
     const policy = state.policy.inForce;
-    if (o2 === 'present' && policy && (options.recipientHoldsRole ?? true)) {
+    const escalates = options.recipientHoldsRole ?? true;
+    const holderNowhere = !escalates && !options.recipientAtParent;
+    if (o2 === 'present' && policy && (escalates || (holderNowhere && (options.heldAttempts ?? true)))) {
       for (const row of state.deviations.values()) {
         if (row.studyId !== site || row.status !== 'open') continue;
         const events = state.events.get(row.deviationId)!;
         const escalate = (clockKey: string) => {
+          if (!escalates) {
+            // Nobody holds the role: O-2 holds the level and retries it (acc_deviation_escalation_attempt), creating no task.
+            const attempts = (state.attempts.get(row.deviationId) ?? []).filter(attempt => attempt.clockKey !== clockKey);
+            state.attempts.set(row.deviationId, [...attempts, { clockKey, level: 1, status: 'held', code: 'RECIPIENT_UNAVAILABLE', lastAttemptAt: new Date(now).toISOString() }]);
+            return;
+          }
           const taskId = id();
           state.tasks.push({ taskId, taskType: 'deviation_escalation', title: 'DEVIATION_ESCALATION', description: `clock ${clockKey} level 1`, studyId: site,
             entityType: 'protocol_deviation', entityId: row.deviationId, metadata: { clockKey, level: 1 } });
-          appendEvent(row.deviationId, null, 'escalate', { clockKey, level: 1, taskId, recipientRole: plan.escalation.recipientRole, reason: 'ESCALATION_DUE' });
+          appendEvent(row.deviationId, null, 'escalate', { clockKey, level: 1, taskId, recipientRole: options.escalationRecipientRole ?? plan.escalation.recipientRole,
+            recipientUserIds: options.escalationRecipientUserIds ?? [recipientUserId], reason: 'ESCALATION_DUE' });
         };
         if (!events.some(event => event.kind === 'assess') && !events.some(event => event.kind === 'escalate' && event.payload.clockKey === 'assessment')
           && now - Date.parse(row.dateCreated) >= 60 * 60_000) escalate('assessment');
@@ -252,9 +286,14 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
       session.lastUsed = clock.now();
       const user = byId.get(session.userId)!;
       if (method === 'POST' && path === '/api/auth/logout') { session.revoked = true; return send(200, { success: true }); }
+      if (options.revokeFirstSessionOf === user.username && !revokedOnce && ++requestsBeforeRevocation === 2) {
+        revokedOnce = true; session.revoked = true; unauthorized++;
+        return send(401, { success: false, error: { code: 'SESSION_REVOKED', message: 'Session has been revoked' } });
+      }
 
       const signed = typeof body.signaturePassword === 'string' && body.signaturePassword !== '';
       const signature = (meaning: string) => (signed ? { verified: true, signerId: user.userId, signerUsername: user.username, meaning, signedAt: new Date(clock.now()).toISOString() } : null);
+      if (signed && (options.signatureRefused ?? []).includes(user.username)) return refuse(401, 'Invalid electronic signature credentials');
       if (signed && (body.signatureUsername !== user.username || body.signaturePassword !== user.password)) return refuse(401, 'Invalid electronic signature credentials');
       const engineOff = () => refuse(503, 'The automatic protocol-deviation engine is disabled. Set ENABLE_DEVIATION_ENGINE=true to enable it. Deviations can still be logged manually.');
       const trainingRefused = () => (options.trainingRefused ?? []).includes(user.username)
@@ -384,7 +423,7 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
         if (method === 'GET' && rest === '') return ok(serialize(row));
         if (method === 'GET' && rest === '/corrective-action') {
           const assessment = inForceAssessment(deviationId);
-          return ok({ revision, sourceHash, history: events, ...(o1 === 'absent' ? {} : { assessment: assessment ? {
+          return ok({ revision, sourceHash, history: events, escalationAttempts: state.attempts.get(deviationId) ?? [], ...(o1 === 'absent' ? {} : { assessment: assessment ? {
             eventId: assessment.eventId, revision: assessment.revision, disposition: assessment.payload.disposition, importance: assessment.payload.importance ?? null,
             assessedBy: { userId: assessment.actorId, username: assessment.actorUsername }, assessedAt: assessment.createdAt, signature: assessment.payload.signature } : null }) });
         }
@@ -440,10 +479,11 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
 
       // Sites: staff, lifecycle evidence, milestones and retained documents.
       if (method === 'GET' && path === `/api/sites/${site}/staff`) {
-        return ok([{ username: plan.escalation.recipientUsername, role: (options.recipientHoldsRole ?? true) ? plan.escalation.recipientRole : 'viewer' }]);
+        if ((options.siteStaffStatus ?? 200) !== 200) return refuse(options.siteStaffStatus!, 'Insufficient permissions');
+        return ok([{ ...recipientEntry, role: (options.recipientHoldsRole ?? true) ? plan.escalation.recipientRole : 'viewer' }]);
       }
       if (method === 'GET' && path === `/api/sites/${root}/staff`) {
-        return ok(options.recipientAtParent ? [{ username: plan.escalation.recipientUsername, role: plan.escalation.recipientRole }] : []);
+        return ok([...platformStaff, ...(options.recipientAtParent ? [recipientEntry] : [])]);
       }
       if (method === 'POST' && (match = new RegExp(`^/api/sites/study/${site}/lifecycle/evidence/([0-9a-f-]{36})$`).exec(path))) { state.uploads.add(match[1]); return ok({ fileId: match[1] }); }
       if (path === `/api/sites/study/${root}/milestones`) {
