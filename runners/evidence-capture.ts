@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'node:crypto';
-import { currentReleaseIdentity, releaseStamp, type ReleaseStamp } from './release-identity';
+import {
+  currentReleaseIdentity, isReleaseStamp, releaseComponent, releaseComponentText, releaseStamp, RELEASE_COMPONENTS, type ReleaseStamp,
+} from './release-identity';
 
 export interface EvidenceResult {
   testCaseId: string;
@@ -23,7 +25,7 @@ export interface EvidenceResult {
   captureError?: string;
   /** Ordered command/readback exchanges for a multi-request qualification step. */
   relatedEvidence?: EvidenceResult[];
-  /** The API, UI and core release the record was produced against (stamped by saveEvidence). */
+  /** The API, UI and core release (version 2: and training) the record was produced against (stamped by saveEvidence). */
   releaseUnderTest?: ReleaseStamp;
 }
 
@@ -84,8 +86,7 @@ function requireEvidenceResults(value: unknown, source: string): asserts value i
       && (typeof item.captureError !== 'string' || item.passed)) {
       throw new Error(`Invalid evidence in ${source}: capture failure cannot pass`);
     }
-    if (item.releaseUnderTest !== undefined && (!isRecord(item.releaseUnderTest)
-      || typeof item.releaseUnderTest.identityHash !== 'string' || !/^[0-9a-f]{64}$/.test(item.releaseUnderTest.identityHash))) {
+    if (item.releaseUnderTest !== undefined && !isReleaseStamp(item.releaseUnderTest)) {
       throw new Error(`Invalid evidence in ${source}: malformed release identity at index ${index}`);
     }
     if (seen.has(item.testCaseId)) throw new Error(`Invalid evidence in ${source}: duplicate test case ${item.testCaseId}`);
@@ -223,8 +224,10 @@ export function saveEvidence(
     ...(identity
       ? [
         `| Release Identity | ${identity.identityHash} |`,
-        ...(['api', 'ui', 'core'] as const).map(name =>
-          `| Release ${name.toUpperCase()} | ${identity.components[name].kind} ${identity.components[name].identity} (${identity.components[name].source}) |`),
+        ...RELEASE_COMPONENTS.map(name => {
+          const component = releaseComponent(identity, name);
+          return `| Release ${name.toUpperCase()} | ${releaseComponentText(component)}${component ? ` (${component.source})` : ''} |`;
+        }),
         `| Target Reported Version | ${identity.target?.version ?? (identity.target?.error ? `unavailable: ${identity.target.error}` : 'not reported')} |`,
         `| Framework Commit | ${identity.framework.commit ?? 'unknown'}${identity.framework.dirty ? ' (uncommitted changes)' : ''} |`,
       ]

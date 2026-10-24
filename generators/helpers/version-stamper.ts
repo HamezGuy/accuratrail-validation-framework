@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { currentReleaseIdentity, type ReleaseIdentity } from '../../runners/release-identity';
+import {
+  currentReleaseIdentity, releaseComponent, releaseComponentText, RELEASE_COMPONENTS, type ReleaseIdentity,
+} from '../../runners/release-identity';
 import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
 
 export interface DocumentMeta {
@@ -11,7 +13,7 @@ export interface DocumentMeta {
   outputDir: string;
   /** The validation framework's own commit, not the system under test. */
   gitHash?: string;
-  /** API, UI and core release under test, when the run was given one. */
+  /** API, UI, core and (version 2) training release under test, when the run was given one. */
   releaseIdentity?: ReleaseIdentity;
 }
 
@@ -108,9 +110,9 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
   const release = meta.releaseIdentity;
   if (release) {
     lines.push(`| Release Identity | ${release.identityHash} |`);
-    for (const name of ['api', 'ui', 'core'] as const) {
-      const component = release.components[name];
-      lines.push(`| Release ${name.toUpperCase()} | ${component.kind} ${component.identity} |`);
+    // A version 1 identity names no training release, so its row reads "not recorded".
+    for (const name of RELEASE_COMPONENTS) {
+      lines.push(`| Release ${name.toUpperCase()} | ${releaseComponentText(releaseComponent(release, name))} |`);
     }
   } else {
     lines.push('| Release Identity | not recorded: no release under test was supplied |');
