@@ -41,6 +41,38 @@ export type EvidenceCategory = typeof EVIDENCE_CATEGORIES[number];
 /** An outcome code names a refusal or setup condition, for example FEATURE_ABSENT_AT_RELEASE. */
 export const OUTCOME_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
 
+/** A protocol case of a case registry: a prefix and three digits (IQ-001, OQ-206, PQ-012, PQT-005, SEC-003).
+ * Every other row (OQ-AUTH, OQ-NATIVE-FIXTURE, PQ-LOGOUT, BENCHMARK-RECONSTRUCTION, P13-HTTP-...) is bookkeeping:
+ * setup, a session, cleanup or an import step. */
+export const REGISTRY_CASE_ID = /^[A-Z][A-Z0-9]*-\d{3}$/;
+
+/** Registry cases counted apart from bookkeeping rows (IR-416), so a pass rate counts protocol cases only
+ * and a bookkeeping row that did not pass is still shown. The category totals of a summary and of a
+ * package manifest keep counting every row. */
+export interface RegistryCounts {
+  cases: number;
+  passed: number;
+  failed: number;
+  bookkeeping: number;
+  bookkeepingNotPassed: number;
+}
+
+export function registryCounts(results: ReadonlyArray<{ testCaseId: string; passed: boolean }>): RegistryCounts {
+  const cases = results.filter(result => REGISTRY_CASE_ID.test(result.testCaseId));
+  const bookkeeping = results.filter(result => !REGISTRY_CASE_ID.test(result.testCaseId));
+  const passed = cases.filter(result => result.passed).length;
+  return {
+    cases: cases.length, passed, failed: cases.length - passed,
+    bookkeeping: bookkeeping.length, bookkeepingNotPassed: bookkeeping.filter(result => !result.passed).length,
+  };
+}
+
+/** "194 of 205 registry cases passed; 11 bookkeeping rows, 1 not passed". */
+export function registryCountsText(counts: RegistryCounts): string {
+  return `${counts.passed} of ${counts.cases} registry cases passed`
+    + (counts.bookkeeping ? `; ${counts.bookkeeping} bookkeeping rows (setup, sessions, cleanup, import steps), ${counts.bookkeepingNotPassed} not passed` : '');
+}
+
 /** Opens every record, summary and document of a synthetic run (VD-3, D-22). */
 export const SYNTHETIC_NOTICE = 'SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval.';
 /** Stated on every record and document of a run that is not retained in a sealed package. */
@@ -343,6 +375,8 @@ export function saveEvidence(
     `| Failed | ${failed} |`,
     `| Manual | ${manual} |`,
     `| Pass Rate | ${summary.passRate} |`,
+    // The rows above count every row; the registry cases are counted apart (IR-416).
+    `| Registry Cases | ${registryCountsText(registryCounts(results))} |`,
     ...(identity
       ? [
         `| Release Identity | ${identity.identityHash} |`,

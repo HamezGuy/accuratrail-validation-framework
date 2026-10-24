@@ -4,10 +4,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  loadEvidence, saveEvidence, manualResult, captureWithExpectedStatus, captureWithValidator, type EvidenceResult,
+  loadEvidence, saveEvidence, manualResult, captureWithExpectedStatus, captureWithValidator, registryCounts, registryCountsText,
+  REGISTRY_CASE_ID, type EvidenceResult,
 } from '../runners/evidence-capture';
 import { loadRunnerEvidence, tryLoadEvidence } from '../generators/helpers/evidence-linker';
 import { generate as generateExecutionRecords } from '../generators/20-test-execution-records';
+import { generate as generateValidationSummary } from '../generators/12-validation-summary';
 import { generate as generateUrs } from '../generators/03-user-requirements-spec';
 import { generate as generateFrs } from '../generators/04-functional-requirements-spec';
 import { generate as generateRiskAssessment } from '../generators/05-risk-assessment';
@@ -50,6 +52,37 @@ test('all evidence readers use the saved pass/fail records without losing metada
   assert.deepEqual(loadRunnerEvidence(directory).get('OQ-001'), records[0]);
   assert.deepEqual(tryLoadEvidence(directory, 'iq'), { total: 0, pass: 0, fail: 0 });
   generateExecutionRecords(directory, directory);
+});
+
+test('registry cases are counted apart from bookkeeping rows, and the category totals keep every row (IR-416)', t => {
+  const directory = workspace(t);
+  const rows = [
+    result(), result({ testCaseId: 'OQ-206', passed: false, notes: 'Synthetic failure' }),
+    result({ testCaseId: 'OQ-AUTH' }), result({ testCaseId: 'OQ-NATIVE-FIXTURE', passed: false, notes: 'Synthetic setup failure' }),
+    result({ testCaseId: 'OQ-RUN-LOGOUT' }),
+  ];
+  assert.deepEqual(registryCounts(rows), { cases: 2, passed: 1, failed: 1, bookkeeping: 3, bookkeepingNotPassed: 1 });
+  assert.equal(registryCountsText(registryCounts(rows)),
+    '1 of 2 registry cases passed; 3 bookkeeping rows (setup, sessions, cleanup, import steps), 1 not passed');
+  for (const id of ['IQ-001', 'PQT-005', 'SEC-010', 'PERF-003']) assert.ok(REGISTRY_CASE_ID.test(id), id);
+  for (const id of ['PQ-LOGOUT', 'BENCHMARK-RECONSTRUCTION', 'P13-HTTP-protocol', 'OQ-0011']) assert.ok(!REGISTRY_CASE_ID.test(id), id);
+  saveEvidence(directory, 'oq', rows);
+  saveEvidence(directory, 'pq', [result({ testCaseId: 'PQ-001' }), result({ testCaseId: 'PQ-LOGOUT' })]);
+  // The summary's totals are unchanged: every row.
+  const summary = JSON.parse(fs.readFileSync(path.join(directory, 'evidence', 'oq', 'oq-summary.json'), 'utf8'));
+  assert.deepEqual([summary.total, summary.passed, summary.failed], [5, 3, 2]);
+  assert.match(fs.readFileSync(path.join(directory, 'evidence', 'oq', 'oq-execution-report.md'), 'utf8'),
+    /\| Registry Cases \| 1 of 2 registry cases passed; 3 bookkeeping rows \(setup, sessions, cleanup, import steps\), 1 not passed \|/);
+  generateValidationSummary(directory, directory);
+  const vsr = fs.readFileSync(path.join(directory, '12-validation-summary.md'), 'utf8');
+  assert.match(vsr, /\| Operational Qualification \(OQ\) \| 2 \| 1 \| 1 \| 50\.0% \| 3 \(1 not passed\) \|/);
+  assert.match(vsr, /\| Performance Qualification \(PQ\) \| 1 \| 1 \| 0 \| 100\.0% \| 1 \(0 not passed\) \|/);
+  assert.match(vsr, /\*\*Overall:\*\* 3 registry cases executed, 2 passed, 1 failed \(66\.7% pass rate\); 4 bookkeeping rows \(setup, sessions, cleanup\) are counted apart, 1 of them not passed/);
+  generateExecutionRecords(directory, directory);
+  const records = fs.readFileSync(path.join(directory, '20-test-execution-records.md'), 'utf8');
+  assert.match(records, /\| Operational Qualification \(OQ\) \| 5 \| 3 \| 2 \| 60\.0% \| 1 of 2 registry cases passed; 3 bookkeeping rows/);
+  assert.match(records, /- \*\*Registry Cases:\*\* 2 of 3 registry cases passed; 4 bookkeeping rows \(setup, sessions, cleanup, import steps\), 1 not passed\n/);
+  assert.match(records, /- \*\*Test Execution Date:\*\* 2026-09-21T00:00:00\.000Z \(UTC, from the record timestamps\)\n/);
 });
 
 for (const [label, payload] of Object.entries({

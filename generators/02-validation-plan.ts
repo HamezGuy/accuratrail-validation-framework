@@ -281,7 +281,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['Role', 'Name', 'Responsibilities'],
     [
       ['QA Lead', '________________', 'Owns the VMP; reviews and approves all validation deliverables; ' +
-        'conducts deviation reviews; signs final validation summary report'],
+        'conducts deviation reviews; approves the final validation summary report in the eTMF, as a governance decision '
+        + 'on the filing of its package (TMF-FILING.md); no document of the package carries a signature'],
       ['Project Manager', '________________', 'Manages validation schedule and resources; coordinates ' +
         'between QA, development, and operations; tracks deviations and CAPAs'],
       ['Lead Developer', '________________', 'Executes IQ/OQ test scripts; provides technical ' +

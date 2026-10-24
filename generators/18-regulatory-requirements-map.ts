@@ -18,6 +18,28 @@ import {
 
 const DOC_DATE = SYSTEM_INFO.buildDate;
 
+/** Where TLS ends in production: the load balancer of libreclinicaapi production-deployment/DEPLOY_ECS.md:3, :16
+ * in front of the ECS API service, and Vercel for the frontend. No Nginx is part of the documented deployment. */
+const TLS_TERMINATION = 'Infrastructure (AWS ALB accuratrials-alb for the API; Vercel for the frontend)';
+/** The API sets HSTS and the other security headers itself (helmet, libreclinicaapi src/app.ts); Vercel serves the frontend. */
+const HSTS_SOURCE = 'API Helmet middleware (libreclinicaapi src/app.ts); Vercel for the frontend';
+
+/** The IQ appendix rows (Appendix B): each regulatory section with the IQ cases whose protocol entry
+ * (generators/07-iq-protocol.ts) cites it, so the rows match the cases. */
+export const IQ_APPENDIX_ROWS: ReadonlyArray<readonly [string, string, string]> = [
+  ['IQ-001, IQ-002, IQ-004, IQ-007, IQ-009, IQ-010, IQ-015, IQ-017, IQ-021, IQ-023, IQ-025, IQ-029, IQ-033, IQ-034, IQ-035', '§11.10(a)',
+    'Release version, API health, runtime and dependencies, database version and access, data locks, referential integrity, rate limiting, '
+    + 'environment settings, error handling, segregation from production, configuration under test, production settings and vendored receipts'],
+  ['IQ-019', '§11.10(c)', 'HTTPS and TLS on the target under test'],
+  ['IQ-013, IQ-020, IQ-022, IQ-031, IQ-032', '§11.10(d)', 'User tables, the JWT secret from the environment, CORS origins, authentication on data routes and the password policy'],
+  ['IQ-011, IQ-014, IQ-024, IQ-030', '§11.10(e)', 'Audit trail and query tables, application logging and UTC time'],
+  ['IQ-012', '§11.50, §11.70', 'Electronic signature table'],
+  ['IQ-026, IQ-028', 'HIPAA §164.308(a)(7)', 'Backup service and backup schedule'],
+  ['IQ-027', 'HIPAA §164.312(a)(2)(iv)', 'AES-256 encryption of backups'],
+  ['IQ-032', 'HIPAA §164.312(d)', 'Password policy for every account'],
+  ['IQ-019', 'HIPAA §164.312(e)(1)', 'HTTPS and TLS on the target under test'],
+];
+
 interface RegulatoryControl {
   control: string;
   file: string;
@@ -304,12 +326,12 @@ function buildPart11SubpartB_Continued(): RegulatorySection[] {
         'measures such as document encryption and use of appropriate digital signature standards to ' +
         'ensure, as necessary under the circumstances, record authenticity, integrity, and confidentiality.',
       controls: [
-        { control: 'TLS 1.2+ enforcement', file: 'Infrastructure (Docker/Nginx)', description: 'All data in transit encrypted via TLS 1.2 or higher; HTTPS enforced in all environments' },
+        { control: 'TLS 1.2+ enforcement', file: TLS_TERMINATION, description: 'All data in transit encrypted via TLS 1.2 or higher; HTTPS enforced in all environments' },
         { control: 'AES-256 encryption at rest', file: 'backup/encryption.service.ts', description: 'All backup data and sensitive fields encrypted at rest with AES-256-GCM; key rotation supported' },
         { control: 'JWT cryptographic signing', file: 'auth.middleware.ts', description: 'Tokens signed with HMAC-SHA256; prevents token forgery and ensures authenticity' },
         { control: 'SHA-256 record hashing', file: 'esignature.service.ts', description: 'Cryptographic hash binding e-signatures to exact record state at signing time' },
         { control: 'CORS restriction policy', file: 'app.ts', description: 'Cross-Origin Resource Sharing restricted to authorized frontend domains only' },
-        { control: 'HSTS security headers', file: 'Infrastructure (Nginx/Vercel)', description: 'HTTP Strict Transport Security, CSP, X-Frame-Options, and X-Content-Type-Options headers' },
+        { control: 'HSTS security headers', file: HSTS_SOURCE, description: 'HTTP Strict Transport Security, CSP, X-Frame-Options, and X-Content-Type-Options headers' },
       ],
       status: 'Compliant — TLS in transit, AES-256 at rest, cryptographic signatures, and security headers enforced',
     },
@@ -664,7 +686,7 @@ function buildHIPAASections(): RegulatorySection[] {
         'Implement a mechanism to encrypt and decrypt electronic protected health information.',
       controls: [
         { control: 'AES-256-GCM encryption at rest', file: 'backup/encryption.service.ts', description: 'All backup data encrypted with AES-256-GCM authenticated encryption; key rotation supported' },
-        { control: 'TLS 1.2+ in transit', file: 'Infrastructure (Nginx/Docker)', description: 'All network communication encrypted with TLS 1.2 or higher; weak ciphers disabled' },
+        { control: 'TLS 1.2+ in transit', file: TLS_TERMINATION, description: 'All network communication encrypted with TLS 1.2 or higher; weak ciphers disabled' },
         { control: 'Bcrypt password hashing', file: 'auth.service.ts', description: 'Passwords hashed with bcrypt (cost factor 12); never stored or transmitted in plaintext' },
         { control: 'Database connection encryption', file: 'database.ts', description: 'PostgreSQL connections use SSL/TLS encryption; unencrypted connections rejected' },
         { control: 'Key management', file: 'backup/encryption.service.ts', description: 'Encryption keys stored separately from encrypted data; key rotation without data re-encryption' },
@@ -732,12 +754,12 @@ function buildHIPAASections(): RegulatorySection[] {
         'Implement technical security measures to guard against unauthorized access to electronic ' +
         'protected health information that is being transmitted over an electronic communications network.',
       controls: [
-        { control: 'TLS 1.2+ enforcement', file: 'Infrastructure (Nginx)', description: 'All API and frontend traffic encrypted via TLS 1.2+; TLS 1.0 and 1.1 disabled' },
-        { control: 'HSTS headers', file: 'Infrastructure (Nginx/Vercel)', description: 'HTTP Strict Transport Security header forces browsers to use HTTPS exclusively' },
+        { control: 'TLS 1.2+ enforcement', file: TLS_TERMINATION, description: 'All API and frontend traffic encrypted via TLS 1.2+; TLS 1.0 and 1.1 disabled' },
+        { control: 'HSTS headers', file: HSTS_SOURCE, description: 'HTTP Strict Transport Security header forces browsers to use HTTPS exclusively' },
         { control: 'Secure cookie flags', file: 'auth.service.ts', description: 'All cookies set with Secure, HttpOnly, and SameSite flags preventing interception' },
         { control: 'CORS origin restriction', file: 'app.ts', description: 'Cross-Origin Resource Sharing limited to authorized domains; blocks unauthorized API access' },
         { control: 'Certificate pinning guidance', file: 'COMPLIANCE_DOCUMENTATION/', description: 'Deployment documentation specifies certificate management and renewal procedures' },
-        { control: 'API request encryption', file: 'Infrastructure (Nginx)', description: 'All request/response payloads encrypted in transit; no plaintext ePHI on network' },
+        { control: 'API request encryption', file: TLS_TERMINATION, description: 'All request/response payloads encrypted in transit; no plaintext ePHI on network' },
       ],
       status: 'Compliant — TLS 1.2+ with HSTS, secure cookies, and CORS restrictions guard all transmissions',
     },
@@ -1407,13 +1429,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += 'to each section, with what they verify.\n\n';
   c += section(2, 'Installation Qualification (IQ) Test Cases');
   c += '\n';
-  c += markdownTable(['Test Case Range', 'Regulatory Section(s)', 'Verification Scope'], [
-    ['IQ-001 through IQ-035', '§11.10(a)', 'System installation verification; database schema integrity; service deployment validation; configuration under test; production settings and vendored receipts'],
-    ['IQ-025, IQ-026', '§11.10(c)', 'Backup infrastructure installation verification; encryption library deployment'],
-    ['IQ-027, IQ-028', '§11.30', 'TLS certificate installation; encryption at rest configuration verification'],
-    ['IQ-005, IQ-006', '§11.10(d)', 'Authentication system installation; RBAC configuration deployment'],
-    ['IQ-009, IQ-010', '§11.10(e)', 'Audit trail system installation; hash chain initialization verification'],
-  ]);
+  c += markdownTable(['Test Cases', 'Regulatory Section(s)', 'Verification Scope'], IQ_APPENDIX_ROWS.map(row => [...row]));
+  c += 'IQ-003, IQ-005, IQ-006, IQ-008, IQ-016 and IQ-018 cite no regulatory section in the IQ protocol.\n';
   c += '\n';
   c += section(2, 'Operational Qualification (OQ) Test Cases');
   c += '\n';

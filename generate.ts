@@ -6,9 +6,9 @@ import {
   observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, requireTrainingRelease, setReleaseIdentity,
   type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
-import { approvalBlock } from './generators/helpers/markdown-writer';
+import { approvalBlock, masterEvidenceIndexHeader, registryCasesText } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, evidenceNoticeLines, markDevelopmentRun,
+  benchmarkRunInputs, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, markDevelopmentRun,
   sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
 import { ALL_OQ_SUITES, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
@@ -625,9 +625,11 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     // Re-run summary and gate checklist to incorporate evidence
     console.log('--- Re-generating evidence-dependent documents ---');
     // The regulatory map reads the retained cases too (its Part 11, HIPAA, ICH E6(R3) and TA3 use verification).
+    // The IQ, OQ and PQ protocols name the target the release identity observed, which is set only after phase 2 (RF-009).
     const evidenceDependentGens = GENERATORS.filter(
       (g) => g.name === 'traceability-matrix' || g.name === 'validation-summary' || g.name === 'release-gate-checklist' || g.name === 'csa-feature-assurance' || g.name === 'test-execution-records'
         || g.name === 'platform-validation-summary' || g.name === 'regulatory-requirements-map'
+        || g.name === 'iq-protocol' || g.name === 'oq-protocol' || g.name === 'pq-protocol'
     );
     for (const gen of evidenceDependentGens) {
       try {
@@ -690,21 +692,13 @@ function generateMasterEvidenceIndex(outputDir: string): void {
 
   const categories = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'];
   const lines: string[] = [
-    ...evidenceNoticeLines(),
-    '# Master Test Execution Evidence Index',
-    '',
-    `| Field | Value |`,
-    `|-------|-------|`,
-    `| Generated | ${new Date().toISOString()} |`,
-    `| System | AccuraTrial Electronic Data Capture System |`,
-    `| Classification | Confidential — Regulatory |`,
-    '',
-    '---',
-    '',
+    // The run's notices, the metadata and the ICH E6(R3) status row every document carries (RF-010).
+    ...masterEvidenceIndexHeader(new Date().toISOString()),
     '## Evidence Summary',
     '',
-    '| Category | Total | Passed | Failed | Manual | Pass Rate | Report |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    // Total to Pass Rate count every row; Registry Cases counts the protocol cases apart from bookkeeping rows (IR-416).
+    '| Category | Total | Passed | Failed | Manual | Pass Rate | Registry Cases | Report |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
   ];
 
   let grandTotal = 0;
@@ -722,15 +716,20 @@ function generateMasterEvidenceIndex(outputDir: string): void {
       const failed = (summary.failed as number) || 0;
       const manual = (summary.manual as number) || 0;
       const rate = summary.passRate as string || 'N/A';
+      const rows = Array.isArray(summary.results)
+        ? (summary.results as unknown[]).filter((row): row is { testCaseId: string; passed: boolean } =>
+          typeof row === 'object' && row !== null && typeof (row as Record<string, unknown>).testCaseId === 'string'
+          && typeof (row as Record<string, unknown>).passed === 'boolean')
+        : [];
       grandTotal += total;
       grandPassed += passed;
       grandFailed += failed;
-      lines.push(`| ${cat.toUpperCase()} | ${total} | ${passed} | ${failed} | ${manual} | ${rate} | evidence/${cat}/${cat}-execution-report.md |`);
+      lines.push(`| ${cat.toUpperCase()} | ${total} | ${passed} | ${failed} | ${manual} | ${rate} | ${registryCasesText(rows)} | evidence/${cat}/${cat}-execution-report.md |`);
     } catch { /* skip */ }
   }
 
   const grandRate = grandTotal > 0 ? `${((grandPassed / grandTotal) * 100).toFixed(1)}%` : 'N/A';
-  lines.push(`| **TOTAL** | **${grandTotal}** | **${grandPassed}** | **${grandFailed}** | — | **${grandRate}** | — |`);
+  lines.push(`| **TOTAL** | **${grandTotal}** | **${grandPassed}** | **${grandFailed}** | — | **${grandRate}** | — | — |`);
   lines.push('');
   lines.push('## Release Under Test');
   lines.push('');

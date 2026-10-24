@@ -11,8 +11,9 @@ import {
   hr,
 } from './helpers/markdown-writer';
 import {
-  EvidenceStats, loadRunnerEvidence, mappedCaseState, runnerCaseCheck, tryLoadEvidence, type RunnerResult,
+  loadRunnerEvidence, mappedCaseState, runnerCaseCheck, tryLoadEvidence, type RunnerResult,
 } from './helpers/evidence-linker';
+import { loadEvidence, registryCounts, type RegistryCounts } from '../runners/evidence-capture';
 import { complianceRow, E6_R3_MAPPINGS, HIPAA_MAPPINGS, PART11_MAPPINGS, TA3_USE_MAPPINGS } from './helpers/compliance-mapping';
 import { DEVIATION_DETECTION_CONTRACT, TA3_PQ_CASES } from '../config/ta3-pq-cases';
 
@@ -34,18 +35,20 @@ function pqtStatus(testCaseId: string, evidenceMap: Map<string, RunnerResult>): 
   }
 }
 
-function formatEvidenceRow(label: string, stats: EvidenceStats): string[] {
-  if (stats.total === 0) {
-    return [label, '[To be completed after test execution]', '', '', ''];
+/** A qualification's registry cases, with its bookkeeping rows (setup, sessions, cleanup) counted apart (IR-416). */
+function formatEvidenceRow(label: string, stats: RegistryCounts): string[] {
+  if (stats.cases + stats.bookkeeping === 0) {
+    return [label, '[To be completed after test execution]', '', '', '', ''];
   }
-  const passRate = stats.total > 0 ? ((stats.pass / stats.total) * 100).toFixed(1) + '%' : 'N/A';
-  return [label, String(stats.total), String(stats.pass), String(stats.fail), passRate];
+  const passRate = stats.cases > 0 ? ((stats.passed / stats.cases) * 100).toFixed(1) + '%' : 'N/A';
+  return [label, String(stats.cases), String(stats.passed), String(stats.failed), passRate,
+    stats.bookkeeping ? `${stats.bookkeeping} (${stats.bookkeepingNotPassed} not passed)` : '0'];
 }
 
 export function generate(outputDir: string, _workspaceRoot: string): void {
-  const iqStats = tryLoadEvidence(outputDir, 'iq');
-  const oqStats = tryLoadEvidence(outputDir, 'oq');
-  const pqStats = tryLoadEvidence(outputDir, 'pq');
+  const iqStats = registryCounts(loadEvidence(outputDir, 'iq'));
+  const oqStats = registryCounts(loadEvidence(outputDir, 'oq'));
+  const pqStats = registryCounts(loadEvidence(outputDir, 'pq'));
   const benchmarkStats = tryLoadEvidence(outputDir, 'benchmark');
   const p13Stats = tryLoadEvidence(outputDir, 'p13');
   const evidenceMap = loadRunnerEvidence(outputDir);
@@ -155,7 +158,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += 'The Installation Qualification verified that all system components are installed correctly and that the ';
   content += 'installation environment meets the specified requirements. IQ test cases covered:\n\n';
   content += '- Infrastructure verification (Docker containers, database connectivity, network configuration)\n';
-  content += '- Dependency verification (Node.js version, npm packages, Python environment)\n';
+  content += '- Dependency verification (Node.js version, npm packages, the vendored shared-types archives and their receipts)\n';
   content += '- Database schema verification (all required tables, indexes, constraints exist)\n';
   content += '- Migration verification (all migrations applied successfully and idempotently)\n';
   content += '- API health check and endpoint availability\n';
@@ -197,7 +200,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += section(2, 'Validation Results Summary');
 
   content += markdownTable(
-    ['Qualification', 'Total Tests', 'Passed', 'Failed', 'Pass Rate'],
+    ['Qualification', 'Registry Cases', 'Passed', 'Failed', 'Pass Rate', 'Bookkeeping Rows'],
     [
       formatEvidenceRow('Installation Qualification (IQ)', iqStats),
       formatEvidenceRow('Operational Qualification (OQ)', oqStats),
@@ -206,13 +209,18 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   );
   content += '\n';
 
-  const totalTests = iqStats.total + oqStats.total + pqStats.total;
-  const totalPass = iqStats.pass + oqStats.pass + pqStats.pass;
-  const totalFail = iqStats.fail + oqStats.fail + pqStats.fail;
+  const totalTests = iqStats.cases + oqStats.cases + pqStats.cases;
+  const totalPass = iqStats.passed + oqStats.passed + pqStats.passed;
+  const totalFail = iqStats.failed + oqStats.failed + pqStats.failed;
+  const bookkeeping = iqStats.bookkeeping + oqStats.bookkeeping + pqStats.bookkeeping;
+  const bookkeepingNotPassed = iqStats.bookkeepingNotPassed + oqStats.bookkeepingNotPassed + pqStats.bookkeepingNotPassed;
 
   if (totalTests > 0) {
     const overallRate = ((totalPass / totalTests) * 100).toFixed(1);
-    content += `**Overall:** ${totalTests} tests executed, ${totalPass} passed, ${totalFail} failed (${overallRate}% pass rate)\n\n`;
+    content += `**Overall:** ${totalTests} registry cases executed, ${totalPass} passed, ${totalFail} failed (${overallRate}% pass rate)`
+      + `${bookkeeping ? `; ${bookkeeping} bookkeeping rows (setup, sessions, cleanup) are counted apart, ${bookkeepingNotPassed} of them not passed` : ''}\n\n`;
+  } else if (bookkeeping > 0) {
+    content += `**Overall:** no registry case was recorded; ${bookkeeping} bookkeeping rows (setup, sessions, cleanup), ${bookkeepingNotPassed} of them not passed\n\n`;
   } else {
     content += '**Overall:** [To be completed after test execution]\n\n';
   }

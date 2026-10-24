@@ -5,8 +5,12 @@ import * as path from 'node:path';
 import { SYSTEM_INFO } from '../config/system-info';
 import { generate as generateOqProtocol } from '../generators/08-oq-protocol';
 import { generate as generatePqProtocol } from '../generators/09-pq-protocol';
-import { generate as generateExecutionRecords } from '../generators/20-test-execution-records';
-import { APPROVAL_STATEMENT, approvalBlock } from '../generators/helpers/markdown-writer';
+import { executionPeriod, generate as generateExecutionRecords } from '../generators/20-test-execution-records';
+import { generate as generateIqProtocol, iqProtocolCases } from '../generators/07-iq-protocol';
+import { IQ_APPENDIX_ROWS } from '../generators/18-regulatory-requirements-map';
+import { APPROVAL_STATEMENT, approvalBlock, e6r3StatusRow, masterEvidenceIndexHeader } from '../generators/helpers/markdown-writer';
+import { recordedTargetUrl, systemVersionText } from '../generators/helpers/version-stamper';
+import { E6_R3_SECTION_STATUS, ICH_E6_R3 } from '../config/regulatory-scope';
 import { releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { generateAllDocuments, temporaryDirectory } from './generated-documents';
 
@@ -89,4 +93,96 @@ test('every approval block states that approval is recorded in the eTMF and carr
     assert.doesNotMatch(content, SIGNATURE_LINE, file);
     if (file.startsWith('templates/')) assert.ok(content.replace(/\r?\n/g, ' ').includes(APPROVAL_STATEMENT), file);
   }
+});
+
+test('a failed version endpoint is stated as such, never as an observed target (RF-012)', t => {
+  t.after(() => setReleaseIdentity(undefined));
+  const identity = releaseIdentityFromInputs({ api: 'a'.repeat(40), ui: 'b'.repeat(40), core: `sha256:${'c'.repeat(64)}` });
+  const target = (extra: Record<string, unknown>) => recordedTargetUrl({
+    ...identity, target: { url: 'http://127.0.0.1:3109/health', observedAt: '2026-10-24T00:00:00.000Z', status: 0, ...extra },
+  });
+  assert.equal(target({ error: 'fetch failed | ECONNREFUSED\n127.0.0.1:3109' }),
+    'http://127.0.0.1:3109 (target named in the release identity; its version endpoint failed at 2026-10-24T00:00:00.000Z: fetch failed ECONNREFUSED 127.0.0.1:3109)');
+  assert.equal(target({ status: 503 }),
+    'http://127.0.0.1:3109 (target named in the release identity; its version endpoint failed at 2026-10-24T00:00:00.000Z: HTTP 503)');
+  assert.equal(target({ status: 200 }), 'http://127.0.0.1:3109 (target in the release identity, observed 2026-10-24T00:00:00.000Z)');
+  setReleaseIdentity({ ...identity, target: { url: 'http://127.0.0.1:3109/health', observedAt: '2026-10-24T00:00:00.000Z', status: 0, error: 'fetch failed' } });
+  const directory = temporaryDirectory(t, 'accura-failed-target-');
+  generateOqProtocol(directory, directory);
+  const protocol = fs.readFileSync(path.join(directory, '08-oq-protocol.md'), 'utf8');
+  assert.ok(protocol.includes('its version endpoint failed at 2026-10-24T00:00:00.000Z: fetch failed'), 'the OQ protocol states the failure');
+  assert.doesNotMatch(protocol, /target in the release identity, observed/);
+});
+
+test('the master evidence index opens with the ICH E6(R3) status row every document carries (RF-010)', () => {
+  const header = masterEvidenceIndexHeader('2026-10-24T00:00:00.000Z');
+  assert.ok(header.includes(e6r3StatusRow()), header.join('\n'));
+  assert.equal(e6r3StatusRow(), `| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`);
+  assert.deepEqual(header.slice(0, 5),
+    ['# Master Test Execution Evidence Index', '', '| Field | Value |', '|-------|-------|', '| Generated | 2026-10-24T00:00:00.000Z |']);
+  // generate.ts builds the index from this header, so the row cannot be dropped there.
+  assert.match(fs.readFileSync(path.join(root, 'generate.ts'), 'utf8'), /\.\.\.masterEvidenceIndexHeader\(new Date\(\)\.toISOString\(\)\),/);
+});
+
+test('the validation plan has QA approve in the eTMF; the records state the version label, the record dates and the framework that ran (RF-011, IR-041)', t => {
+  setReleaseIdentity(undefined);
+  t.after(() => setReleaseIdentity(undefined));
+  const documents = generateAllDocuments(temporaryDirectory(t, 'accura-docfix-'));
+  const plan = documents.get('02-validation-plan.md')!;
+  assert.doesNotMatch(plan, /signs final validation summary report/);
+  assert.match(plan, /approves the final validation summary report in the eTMF, as a governance decision on the filing of its package \(TMF-FILING\.md\)/);
+  // The version label the EDC API reports at /health, never the retired 1.0.0.
+  const apiVersion = fs.readFileSync(path.join(root, '..', 'libreclinicaapi', 'src', 'config', 'version.ts'), 'utf8');
+  assert.ok(apiVersion.includes(`APP_VERSION = '${SYSTEM_INFO.version}'`), apiVersion);
+  const records = documents.get('20-test-execution-records.md')!;
+  assert.match(records, /- \*\*System Version:\*\* 0\.1\.0 \(version label\); release under test not recorded: no release identity was supplied\n/);
+  assert.match(records, /- \*\*Test Execution Date:\*\* Not executed: no evidence record in this package\n/);
+  assert.doesNotMatch(records, /tests-live/);
+  assert.match(records, /executed by the runner of this validation framework that its category names/);
+  assert.equal(executionPeriod([]), 'Not executed: no evidence record in this package');
+  const at = (timestamp: string) => ({ timestamp } as Parameters<typeof executionPeriod>[0][number]);
+  assert.equal(executionPeriod([at('2026-10-24T03:00:00.000Z'), at('2026-10-23T22:15:00Z'), at('not a time')]),
+    '2026-10-23T22:15:00.000Z to 2026-10-24T03:00:00.000Z (UTC, from the record timestamps); 1 record(s) carry no valid timestamp');
+  const identity = releaseIdentityFromInputs({ api: 'a'.repeat(40), ui: 'none', core: 'none', training: 'none' });
+  assert.equal(systemVersionText(identity), `0.1.0 (version label); release under test ${identity.identityHash}`);
+  // The summary's IQ scope names no Python environment.
+  assert.doesNotMatch(documents.get('12-validation-summary.md')!, /Python/);
+});
+
+test('the regulatory map names the ALB, not Nginx, and its IQ appendix rows are the cases that cite each section', t => {
+  const map = generateAllDocuments(temporaryDirectory(t, 'accura-map-')).get('18-regulatory-requirements-map.md')!;
+  assert.doesNotMatch(map, /Nginx/);
+  assert.match(map, /Infrastructure \(AWS ALB accuratrials-alb for the API; Vercel for the frontend\)/);
+  // The sections a protocol entry cites, from its cfr text ("§11.10(c) — Protection of records; HIPAA §164.312(e)(1)").
+  const sectionsOf = (cfr: string) => cfr.split(';').map(part => part.replace(/ — .*$/, '').replace(/ Validation$/, '').trim());
+  const cited = (section: string) => iqProtocolCases().filter(entry => sectionsOf(entry.cfr).includes(section)).map(entry => entry.id);
+  for (const [ids, section] of IQ_APPENDIX_ROWS) {
+    assert.deepEqual(ids.split(', '), cited(section), `${section}: the row lists exactly the cases whose protocol entry cites it`);
+    assert.ok(map.includes(`| ${ids} | ${section} |`), ids);
+  }
+  assert.doesNotMatch(map, /IQ-005, IQ-006 \| §11\.10\(d\)/);
+});
+
+test('the IQ protocol names the target under test and the declaration for IQ-019, 020, 022, 023 and 029, never production', t => {
+  setReleaseIdentity(undefined);
+  t.after(() => setReleaseIdentity(undefined));
+  const directory = temporaryDirectory(t, 'accura-iq-protocol-');
+  generateIqProtocol(directory, directory);
+  const protocol = fs.readFileSync(path.join(directory, '07-iq-protocol.md'), 'utf8');
+  const caseText = (id: string) => {
+    const start = protocol.indexOf(`### ${id}:`);
+    return protocol.slice(start, protocol.indexOf('### ', start + 4));
+  };
+  const production = SYSTEM_INFO.environments.production;
+  for (const id of ['IQ-019', 'IQ-020', 'IQ-022', 'IQ-023', 'IQ-029']) {
+    const text = caseText(id);
+    assert.ok(text.length > 20, id);
+    for (const url of [production.apiUrl, production.frontendUrl, production.apiUrl.replace('https', 'http')]) {
+      assert.equal(text.includes(url), false, `${id} names ${url}`);
+    }
+    assert.match(text, /target under test|--target-config/, id);
+    assert.doesNotMatch(text, /NODE_ENV is set to "production"|on the production server|points to the production database/, id);
+  }
+  assert.match(caseText('IQ-029'), /NO_TARGET_CONFIGURATION/);
+  assert.doesNotMatch(caseText('IQ-029'), /docker-compose\.test-env/);
 });

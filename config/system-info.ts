@@ -17,7 +17,9 @@ export const SYSTEM_INFO = {
   name: 'AccuraTrial EDC',
   fullName: 'AccuraTrial Electronic Data Capture System',
   vendor: 'AccuraTrial Inc.',
-  version: '1.0.0',
+  // The version label the EDC API reports at /health (libreclinicaapi src/config/version.ts:2, APP_VERSION,
+  // and package.json:3). It names no build: the release under test is the run's release identity (IR-041).
+  version: '0.1.0',
   buildDate: new Date().toISOString().split('T')[0],
 
   description:

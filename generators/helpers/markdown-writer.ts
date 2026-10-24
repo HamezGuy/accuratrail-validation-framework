@@ -1,5 +1,5 @@
 import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
-import { evidenceNoticeLines } from '../../runners/evidence-capture';
+import { evidenceNoticeLines, registryCounts, registryCountsText } from '../../runners/evidence-capture';
 
 export interface DocumentHeaderOptions {
   title: string;
@@ -42,12 +42,42 @@ export function documentHeader(opts: DocumentHeaderOptions): string {
     `| Classification | ${opts.classification} |`,
     // Every document cites the guideline through config/regulatory-scope.ts,
     // whose section numbers QA has not yet verified.
-    `| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`,
+    e6r3StatusRow(),
     '',
     '---',
     '',
   ];
   return lines.join('\n');
+}
+
+/** The registry cases of a category's rows, counted apart from its bookkeeping rows (IR-416); generate.ts
+ * reaches the counts here because the offline CLI fixture replaces the runner modules it requires. */
+export function registryCasesText(rows: ReadonlyArray<{ testCaseId: string; passed: boolean }>): string {
+  return registryCountsText(registryCounts(rows));
+}
+
+/** The metadata row that states the verification status of every ICH E6(R3) section reference. */
+export function e6r3StatusRow(): string {
+  return `| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`;
+}
+
+/** The opening lines of evidence/MASTER-EVIDENCE-INDEX.md, which generate.ts writes after
+ * the runners: the run's notices, the title and its metadata, the E6(R3) status row included. */
+export function masterEvidenceIndexHeader(generatedAt: string): string[] {
+  return [
+    ...evidenceNoticeLines(),
+    '# Master Test Execution Evidence Index',
+    '',
+    '| Field | Value |',
+    '|-------|-------|',
+    `| Generated | ${generatedAt} |`,
+    '| System | AccuraTrial Electronic Data Capture System |',
+    '| Classification | Confidential — Regulatory |',
+    e6r3StatusRow(),
+    '',
+    '---',
+    '',
+  ];
 }
 
 export function markdownTable(headers: string[], rows: string[][]): string {

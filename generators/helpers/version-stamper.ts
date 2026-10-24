@@ -4,7 +4,8 @@ import { execFileSync } from 'child_process';
 import {
   currentReleaseIdentity, releaseComponent, releaseComponentText, RELEASE_COMPONENTS, type ReleaseIdentity,
 } from '../../runners/release-identity';
-import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
+import { e6r3StatusRow } from './markdown-writer';
+import { SYSTEM_INFO } from '../../config/system-info';
 import { currentEvidenceMarking, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../../runners/evidence-capture';
 
 /** The metadata row of a document written into a retained evidence package. */
@@ -85,11 +86,27 @@ export const RECORDED_AT_EXECUTION = 'Recorded at execution';
 
 /** The API a protocol or execution record names as the environment under test:
  * the target the run's release identity observed, else "Recorded at execution".
- * Never the production URL from config/system-info.ts, whatever the target. */
+ * Never the production URL from config/system-info.ts, whatever the target. A
+ * version endpoint that did not answer, or answered with an error status, is
+ * stated as such: the target was named, not observed (RF-012). */
 export function recordedTargetUrl(release: ReleaseIdentity | undefined = currentReleaseIdentity()): string {
   const target = release?.target;
   if (!target?.url) return RECORDED_AT_EXECUTION;
-  return `${target.url.replace(/\/health$/, '')} (target in the release identity, observed ${target.observedAt})`;
+  const url = target.url.replace(/\/health$/, '');
+  if (target.error || target.status < 200 || target.status > 299) {
+    // Printed in table cells and list items: no cell separator or line break of the message survives.
+    const why = target.error ? target.error.replace(/[|\s]+/g, ' ').trim().slice(0, 200) : `HTTP ${target.status}`;
+    return `${url} (target named in the release identity; its version endpoint failed at ${target.observedAt}: ${why})`;
+  }
+  return `${url} (target in the release identity, observed ${target.observedAt})`;
+}
+
+/** The system version a record states: the EDC's version label, which names no build, and the
+ * release identity that does when the run was given one (IR-041). */
+export function systemVersionText(release: ReleaseIdentity | undefined = currentReleaseIdentity()): string {
+  return release
+    ? `${SYSTEM_INFO.version} (version label); release under test ${release.identityHash}`
+    : `${SYSTEM_INFO.version} (version label); release under test not recorded: no release identity was supplied`;
 }
 
 export function stampDocument(content: string, meta: DocumentMeta): string {
@@ -121,7 +138,7 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
   } else {
     lines.push('| Release Identity | not recorded: no release under test was supplied |');
   }
-  lines.push(`| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`);
+  lines.push(e6r3StatusRow());
   // The synthetic and not-retained banners, also stated at the top of the document.
   const run = currentEvidenceMarking();
   if (run?.synthetic) lines.push(`| Evidence Classification | ${SYNTHETIC_NOTICE} |`);

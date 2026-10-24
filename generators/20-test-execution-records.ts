@@ -16,11 +16,14 @@ import {
 } from './helpers/markdown-writer';
 import { SYSTEM_INFO } from '../config/system-info';
 import { e6r3 } from '../config/regulatory-scope';
-import { RECORDED_AT_EXECUTION, recordedTargetUrl } from './helpers/version-stamper';
+import { RECORDED_AT_EXECUTION, recordedTargetUrl, systemVersionText } from './helpers/version-stamper';
 import {
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
   loadEvidence as loadCategoryResults,
   redactEvidenceSecrets,
+  registryCounts,
+  registryCountsText,
+  type RegistryCounts,
   type EvidenceResult as EvidenceRecord,
   type EvidenceCategory,
 } from '../runners/evidence-capture';
@@ -189,6 +192,17 @@ interface CategoryStats {
   total: number;
   pass: number;
   fail: number;
+  registry: RegistryCounts;
+}
+
+/** When the cases ran, from the records' own timestamps, never the date this document was generated. */
+export function executionPeriod(records: readonly EvidenceRecord[]): string {
+  const instants = records.map(record => Date.parse(record.timestamp)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!instants.length) return 'Not executed: no evidence record in this package';
+  const [first, last] = [new Date(instants[0]).toISOString(), new Date(instants[instants.length - 1]).toISOString()];
+  const unstamped = records.length - instants.length;
+  return `${first === last ? first : `${first} to ${last}`} (UTC, from the record timestamps)`
+    + (unstamped ? `; ${unstamped} record(s) carry no valid timestamp` : '');
 }
 
 export function generate(outputDir: string, _workspaceRoot: string): void {
@@ -205,8 +219,12 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
       total: records.length,
       pass,
       fail: records.length - pass,
+      registry: registryCounts(records),
     });
   }
+  const allRecords = [...categoryRecords.values()].flat();
+  const allRegistry = registryCounts(allRecords);
+  const period = executionPeriod(allRecords);
 
   const tocEntries = [
     { level: 1, title: 'Introduction' },
@@ -260,13 +278,14 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += `- **API Endpoint:** ${recordedTargetUrl()}\n`;
   content += `- **Frontend URL:** ${RECORDED_AT_EXECUTION}\n`;
   content += `- **Database:** ${RECORDED_AT_EXECUTION}\n`;
-  content += `- **Test Execution Date:** ${DOC_DATE}\n`;
-  content += `- **System Version:** ${SYSTEM_INFO.version}\n\n`;
+  content += `- **Test Execution Date:** ${period}\n`;
+  content += `- **System Version:** ${systemVersionText()}\n\n`;
 
   content += section(3, 'Test Execution Approach');
-  content += 'All tests were executed against the API endpoint recorded above using automated test scripts ';
-  content += '(`tests-live/` framework). Each test case:\n\n';
-  content += '1. Sends HTTP requests to the live API with controlled inputs\n';
+  content += 'Each case was executed by the runner of this validation framework that its category names (runners/, ';
+  content += 'invoked by generate.ts), against the API endpoint recorded above; imported benchmark and P13 evidence was ';
+  content += 'reconstructed or attached offline, with no request to the product. Each executed case:\n\n';
+  content += '1. Sends HTTP requests to the target API with controlled inputs, or reads the retained files it checks\n';
   content += '2. Captures the full request/response cycle including headers, status codes, and body\n';
   content += '3. Evaluates acceptance criteria programmatically\n';
   content += '4. Records the result with timestamp, duration, and detailed notes\n';
@@ -290,7 +309,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   for (const stat of allStats) {
     if (stat.total === 0) {
-      summaryRows.push([stat.label, '0', 'N/A', 'N/A', 'No evidence collected']);
+      summaryRows.push([stat.label, '0', 'N/A', 'N/A', 'No evidence collected', 'N/A']);
     } else {
       const rate = ((stat.pass / stat.total) * 100).toFixed(1) + '%';
       summaryRows.push([
@@ -299,6 +318,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
         String(stat.pass),
         String(stat.fail),
         rate,
+        registryCountsText(stat.registry),
       ]);
     }
     grandTotal += stat.total;
@@ -307,13 +327,14 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   }
 
   const grandRate = grandTotal > 0 ? ((grandPass / grandTotal) * 100).toFixed(1) + '%' : 'N/A';
-  summaryRows.push(['**TOTAL**', `**${grandTotal}**`, `**${grandPass}**`, `**${grandFail}**`, `**${grandRate}**`]);
+  summaryRows.push(['**TOTAL**', `**${grandTotal}**`, `**${grandPass}**`, `**${grandFail}**`, `**${grandRate}**`, registryCountsText(allRegistry)]);
 
   content += markdownTable(
-    ['Category', 'Total Tests', 'Passed', 'Failed', 'Pass Rate'],
+    ['Category', 'Total Rows', 'Passed', 'Failed', 'Pass Rate', 'Registry Cases'],
     summaryRows,
   );
-  content += '\n';
+  content += '\nTotal Rows counts every record, setup, session, cleanup and import rows included; Registry Cases counts the '
+    + 'protocol cases (a prefix and three digits, for example OQ-206) apart from those bookkeeping rows.\n\n';
   content += hr();
 
   // --- TA3 PQ cases tied to the O-7 run ---
@@ -328,8 +349,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
     const catPass = records.filter(r => r.passed).length;
     const catFail = records.length - catPass;
-    content += `**Category Summary:** ${records.length} test cases executed — `;
-    content += `${catPass} passed, ${catFail} failed\n\n`;
+    content += `**Category Summary:** ${records.length} records, ${catPass} passed and ${catFail} failed; `;
+    content += `${registryCountsText(registryCounts(records))}\n\n`;
 
     const sortedRecords = [...records].sort((a, b) => {
       const aNum = parseInt(a.testCaseId.replace(/\D+/g, ''), 10) || 0;
@@ -364,7 +385,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += `- **Total Passed:** ${grandPass}\n`;
   content += `- **Total Failed:** ${grandFail}\n`;
   content += `- **Overall Pass Rate:** ${grandRate}\n`;
-  content += `- **Execution Date:** ${DOC_DATE}\n\n`;
+  content += `- **Registry Cases:** ${registryCountsText(allRegistry)}\n`;
+  content += `- **Execution Date:** ${period}\n\n`;
 
   content += section(3, 'Results by Category');
   content += markdownTable(

@@ -65,6 +65,8 @@ test('all six selected runner results and document refreshes can succeed', () =>
   assert.doesNotMatch(result.output, /\[FAIL\]/);
   // The regulatory map's verification tables read the retained cases, so it is generated again after the runners.
   assert.match(result.output, /regulatory-requirements-map \(refreshed\)/);
+  // The protocols name the target the release identity observed, set only once the runners start (RF-009).
+  for (const protocol of ['iq-protocol', 'oq-protocol', 'pq-protocol']) assert.match(result.output, new RegExp(`\\[OK\\] ${protocol} \\(refreshed\\)`));
 });
 
 test('docs-only does not import or execute a live runner even with --all', () => {
