@@ -292,6 +292,13 @@ npm run generate -- --oq --base-url http://127.0.0.1:<port> --synthetic-qualific
 (`tests/fixtures/ta3-fake-edc.ts`) on a controlled clock, including the
 disabled, absent and contradicted cases; `tests/fixtures/edc-k6b` holds byte
 copies of two documents a real EDC retained, which the ledger checks read.
+`npm run test:cross-repo` checks the TA3 cases against the libreclinicaapi
+checkout: every non-late coverage table has a `CREATE TABLE`, the signature
+meanings are the EDC's, and two blocks fail by name until their items land:
+"W-1 not landed" (the coverage list must equal the `ta3: true` declarations of
+`INSPECTION_STORES`) and "M-2 not landed" (the `edc-ta3-ledger/1` schema's
+required members and the EDC's synthetic ledger fixture, read by the OQ-237
+checks).
 
 ### OQ case registry and training evidence
 
