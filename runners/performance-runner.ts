@@ -2,6 +2,7 @@ import { authHeaders, login, qualificationCredentials } from './auth';
 
 type Credentials = { username: string; password: string };
 import { type EvidenceResult, captureApiCall, isRecord, saveEvidence } from './evidence-capture';
+import { requireLocalOrAllowedTarget } from './qualification-fixture';
 
 // Every timing below is captureApiCall's durationMs: the interval to the response
 // headers, with a failed request recording the time until it failed.
@@ -105,7 +106,9 @@ async function testLargeQueryString(baseUrl: string): Promise<EvidenceResult> {
   return r;
 }
 
-export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
+export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = []): Promise<EvidenceResult[]> {
+  // Load reaches a nonlocal target only when the operator allows it, as OQ and PQ do.
+  requireLocalOrAllowedTarget(qualificationFlags, baseUrl);
   // Refuses before any request when no operator is configured.
   const credentials = qualificationCredentials();
   console.log(`\n  Running Performance tests (5 cases) against ${baseUrl}...`);

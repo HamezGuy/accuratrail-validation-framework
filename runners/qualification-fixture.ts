@@ -38,14 +38,20 @@ export function draftWithoutSourceCustody(content: StudyContent): StudyContent {
   return draft;
 }
 
-export function qualificationOptions(args: readonly string[], baseUrl: string): {
-  acknowledgeUngoverned?: boolean; acknowledgeIncomplete?: boolean;
-} {
-  if (!args.includes('--synthetic-qualification')) throw new Error('Explicit --synthetic-qualification is required for release/activation testing.');
+/** A runner that writes to, injects into or loads its target runs against a nonlocal host
+ * only with the operator's explicit --allow-production-qualification. */
+export function requireLocalOrAllowedTarget(args: readonly string[], baseUrl: string): void {
   const hostname = new URL(baseUrl).hostname;
   if (!['localhost', '127.0.0.1', '[::1]'].includes(hostname) && !args.includes('--allow-production-qualification')) {
     throw new Error('Nonlocal qualification requires explicit --allow-production-qualification.');
   }
+}
+
+export function qualificationOptions(args: readonly string[], baseUrl: string): {
+  acknowledgeUngoverned?: boolean; acknowledgeIncomplete?: boolean;
+} {
+  if (!args.includes('--synthetic-qualification')) throw new Error('Explicit --synthetic-qualification is required for release/activation testing.');
+  requireLocalOrAllowedTarget(args, baseUrl);
   // No inferred approval from a failed server response. Unknown governance or
   // missing forms remains a refusal unless the operator supplied the exact flag.
   return {

@@ -6,6 +6,7 @@ import {
   saveEvidence,
   manualResult,
 } from './evidence-capture';
+import { requireLocalOrAllowedTarget } from './qualification-fixture';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -274,7 +275,9 @@ async function testContentTypeEnforcement(baseUrl: string): Promise<EvidenceResu
   }
 }
 
-export async function run(outputDir: string, baseUrl: string): Promise<EvidenceResult[]> {
+export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = []): Promise<EvidenceResult[]> {
+  // Injection and token attacks reach a nonlocal target only when the operator allows it, as OQ and PQ do.
+  requireLocalOrAllowedTarget(qualificationFlags, baseUrl);
   console.log(`\n  Running Security tests (10 cases) against ${baseUrl}...`);
 
   // Tests that need a session use this token; the rest run unauthenticated.

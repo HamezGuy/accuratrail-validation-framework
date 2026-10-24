@@ -128,7 +128,11 @@ all, only in an IL project on a test stack to show the mechanics.
 Live runners (`--iq`, `--oq`, `--pq`, `--security`, `--dr`, `--perf`, `--all`) have no
 default target. Pass `--base-url` with the API under test, for example
 `--base-url http://localhost:3000`; the command stops before any runner when it is
-missing. Documents only and offline benchmark imports need no target.
+missing. Documents only and offline benchmark imports need no target. The
+security and performance runners, which send injection and token attacks and
+concurrent logins, refuse a target other than `localhost`, `127.0.0.1` or
+`[::1]` without `--allow-production-qualification`, as the OQ and PQ
+qualification fixtures do.
 
 ### Configuration under test
 
@@ -180,8 +184,10 @@ others, `STRICT_VALIDATION_RULE_SIGNATURES` and the four `BACKUP_` keys).
 IQ-035 checks every `file:vendor/*.tgz` dependency of the API against the
 receipt beside its archive (package, file name, byte count, SHA-256 and
 integrity) and the lockfile's integrity; the interop archive, which has no
-receipt, fails it. The IQ protocol has 35 cases, and the runner records a
-result for each.
+receipt, fails it. IQ-001 passes only when `GET /health` reports a `version`
+equal to `SYSTEM_INFO.version` (`config/system-info.ts`, the EDC API's
+`APP_VERSION` label); another or no version fails `VERSION_MISMATCH`. The IQ
+protocol has 35 cases, and the runner records a result for each.
 
 The production host is refused. A production host is the production API or
 frontend in `config/system-info.ts`, or any other host under `accuratrials.com` or

@@ -10,7 +10,6 @@ import * as path from 'path';
 import { createHash } from 'node:crypto';
 import {
   EvidenceResult,
-  captureApiCall,
   captureWithExpectedStatus,
   captureWithValidator,
   isRecord,
@@ -1004,11 +1003,18 @@ export async function run(
 
   // --- API-based checks ---
 
-  // IQ-001: Health endpoint
+  // IQ-001: the version /health reports is the validated release's label (07-iq-protocol states it, IR-585).
   try {
-    const healthResult = await captureApiCall({
-      testCaseId: 'IQ-001', method: 'GET', url: '/health', baseUrl,
+    let mismatch = false;
+    const healthResult = await captureWithValidator({ testCaseId: 'IQ-001', method: 'GET', url: '/health', baseUrl }, (status, body) => {
+      if (status < 200 || status >= 300) return { passed: false, notes: `/health returned HTTP ${status}` };
+      const version = isRecord(body) && typeof body.version === 'string' ? body.version : undefined;
+      if (version === SYSTEM_INFO.version) return { passed: true, notes: `/health reports version "${version}", the validated release's label` };
+      mismatch = true;
+      return { passed: false, notes: `/health reports ${version === undefined ? 'no version' : `version "${version}"`}, `
+        + `not the validated release's label "${SYSTEM_INFO.version}"` };
     });
+    if (mismatch && !healthResult.passed) healthResult.outcomeCode = 'VERSION_MISMATCH';
     results.push(healthResult);
   } catch (err: unknown) {
     results.push({

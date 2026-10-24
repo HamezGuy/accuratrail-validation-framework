@@ -431,11 +431,40 @@ test('the declaration schema requires exactly what the validator requires and al
   assert.deepEqual(manifest.definitions.flagValue.oneOf[1].enum, [...NODE_ENVIRONMENTS, 'set', 'unset']);
 });
 
+/** A synthetic API whose /health reports `health` and which answers every other path 401. */
+async function syntheticApi(t: { after(callback: () => void): void }, health: Record<string, unknown>): Promise<string> {
+  const server = http.createServer((request, response) => {
+    const open = request.url === '/health';
+    response.writeHead(open ? 200 : 401, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(open ? health : { success: false }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+test('IQ-001 passes only when /health reports the validated release\'s version label, as the IQ protocol states', async t => {
+  for (const [health, passed] of [
+    [{ status: 'ok', version: SYSTEM_INFO.version }, true],
+    [{ status: 'ok', version: '0.0.0-synthetic' }, false],
+    [{ status: 'ok' }, false],
+  ] as const) {
+    const baseUrl = await syntheticApi(t, health);
+    const iq001 = byId(await runIq(temporaryDirectory(t, 'accura-iq-version-'), baseUrl, temporaryDirectory(t, 'accura-iq-ws-'), []), 'IQ-001');
+    assert.equal(iq001.passed, passed, JSON.stringify(health));
+    assert.equal(iq001.outcomeCode, passed ? undefined : 'VERSION_MISMATCH', JSON.stringify(health));
+    assert.match(iq001.notes, passed ? new RegExp(`reports version "${SYSTEM_INFO.version}"`) : new RegExp(`not the validated release's label "${SYSTEM_INFO.version}"`));
+  }
+  // A health endpoint that is down is a failed request, not a version mismatch.
+  const down = byId(await runIq(temporaryDirectory(t, 'accura-iq-version-'), 'http://127.0.0.1:9', temporaryDirectory(t, 'accura-iq-ws-'), []), 'IQ-001');
+  assert.deepEqual([down.passed, down.outcomeCode], [false, undefined]);
+});
+
 test('the IQ runner records exactly the protocol\'s cases, IQ-033 with the declaration it was given', async t => {
   const server = http.createServer((request, response) => {
     const authenticated = request.url === '/health';
     response.writeHead(authenticated ? 200 : 401, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify(authenticated ? { status: 'ok', version: '0.0.0-synthetic' } : { success: false }));
+    response.end(JSON.stringify(authenticated ? { status: 'ok', version: SYSTEM_INFO.version } : { success: false }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());

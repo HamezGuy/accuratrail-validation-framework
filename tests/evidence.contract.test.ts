@@ -24,6 +24,7 @@ import { login, optionalQualificationCredentials, qualificationCredentials } fro
 import { pqCredentials, run as runPq } from '../runners/pq-runner';
 import { run as runOq } from '../runners/oq-runner';
 import { run as runPerformance } from '../runners/performance-runner';
+import { run as runSecurity } from '../runners/security-runner';
 
 function workspace(t: { after(callback: () => void): void }): string {
   const root = fs.realpathSync(os.tmpdir());
@@ -502,6 +503,28 @@ test('no runner has a built-in operator: credentials come only from the environm
     throw new Error('A runner must not contact the API without configured credentials');
   });
   await assert.rejects(runOq(workspace(t), 'https://qualification.invalid'), /OQ_USERNAME and OQ_PASSWORD/);
-  await assert.rejects(runPerformance(workspace(t), 'https://qualification.invalid'), /OQ_USERNAME and OQ_PASSWORD/);
+  // The performance runner refuses a nonlocal target before it reads credentials, so it is asked locally here.
+  await assert.rejects(runPerformance(workspace(t), 'http://127.0.0.1:9'), /OQ_USERNAME and OQ_PASSWORD/);
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+test('the security and performance runners refuse a nonlocal target without --allow-production-qualification, as OQ and PQ do', async t => {
+  const fetchMock = t.mock.method(globalThis, 'fetch', async (): Promise<Response> => {
+    throw new Error('A refused runner must not contact the target');
+  });
+  for (const run of [runSecurity, runPerformance]) {
+    for (const target of ['https://qualification.invalid', 'https://staging.accuratrials.com']) {
+      await assert.rejects(run(workspace(t), target), /^Error: Nonlocal qualification requires explicit --allow-production-qualification\.$/);
+      await assert.rejects(run(workspace(t), target, undefined, ['--allow-production-target']), /requires explicit --allow-production-qualification/);
+    }
+  }
+  assert.equal(fetchMock.mock.callCount(), 0);
+  const names = ['OQ_USERNAME', 'OQ_PASSWORD'] as const;
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, index) => { if (saved[index] === undefined) delete process.env[name]; else process.env[name] = saved[index]; }));
+  for (const name of names) delete process.env[name];
+  // Allowed, the performance runner goes on to its own refusal: no operator is configured.
+  await assert.rejects(runPerformance(workspace(t), 'https://qualification.invalid', undefined, ['--allow-production-qualification']),
+    /OQ_USERNAME and OQ_PASSWORD/);
   assert.equal(fetchMock.mock.callCount(), 0);
 });
