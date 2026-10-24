@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
+import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
 import {
   documentHeader,
   markdownTable,
@@ -9,6 +10,7 @@ import {
   tableOfContents,
   hr,
 } from './helpers/markdown-writer';
+import { runnerCaseCheck } from './helpers/evidence-linker';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -156,6 +158,18 @@ function hipaaFrs(): FRS[] {
   ];
 }
 
+/** One functional requirement per TA3 user requirement (config/ta3-requirements.ts). The verification
+ * method is the runner cases of that requirement's planned verification, each a catalogued case;
+ * a requirement no case verifies says so. */
+function ta3Frs(): FRS[] {
+  return TA3_REQUIREMENTS.map((r): FRS => {
+    const cases = ta3RequirementCases(r);
+    for (const id of cases) runnerCaseCheck(id);
+    return [r.frs.id, r.id, r.frs.requirement, r.frs.implementation,
+      cases.length ? cases.join(', ') : `No runner case; see the planned verification of ${r.id}`];
+  });
+}
+
 export function generate(outputDir: string, workspaceRoot: string): void {
   const discoveredRoutes = loadRoutes(workspaceRoot);
   const routeNote =
@@ -170,6 +184,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     ...dataFrs(),
     ...workflowFrs(),
     ...hipaaFrs(),
+    ...ta3Frs(),
   ];
 
   let content = '';
@@ -192,6 +207,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     { level: 1, title: 'Data Entry & Integrity (FRS-047 to FRS-062)' },
     { level: 1, title: 'Clinical Workflows (FRS-063 to FRS-076)' },
     { level: 1, title: 'HIPAA Safeguards (FRS-077 to FRS-086)' },
+    { level: 1, title: 'TA3 Platform Operations (FRS-087 to FRS-107)' },
     { level: 1, title: 'Requirements Summary' },
     { level: 1, title: 'Approval Signatures' },
   ]) + '\n';
@@ -212,6 +228,9 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   content += '4. **Identifies the verification method** — the OQ/IQ/PQ test case(s) that verify correct implementation\n\n';
   content += `${routeNote}\n\n`;
   content += 'The FRS entries are organized by functional domain to align with the URS structure and regulatory sections.\n\n';
+  content += 'The TA3 Platform Operations entries (FRS-087 to FRS-107) name libreclinicaapi components unless they name this ' +
+    'framework. A component of an item that has not landed is named with its item (M-2, W-1), and each verification method ' +
+    'lists the OQ cases of the requirement\'s planned verification in the URS.\n\n';
   content += hr();
 
   const categories: [string, FRS[]][] = [
@@ -221,6 +240,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     ['Data Entry & Integrity (FRS-047 to FRS-062)', dataFrs()],
     ['Clinical Workflows (FRS-063 to FRS-076)', workflowFrs()],
     ['HIPAA Safeguards (FRS-077 to FRS-086)', hipaaFrs()],
+    ['TA3 Platform Operations (FRS-087 to FRS-107)', ta3Frs()],
   ];
 
   for (const [title, entries] of categories) {

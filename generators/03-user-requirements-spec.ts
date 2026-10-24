@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
-import { ICH_E6_R3, e6r3 } from '../config/regulatory-scope';
+import { ICH_E6_R3, e6r3, type E6R3Key } from '../config/regulatory-scope';
+import { TA3_REQUIREMENTS, gap, verify, type PlannedVerification } from '../config/ta3-requirements';
 import {
   documentHeader,
   markdownTable,
@@ -23,6 +24,8 @@ interface Requirement {
   risk: 'Critical' | 'High' | 'Medium' | 'Low';
   part11Ref: string;
   acceptance: string;
+  /** The ICH E6(R3) topics of the cross-reference matrix, where the requirement states its own. */
+  e6r3?: readonly E6R3Key[];
 }
 
 interface ReqCategory {
@@ -31,24 +34,14 @@ interface ReqCategory {
   requirements: Requirement[];
 }
 
-/** One planned verification activity. It cites a runner case only where the case's
- * actual check (RUNNER_CASE_CHECKS) matches the activity; otherwise it is a gap. */
-interface PlannedVerification {
-  activity: string;
-  cases: string[];
-  /** What the cited cases do not cover, or why no executed case is mapped. */
-  note?: string;
-}
-
 interface DetailedDescription {
   id: string;
+  /** The heading; without one the description's subject is used. */
+  title?: string;
   rationale: string;
   context: string;
-  planned: PlannedVerification[];
+  planned: readonly PlannedVerification[];
 }
-
-const verify = (activity: string, cases: string[], note?: string): PlannedVerification => ({ activity, cases, note });
-const gap = (activity: string, note: string): PlannedVerification => ({ activity, cases: [], note });
 
 function buildDetailedDescriptions(): DetailedDescription[] {
   return [
@@ -399,11 +392,13 @@ function buildDetailedDescriptions(): DetailedDescription[] {
         gap('ePHI access review and anomaly detection', 'No executed case exists.'),
       ],
     },
+    // TA3 Platform Operations (URS-081 to URS-101), from config/ta3-requirements.ts.
+    ...TA3_REQUIREMENTS.map((r) => ({ id: r.id, title: r.title, rationale: r.rationale, context: r.context, planned: r.planned })),
   ];
 }
 
 /** Planned verification text: cited cases with what they actually execute, and explicit gaps. */
-function plannedVerification(planned: PlannedVerification[]): string {
+function plannedVerification(planned: readonly PlannedVerification[]): string {
   return planned.map(item => {
     if (!item.cases.length) return `- ${item.activity}: Gap — no executed case mapped. ${item.note ?? ''}`.trimEnd();
     return [`- ${item.activity}:`, ...item.cases.map(id => `  - ${id} — ${runnerCaseCheck(id).check}`),
@@ -529,6 +524,13 @@ function buildCategories(): ReqCategory[] {
         { id: 'URS-080', description: 'The system SHALL implement workforce training tracking for HIPAA compliance', priority: 'Must', risk: 'High', part11Ref: '164.308(a)(5)', acceptance: 'Training completion records maintained; periodic refresher tracked' },
       ],
     },
+    {
+      // The TA3 platform trial uses (TA3 plan VAL-1, spec P20 3.6); each requirement names its own ICH E6(R3) topics.
+      title: 'TA3 Platform Operations',
+      anchor: 'ta3',
+      requirements: TA3_REQUIREMENTS.map(({ id, description, priority, risk, part11Ref, acceptance, e6r3: topics }) => (
+        { id, description, priority, risk, part11Ref, acceptance, e6r3: topics })),
+    },
   ];
 }
 
@@ -563,6 +565,10 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += `These requirements form the basis for system validation and are traceable to specific 21 CFR Part 11 sections, HIPAA Security Rule sections, and ${ICH_E6_R3.citation} GCP principles.\n\n`;
   content += 'Each requirement is assigned a priority (Must/Should/Could per MoSCoW), a risk level, ' +
     'a regulatory reference, and formal acceptance criteria.\n\n';
+  content += 'The TA3 Platform Operations requirements (URS-081 to URS-101) cover the TA3 platform trial uses: deviation ' +
+    'detection on save and in the sweep, the governing protocol version, complete and signed deviation records, independent ' +
+    'review and closure, timed escalation, signed milestones and retained measurement documents, inspection copies, and the ' +
+    'validation status and retained evidence of the platform. Their planned verification cites the OQ cases of suites 13 to 18.\n\n';
   content += 'This is a specification and records no test results. The **Planned Verification** of each detailed ' +
     'requirement cites a runner case only where that case\'s actual executed check, quoted beside it, matches the ' +
     'planned activity; an activity without such a case is marked "Gap — no executed case mapped". Executed results ' +
@@ -613,7 +619,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
       content += section(3, 'Detailed Requirement Descriptions');
       for (const r of catDetails) {
         const detail = detailMap.get(r.id)!;
-        content += `**${r.id}: ${r.description.split(' SHALL ')[0]}**\n\n`;
+        content += `**${r.id}: ${detail.title ?? r.description.split(' SHALL ')[0]}**\n\n`;
         content += `**Rationale:** ${detail.rationale}\n\n`;
         content += `**Context:** ${detail.context}\n\n`;
         content += '**Planned Verification:**\n\n';
@@ -670,6 +676,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     if (r.id >= 'URS-041' && r.id <= 'URS-055') gcp = e6r3('dataCapture');
     if (r.id >= 'URS-056' && r.id <= 'URS-068') gcp = e6r3('protocolAndRecords');
     if (r.id >= 'URS-069' && r.id <= 'URS-080') hipaa = r.part11Ref.includes('164.') ? r.part11Ref : hipaa;
+    if (r.e6r3?.length) gcp = r.e6r3.map(e6r3).join('; ');
     return [r.id, r.description.substring(0, 60) + '...', part11, hipaa, gcp];
   });
 
