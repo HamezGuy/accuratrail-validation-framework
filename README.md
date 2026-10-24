@@ -29,6 +29,8 @@ npx ts-node generate.ts --benchmark-run "C:/path/to/retained-run" --version "ben
 npx ts-node generate.ts --iq ... --retain-root <dir>  # Live runners: a retained, sealed evidence package
 npx ts-node generate.ts --iq ... --no-retain         # Live runners: a development run, not retained
 npx ts-node generate.ts --iq ... --target-config <file>  # The configuration under test (IQ-033)
+npx ts-node generate.ts --oq ... --ta3-oq-plan <file>    # OQ suites 13 to 18 against the study a ta3-oq-plan/1 names
+npx ts-node generate.ts --oq ... --oq-suites 13-18       # Run only these OQ suites (1 to 12 go together)
 npm run verify:package -- <package directory>        # Recheck a sealed package; prints its manifest SHA-256
 ```
 
@@ -74,7 +76,8 @@ Synthetic data on a test stack. Not a real trial, not an approval."
 Inputs are copied byte for byte into `inputs/<role>.json` with their SHA-256
 and original path: `--p13-plan` (`p13-plan`), `--training-evidence`
 (`training-evidence`), `--target-config` (`target-configuration`, read strictly
-against its contract first), and for `--benchmark-run` the run's `run-summary.json`
+against its contract first), `--ta3-oq-plan` (`ta3-oq-plan`, read strictly too),
+and for `--benchmark-run` the run's `run-summary.json`
 and `metrics.json` (`benchmark-run-summary`, `benchmark-metrics`), so the
 package keeps them when the data root's retention later moves the run. Inputs
 are read and checked before the package is created: an input that cannot be
@@ -227,6 +230,68 @@ recorded in the eTMF as a governance decision on the filing of this package
 approve"; every retained package holds its `TMF-FILING.md`. The framework never signs: a QA lead other than the person who files
 the package approves it in the eTMF, and that decision is a Part 11 signature
 only where the eTMF requires signed decisions (`IL_TMF_SIGNATURE=required`).
+
+### TA3 OQ suites 13 to 18
+
+OQ-206 to OQ-244 qualify the TA3 uses (spec P20 3.4): deviation detection on
+save and in the sweep with the follow-up task (13), protocol version
+applicability (14), signed assessment and reviewer independence (15, O-1),
+escalation timing (16, O-2), the TA3 ledger records and blinding (17, M-2 for
+OQ-237) and inspection copy completeness (18, W-1). They run against the
+designated armed synthetic study a `ta3-oq-plan/1` names (`--ta3-oq-plan`;
+contract in `contracts/ta3-oq-plan-v1.schema.json`): a dedicated duplicate of
+the release, never the study the O-7 benchmark scores, prepared by
+VAL-1/validation-run step 0. The cases create and own only their own subjects,
+forms, deviations, applicability rows, policy rows, milestones and documents,
+labelled `OQ-TA3-<run id>-<n>` and listed in each suite's `OQ-TA3-SUITE-<n>`
+row; an owned protocol version is withdrawn again, so the study stays usable
+for the next run. The plan names five different synthetic people (operator,
+reviewer, third person, blinded, monitor) by the environment variables that
+hold their credentials; the operator defaults to `OQ_USERNAME` and
+`OQ_PASSWORD`.
+
+A plan needs `--oq`, `--synthetic-qualification` (the suites write owned
+records, as the owned fixture does) and `--release-training` (the training
+gate decides every clinical save), and is checked before any runner starts; a
+retained package copies it to `inputs/ta3-oq-plan.json` and the OQ runner reads
+that copy, with the retained `--target-config` declaration, whose flags suite
+18 needs. The OQ runner runs suites 1 to 12, their fixture cleanup and logout,
+then the TA3 suites (each logging its accounts in and out, escalation last),
+then the login quota probe. A session logs in again before its token expires
+or after 25 idle minutes; a write's transport error is never resent. Waits
+poll every 30 seconds within the plan's bounds (`sweep.maxWaitMinutes`, default
+5; `escalation.maxWaitMinutes`, default 0: OQ-228 and OQ-229 need 70 minutes,
+OQ-230 four). `--oq-suites 13-18` runs only the TA3 suites; suites 1 to 12 are
+selected together or not at all; an unselected case records
+`OQ_SUITE_NOT_SELECTED`.
+
+A case whose feature is absent at the release (an unknown-route 404, a 400 for
+a request member a later item adds, or rows without O-1's record fields) fails
+`FEATURE_ABSENT_AT_RELEASE`; one switched off at the target (503 with
+`DEVIATION_DECISIONS_DISABLED` or `SEGMENTED_INSPECTION_EXPORT_DISABLED`) fails
+`FEATURE_DISABLED_AT_TARGET`; the engine's own 503 fails `ENGINE_DISABLED`. A
+flag the declaration states and the target contradicts is noted
+`CONFIGURATION_MISMATCH` and reaches the sealed manifest. A case whose setup
+cannot be made is recorded not executed with its code: `NO_TA3_PLAN`,
+`ACCOUNT_LOGIN_FAILED`, `TRAINING_NOT_CURRENT`, `ESIGNATURE_NOT_ACKNOWLEDGED`,
+`RECIPIENT_UNAVAILABLE`, `ESCALATION_WINDOW_NOT_WAITED`,
+`VERSION_FIXTURE_ABSENT`, `DUE_AT_REFUSED`, `NO_TARGET_CONFIGURATION`,
+`FOLLOW_UP_TASK_NOT_CONFIGURED`, `OPERATOR_NOT_UNBLINDED`, `SWEEP_RACED` or
+`PREREQUISITE_MISSING`. OQ-243 stays not executed (`SEGMENTED_READ_NOT_EXPOSED`)
+until a user route downloads segmented copies. Without a plan no request is
+made and every TA3 case records `NO_TA3_PLAN`.
+
+```powershell
+npm run generate -- --oq --base-url http://127.0.0.1:<port> --synthetic-qualification `
+  --release-api <api commit> --release-ui none --release-core none --release-training <training commit> `
+  --ta3-oq-plan C:/Projects/.synthetic-trial-data/<plan>.json --target-config <declaration> `
+  --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages --version val1-oq-<date>
+```
+
+`tests/ta3-oq.contract.test.ts` runs every suite against an in-process fake EDC
+(`tests/fixtures/ta3-fake-edc.ts`) on a controlled clock, including the
+disabled, absent and contradicted cases; `tests/fixtures/edc-k6b` holds byte
+copies of two documents a real EDC retained, which the ledger checks read.
 
 ### OQ case registry and training evidence
 

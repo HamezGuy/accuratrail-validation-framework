@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { verifyPackage, DEVELOPMENT_RUN_NOTICE, MANIFEST_FILE, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
 import { SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 import { temporaryDirectory } from './generated-documents';
+import { ta3PlanJson } from './ta3-plan-fixture';
 
 const root = path.resolve(__dirname, '..');
 const API = 'a'.repeat(40), UI = 'b'.repeat(40), CORE = `sha256:${'c'.repeat(64)}`;
@@ -354,4 +355,71 @@ test('a retained package keeps the declaration as an input, hands that copy to I
   assert.deepEqual(verified.manifest!.inputs, [{ role: 'target-configuration', path: 'inputs/target-configuration.json', sha256: digest, originalPath: file }]);
   assert.deepEqual(verified.manifest!.configurationUnderTest,
     { contract: 'validation-target-configuration/1', sha256: digest, flags: { ENABLE_DEVIATION_ENGINE: true }, mismatches: [] });
+});
+
+const TA3_RELEASE = [...RELEASE, '--release-training', 'd'.repeat(40)];
+/** A synthetic ta3-oq-plan/1 file in a test's own temporary directory. */
+function ta3Plan(t: { after(callback: () => void): void }, overrides: Record<string, unknown> = {}): { file: string; bytes: Buffer } {
+  const directory = temporaryDirectory(t, 'accura-cli-ta3-plan-');
+  const bytes = Buffer.from(JSON.stringify(ta3PlanJson(overrides)));
+  const file = path.join(directory, 'ta3-oq-plan.json');
+  fs.writeFileSync(file, bytes);
+  return { file, bytes };
+}
+
+test('--ta3-oq-plan and --oq-suites reach the OQ runner only, after the plan is checked', t => {
+  const { file, bytes } = ta3Plan(t);
+  const result = runCli('pass', ['--oq', '--synthetic-qualification', '--ta3-oq-plan', file, '--oq-suites', '13-18'], undefined, TA3_RELEASE);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(result.output.includes(`RUNNER_OPTIONS ./runners/oq-runner ${JSON.stringify({ ta3PlanFile: file, suites: { base: false, ta3: [13, 14, 15, 16, 17, 18] } })}`), result.output);
+  assert.equal((result.output.match(/RUNNER_OPTIONS /g) || []).length, 1, 'the security runner that --oq also selects receives no OQ option');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  assert.ok(result.output.includes(`TA3 OQ plan: ${file} (ta3-oq-plan/1, study 100, OQ site 101, SHA-256 ${digest.slice(0, 12)})`), result.output);
+  const suitesOnly = runCli('pass', ['--oq', '--oq-suites', '1-12']);
+  assert.equal(suitesOnly.status, 0, suitesOnly.output);
+  assert.ok(suitesOnly.output.includes(`RUNNER_OPTIONS ./runners/oq-runner ${JSON.stringify({ suites: { base: true, ta3: [] } })}`), suitesOnly.output);
+  assert.doesNotMatch(runCli('pass', ['--oq']).output, /RUNNER_OPTIONS|TA3 OQ plan/, 'no plan and no selection, no options');
+});
+
+test('a TA3 plan without --oq, synthetic qualification or the training release, or one that breaks its contract, is refused before any runner', t => {
+  const { file } = ta3Plan(t);
+  for (const [flags, release, expected] of [
+    [['--iq', '--synthetic-qualification', '--ta3-oq-plan', file], TA3_RELEASE, /--ta3-oq-plan is an option of the OQ runner; select --oq or --all/],
+    [['--iq', '--oq-suites', '13'], RELEASE, /--oq-suites is an option of the OQ runner; select --oq or --all/],
+    [['--oq', '--ta3-oq-plan', file], TA3_RELEASE, /write owned synthetic records .*; pass --synthetic-qualification/],
+    [['--oq', '--synthetic-qualification', '--ta3-oq-plan', file], RELEASE, /OQ suites 13 to 18 require the training release under test: pass --release-training/],
+    [['--oq', '--oq-suites', '1-5'], RELEASE, /suites 1 to 12 together or not at all/],
+    [['--oq', '--oq-suites'], RELEASE, /--oq-suites requires a list of suites/],
+    [['--oq', '--synthetic-qualification', '--ta3-oq-plan'], TA3_RELEASE, /--ta3-oq-plan requires a path/],
+  ] as const) {
+    const result = runCli('pass', [...flags], undefined, [...release]);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, expected);
+    assert.doesNotMatch(result.output, /OFFLINE_RUNNER /);
+  }
+  const accounts = ta3PlanJson().accounts as Record<string, Record<string, string>>;
+  const literal = ta3Plan(t, { accounts: { ...accounts, reviewer: { ...accounts.reviewer, password: 'synthetic-literal-secret' } } });
+  const refused = runCli('pass', ['--oq', '--synthetic-qualification', '--ta3-oq-plan', literal.file], undefined, TA3_RELEASE);
+  assert.equal(refused.status, 1, refused.output);
+  assert.match(refused.output, /accounts\.reviewer\.password must be the name of the environment variable that holds it/);
+  assert.equal(refused.output.includes('synthetic-literal-secret'), false, 'a refusal never prints a value the plan held');
+  assert.doesNotMatch(refused.output, /OFFLINE_RUNNER /);
+  assert.equal(runCli('pass', ['--docs-only', '--oq', '--ta3-oq-plan', 'absent.json'], null, []).status, 0, 'a documents run reads no plan');
+});
+
+test('a retained package keeps the TA3 plan as an input and hands the OQ runner the retained plan and declaration', t => {
+  const { file, bytes } = ta3Plan(t);
+  const config = declaration(t);
+  const home = markedRoot(t);
+  const result = runCli('pass', ['--oq', '--synthetic-qualification', '--ta3-oq-plan', file, '--target-config', config.file, '--version', 'cli-ta3'],
+    undefined, TA3_RELEASE, ['--retain-root', home]);
+  assert.equal(result.status, 0, result.output);
+  const dir = path.join(home, fs.readdirSync(home)[0]);
+  const retainedPlan = path.join(dir, 'inputs', 'ta3-oq-plan.json'), retainedConfig = path.join(dir, 'inputs', 'target-configuration.json');
+  assert.ok(result.output.includes(`RUNNER_OPTIONS ./runners/oq-runner ${JSON.stringify({ ta3PlanFile: retainedPlan, targetConfigFile: retainedConfig })}`), result.output);
+  assert.deepEqual(fs.readFileSync(retainedPlan), bytes);
+  const verified = verifyPackage(dir);
+  assert.deepEqual(verified.problems, []);
+  assert.deepEqual(verified.manifest!.inputs.find(input => input.role === 'ta3-oq-plan'),
+    { role: 'ta3-oq-plan', path: 'inputs/ta3-oq-plan.json', sha256: createHash('sha256').update(bytes).digest('hex'), originalPath: file });
 });

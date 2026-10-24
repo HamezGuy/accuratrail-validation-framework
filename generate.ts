@@ -3,14 +3,15 @@ import * as path from 'path';
 import type { EvidenceResult } from './runners/evidence-capture';
 import { SYSTEM_INFO } from './config/system-info';
 import {
-  observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, setReleaseIdentity,
+  observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, requireTrainingRelease, setReleaseIdentity,
   type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
 import { approvalBlock } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, checkTargetConfiguration, createPackage, evidenceNoticeLines, markDevelopmentRun, sealPackage, syntheticBasis,
+  benchmarkRunInputs, checkTa3OqPlan, checkTargetConfiguration, createPackage, evidenceNoticeLines, markDevelopmentRun, sealPackage, syntheticBasis,
   DEVELOPMENT_RUN_NOTICE, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
+import { ALL_OQ_SUITES, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -39,6 +40,10 @@ interface CliArgs {
   noRetain: boolean;
   /** The validation-target-configuration/1 declaration of the live runners' target (IQ-033). */
   targetConfig?: string;
+  /** The ta3-oq-plan/1 the OQ suites 13 to 18 run from. */
+  ta3OqPlan?: string;
+  /** `--oq-suites`: the OQ suites to run; every suite when absent. */
+  oqSuites?: OqSuiteSelection;
 }
 
 function parseArgs(): CliArgs {
@@ -125,14 +130,22 @@ function parseArgs(): CliArgs {
       case '--p13-plan':
       case '--training-evidence':
       case '--benchmark-evaluator-root':
-      case '--target-config': {
+      case '--target-config':
+      case '--ta3-oq-plan': {
         const value = argv[++i];
         if (!value || value.startsWith('--')) throw new Error(`${arg} requires a path`);
         if (arg === '--benchmark-run') args.benchmarkRun = value;
         else if (arg === '--p13-plan') args.p13Plan = value;
         else if (arg === '--training-evidence') args.trainingEvidence = value;
         else if (arg === '--target-config') args.targetConfig = value;
+        else if (arg === '--ta3-oq-plan') args.ta3OqPlan = value;
         else args.benchmarkEvaluatorRoot = value;
+        break;
+      }
+      case '--oq-suites': {
+        const value = argv[++i];
+        if (!value || value.startsWith('--')) throw new Error('--oq-suites requires a list of suites, for example 13-18');
+        args.oqSuites = parseOqSuiteSelection(value);
         break;
       }
       case '--synthetic-qualification':
@@ -162,6 +175,14 @@ function parseArgs(): CliArgs {
     throw new Error('--target-config declares the configuration of the live runners\' target; select a live runner '
       + '(--iq, --oq, --pq, --security, --dr, --perf or --all).');
   }
+  // The TA3 plan and the suite selection are the OQ runner's own options; a documents run reads neither.
+  if (!args.docsOnly && (args.ta3OqPlan || args.oqSuites) && !args.runOq) {
+    throw new Error(`${args.ta3OqPlan ? '--ta3-oq-plan' : '--oq-suites'} is an option of the OQ runner; select --oq or --all.`);
+  }
+  // The TA3 suites write owned records into the study the plan names, like the owned fixture: synthetic qualification only.
+  if (!args.docsOnly && args.ta3OqPlan && !args.qualificationFlags.includes('--synthetic-qualification')) {
+    throw new Error('--ta3-oq-plan runs the TA3 OQ suites, which write owned synthetic records into the study the plan names; pass --synthetic-qualification.');
+  }
   if (!args.docsOnly && liveRunnerSelected(args)) {
     // Executed live-runner evidence goes to a retained, sealed package, or is
     // stated not to be validation evidence; never to unmarked scratch.
@@ -171,6 +192,8 @@ function parseArgs(): CliArgs {
     }
     checkRunnerTarget(args);
     args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
+    // The training gate decides every clinical save the TA3 suites make (spec P20 3.10).
+    if (args.runOq && args.ta3OqPlan && (args.oqSuites ?? ALL_OQ_SUITES).ta3.length) requireTrainingRelease(args.releaseIdentity, 'OQ suites 13 to 18');
   } else if (Object.keys(args.releaseInputs).length) {
     args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
   }
@@ -311,6 +334,7 @@ function packageInputs(args: CliArgs): PackageInputSource[] {
   if (!args.docsOnly && args.p13Plan) inputs.push({ role: 'p13-plan', file: args.p13Plan });
   if (!args.docsOnly && args.benchmarkRun) inputs.push(...benchmarkRunInputs(args.benchmarkRun));
   if (!args.docsOnly && args.targetConfig) inputs.push({ role: 'target-configuration', file: args.targetConfig });
+  if (!args.docsOnly && args.ta3OqPlan) inputs.push({ role: 'ta3-oq-plan', file: args.ta3OqPlan });
   return inputs;
 }
 
@@ -320,6 +344,11 @@ async function main(): Promise<void> {
     // Refused before anything runs: a declaration that breaks its contract or describes another target.
     const declared = checkTargetConfiguration(args.targetConfig, args.baseUrl as string);
     console.log(`Configuration under test: ${declared.file} (${declared.configuration.contract}, SHA-256 ${declared.sha256.slice(0, 12)})`);
+  }
+  if (!args.docsOnly && args.ta3OqPlan) {
+    // Refused before anything runs: a plan that breaks its contract.
+    const loaded = checkTa3OqPlan(args.ta3OqPlan);
+    console.log(`TA3 OQ plan: ${loaded.file} (${loaded.plan.contract}, study ${loaded.plan.study.studyId}, OQ site ${loaded.plan.study.siteStudyId}, SHA-256 ${loaded.sha256.slice(0, 12)})`);
   }
   const version = args.version || 'v1.0';
   const imports = !args.docsOnly && Boolean(args.benchmarkRun || args.p13Plan);
@@ -506,13 +535,21 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
       }
     }
 
-    // IQ-033 reads the declaration a package retained, so it checks the bytes the manifest lists.
+    // IQ-033 and the TA3 suites read the inputs a package retained, so they check the bytes the manifest lists.
     const retained = retention.kind === 'package' ? retention.evidencePackage : undefined;
-    const declarationInput = retained?.inputs.find(input => input.role === 'target-configuration');
-    const targetConfigFile = retained && declarationInput ? path.join(retained.dir, ...declarationInput.path.split('/')) : args.targetConfig;
+    const retainedInput = (role: PackageInputSource['role'], given?: string): string | undefined => {
+      const input = retained?.inputs.find(entry => entry.role === role);
+      return retained && input ? path.join(retained.dir, ...input.path.split('/')) : given;
+    };
+    const targetConfigFile = retainedInput('target-configuration', args.targetConfig);
+    const ta3PlanFile = retainedInput('ta3-oq-plan', args.ta3OqPlan);
+    // The OQ runner's options: the TA3 plan, the suite selection and, for the TA3 suites, the declaration.
+    const oqOptions = ta3PlanFile || args.oqSuites
+      ? { ...(ta3PlanFile ? { ta3PlanFile } : {}), ...(args.oqSuites ? { suites: args.oqSuites } : {}), ...(ta3PlanFile && targetConfigFile ? { targetConfigFile } : {}) }
+      : undefined;
     const runners: { flag: boolean; name: string; file: string; options?: Record<string, unknown> }[] = [
       { flag: args.runIq, name: 'IQ Runner', file: './runners/iq-runner', options: targetConfigFile ? { targetConfigFile } : undefined },
-      { flag: args.runOq, name: 'OQ Runner', file: './runners/oq-runner' },
+      { flag: args.runOq, name: 'OQ Runner', file: './runners/oq-runner', options: oqOptions },
       { flag: args.runSecurity || args.runOq, name: 'Security Runner', file: './runners/security-runner' },
       { flag: args.runPq, name: 'PQ Runner', file: './runners/pq-runner' },
       { flag: args.runDr || args.runPq, name: 'DR Runner', file: './runners/dr-runner' },

@@ -15,6 +15,7 @@ import { fakeClock, startFakeEdc, type FakeEdcOptions, type FakeUser } from './f
 import { temporaryDirectory } from './generated-documents';
 import { workspace } from './study-contract-fixtures';
 import { syntheticStudyDefinition } from '../runners/qualification-fixture';
+import { ta3PlanJson, TA3_TEST_ACCOUNTS } from './ta3-plan-fixture';
 
 // The TA3 OQ suites 13 to 18 (spec P20 3.4 and 4.5) against an in-process fake
 // EDC (tests/fixtures/ta3-fake-edc.ts) on a controlled clock, so the hour-long
@@ -28,30 +29,14 @@ const USERS: FakeUser[] = [
   { username: 'ta3-blinded', password: 'synthetic-blinded-secret', userId: 10, role: 'data_manager', unblinded: false },
   { username: 'ta3-monitor', password: 'synthetic-monitor-secret', userId: 11, role: 'monitor', unblinded: false },
 ];
-const ACCOUNTS = { operator: 'OP', reviewer: 'REV', thirdPerson: 'THIRD', blinded: 'BLIND', monitor: 'MON' } as const;
-const ENV: Record<string, string> = Object.fromEntries(Object.entries(ACCOUNTS).flatMap(([, key], index) => [
+const ENV: Record<string, string> = Object.fromEntries(Object.values(TA3_TEST_ACCOUNTS).flatMap((key, index) => [
   [`TA3_TEST_${key}_USERNAME`, USERS[index].username], [`TA3_TEST_${key}_PASSWORD`, USERS[index].password]]));
 const SECRETS = USERS.map(user => user.password);
 const ALL = [13, 14, 15, 16, 17, 18];
 const DECLARED: DeclaredFlags = { ENABLE_DEVIATION_ENGINE: true, ENABLE_DOMAIN_EVENTS: true, ENABLE_DEVIATION_DECISIONS: true,
   INSPECTION_COPY_TA3_INVENTORY: true, ENABLE_SEGMENTED_INSPECTION_EXPORT: true };
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
-
-function planJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    contract: 'ta3-oq-plan/1', synthetic: true, runLabel: 'contract-test',
-    study: { studyId: 100, siteStudyId: 101, expectedSpecHash: 'e'.repeat(64), expectedCslReleaseId: 'csl-release-synthetic-1', duplicateOf: 99 },
-    accounts: Object.fromEntries(Object.entries(ACCOUNTS).map(([account, key]) => [account, { username: `TA3_TEST_${key}_USERNAME`, password: `TA3_TEST_${key}_PASSWORD` }])),
-    saveRule: { ruleId: 'R-RANGE-1', eventDefinitionId: 21, crfVersionId: 31, itemId: 41, violatingValue: '999', compliantValue: '70', visitDate: '2026-10-20' },
-    absenceRule: { ruleId: 'R-MISSED-1', kind: 'missed_visit', eventDefinitionId: 22, anchorDate: '2026-09-01' },
-    followUpTask: { studyTaskId: 51 },
-    applicability: { versions: [{ protocolVersion: 'v1', effectiveFrom: '2025-01-01' }, { protocolVersion: 'v2', effectiveFrom: '2026-01-01' }],
-      versionedRuleId: 'R-WINDOW-1', earlyEnrollmentDate: '2025-06-01', lateEnrollmentDate: '2026-06-01' },
-    sweep: { maxWaitMinutes: 5 },
-    escalation: { maxWaitMinutes: 75, recipientRole: 'investigator', recipientUsername: 'ta3-recipient' },
-    ...overrides,
-  };
-}
+const planJson = ta3PlanJson;
 const plan = (overrides: Record<string, unknown> = {}): Ta3OqPlan => parseTa3OqPlan(planJson(overrides));
 
 async function runAgainst(t: { after(callback: () => unknown): void }, edcOptions: Partial<FakeEdcOptions> = {},

@@ -13,6 +13,7 @@ import {
   configurationUnderTest, parseConfigurationUnderTest, parseTargetConfiguration,
   CONFIGURATION_MISMATCH_REQUIRED, CONFIGURATION_UNDER_TEST_REQUIRED, type ConfigurationUnderTest,
 } from './target-configuration';
+import { parseTa3OqPlan } from './ta3-oq-plan';
 import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 
 // Retained evidence packages (TA3 plan VAL-1, spec P20 VD-3, 3.2). A package is
@@ -22,11 +23,12 @@ import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing
 // call packaging needs: generate.ts calls it and makes none of its own, so the
 // offline CLI fixture passes this module through to the real filesystem.
 
-// generate.ts reaches the evidence marking and the configuration declaration check
-// through this module, because the offline CLI fixture replaces every other runner
-// module it requires.
+// generate.ts reaches the evidence marking, the configuration declaration check and
+// the TA3 OQ plan check through this module, because the offline CLI fixture replaces
+// every other runner module it requires.
 export { DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE, evidenceNoticeLines } from './evidence-capture';
 export { checkTargetConfiguration } from './target-configuration';
+export { loadTa3OqPlan as checkTa3OqPlan } from './ta3-oq-plan';
 
 export const PACKAGE_CONTRACT = 'validation-evidence-package/1';
 export const MANIFEST_FILE = 'package-manifest.json';
@@ -36,8 +38,9 @@ export const SYNTHETIC_ROOT_MARKER = 'SYNTHETIC-TRIAL-DATA-ROOT';
  * and the directory name carries no time stamp, so the data root's retention never moves it. */
 export const SYNTHETIC_PACKAGE_HOME = ['runs', 'validation-packages'] as const;
 
-/** What a package retains in inputs/<role>.json. Later VAL-1 subtasks add the producers of
- * ta3-oq-plan and platform-evidence-plan; target-configuration is the --target-config declaration. */
+/** What a package retains in inputs/<role>.json. ta3-oq-plan is the --ta3-oq-plan file and
+ * target-configuration the --target-config declaration; VAL-1/validation-platform adds the
+ * producer of platform-evidence-plan. */
 export const INPUT_ROLES = [
   'ta3-oq-plan', 'platform-evidence-plan', 'p13-plan', 'training-evidence',
   'benchmark-run-summary', 'benchmark-metrics', 'target-configuration',
@@ -280,6 +283,7 @@ function prepareInput(source: PackageInputSource): PreparedInput {
  * so a declaration with a key off its allowlist never enters a package. */
 const INPUT_CONTRACTS: Partial<Record<PackageInputRole, (value: unknown, at: string) => void>> = {
   'target-configuration': (value, at) => { parseTargetConfiguration(value, at); },
+  'ta3-oq-plan': (value, at) => { parseTa3OqPlan(value, at); },
 };
 
 function writeInput(evidencePackage: EvidencePackage, input: PreparedInput): PackageInput {
