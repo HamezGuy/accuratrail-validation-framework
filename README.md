@@ -70,8 +70,11 @@ documents packages too. A synthetic package is retained only under
 the `runs/validation-packages` directory of a synthetic data root (a tree
 holding `SYNTHETIC-TRIAL-DATA-ROOT`, searched upwards from the retain root),
 that is `C:/Projects/.synthetic-trial-data/runs/validation-packages`. A package
-that is not synthetic is refused inside such a tree and needs a retention root
-QA names. No package is retained inside a git checkout. In a synthetic package
+that is not synthetic is refused inside such a tree and is retained only under
+a retention root QA names: a tree holding `QA-RETENTION-ROOT`, a marker file
+QA places (searched upwards from the retain root; no code creates it, and none
+exists tonight, so such a run stays scratch). A synthetic package is refused in
+such a tree. No package is retained inside a git checkout. In a synthetic package
 every record carries `synthetic: true`, each category summary carries the
 synthetic notice and every document opens with "SYNTHETIC ENGINEERING EVIDENCE.
 Synthetic data on a test stack. Not a real trial, not an approval."
@@ -86,9 +89,11 @@ and `metrics.json` (`benchmark-run-summary`, `benchmark-metrics`), so the
 package keeps them when the data root's retention later moves the run. Inputs
 are read and checked before the package is created: an input that cannot be
 read, is not JSON, or holds a credential (a password, token, secret or API key
-value rather than the name of the environment variable that holds it, a URL
-with a user and password, or an authorization header value) refuses the run
-and leaves nothing behind.
+value rather than the name of the environment variable that holds it, also under
+any member name ending in token, secret or private key, a URL with a user and
+password, an authorization header value, a JSON Web Token or a PEM block)
+refuses the run and leaves nothing behind. A member name ending in `Env` names
+the environment variable and is not a credential.
 
 Live runners refuse to start without `--retain-root` or `--no-retain`.
 `--no-retain` writes `output/<date>_<version>` scratch and stamps every record
@@ -103,7 +108,9 @@ package (`executed: false`).
 with its byte count and SHA-256, no unlisted file exists and the package hash
 recomputes; it also checks that the inputs and evidence counts match their
 files, that `configurationUnderTest` is recorded exactly when a declaration is
-retained and holds that declaration's SHA-256 and flags, that a synthetic package
+retained and holds that declaration's SHA-256 and flags and the mismatches the
+retained IQ and OQ records give, that every benchmark record's `summarySha256`
+and `metricsSha256` are the retained run summary and metrics inputs, that a synthetic package
 marks every record and document, and that no record or document of a package is
 stamped as a development run. On success it
 prints the SHA-256 of `package-manifest.json`, the `contentHash` the eTMF must
@@ -135,12 +142,22 @@ none. A retained package copies it to `inputs/target-configuration.json`, and
 IQ-033 checks that copy: the target, the source file's SHA-256 when the file is
 present, and, for a compose file, that the `core-api` service environment sets
 each declared flag as declared, read as the EDC reads it (a value an
-interpolation or the shell supplies is listed undetermined). The record states
+interpolation or the shell supplies is listed undetermined, and so is every key
+absent from a service that has its own `env_file`, `<<:` merge key or
+`extends:`; `ENABLE_DOMAIN_EVENTS` is on when it or
+`EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED` is `true`, as the EDC's
+`domainEventsEnabled()` reads them). The record states
 the delta to libreclinicaapi `.env.production.example` for the same flags and
-that live production values are not visible. Without a declaration IQ-033 is
-not executed (`NO_TARGET_CONFIGURATION`). When the package is sealed, the
-manifest's `configurationUnderTest` records the declaration with every
-contradiction IQ-033 and the observing OQ cases recorded.
+that live production values are not visible. IQ-029 reads the same declaration
+for environment segregation: neither the declared target nor `--base-url` is
+the production API host, and the source file is no production configuration
+file (a production target records `TARGET_IS_PRODUCTION`). Without a
+declaration IQ-029 and IQ-033 are not executed (`NO_TARGET_CONFIGURATION`).
+When the package is sealed, the manifest's `configurationUnderTest` records
+the declaration with every contradiction IQ-033 and the observing OQ cases
+recorded; each observing case reads only its own disabled code
+(`ENGINE_DISABLED` for OQ-206, `FEATURE_DISABLED_AT_TARGET` for the O-1 and
+W-1 cases) as its flag off.
 
 ```powershell
 npm run generate -- --iq --base-url http://localhost:3000 --synthetic-qualification `
@@ -223,8 +240,15 @@ the API, core and training services, RDS PostgreSQL 14 (`accuratrials-hipaa-db`)
 and the frontend on Vercel. The Intelligence Layer is a separate system outside
 this release. The OQ and PQ protocols and the execution records never print the
 production environment as the environment under test: the API is the target the
-run's release identity observed, and every other environment detail reads
-"Recorded at execution".
+run's release identity observed (a version endpoint that did not answer is
+stated as failed, never as observed), and every other environment detail reads
+"Recorded at execution". The IQ, OQ and PQ protocols are generated again after
+the runners, so they name that target. The system version is the label the EDC
+API reports at `/health` (0.1.0); the build under test is the release
+identity. The execution records date the run from the records' own timestamps.
+Every pass count names the registry cases (a prefix and three digits, for example
+OQ-206) apart from the bookkeeping rows (setup, sessions, cleanup, import steps)
+that category totals and package manifests still count.
 
 ### Approval
 
@@ -403,7 +427,8 @@ their SHA-256 alone. The plan is checked before anything runs: a system the
 inventory lacks, an entry the system does not admit (the inventory names what
 each system admits; the Intelligence Layer takes a package only with P13
 evidence, the Command Center only with benchmark evidence), or a `synthetic`
-declaration that differs from the cited manifest refuses it; a hash that does
+declaration that differs from the cited manifest refuses it (also for a
+`package-manifest.json` cited by hash alone); a hash that does
 not match is shown as `mismatch`, a file or package that cannot be read as
 `unreadable`. Any synthetic entry makes the run synthetic: a documents package
 is then retained only under `runs/validation-packages` of the synthetic data
@@ -412,8 +437,9 @@ package copies the plan to `inputs/platform-evidence-plan.json`, and the
 summary reads that copy. Without a plan every system shows its gap.
 
 The summary also compares the EDC API release of each cited OQ package with
-the release a cited O-7 import recorded in PQT-005 (`same`; `RELEASE_MISMATCH`,
-which becomes a gap of the EDC API; or `not-comparable`), and lists the
+the release a cited O-7 import recorded in PQT-005 (`same` only when every OQ
+and O-7 pair compares; `RELEASE_MISMATCH`, which becomes a gap of the EDC API;
+or `not-comparable`), and lists the
 validated change awaiting change control: D-04, turning on
 `ENABLE_DEVIATION_ENGINE`, `ENABLE_DOMAIN_EVENTS` and
 `ENABLE_DEVIATION_DECISIONS` in the live trial, with their lines in the EDC

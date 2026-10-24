@@ -351,8 +351,17 @@ export function releaseConsistency(entries: readonly CheckedPlatformEvidence[]):
         + `the O-7 import ${right.manifestSha256.slice(0, 12)} recorded ${apiText(right.api)}`).join('; '),
     };
   }
-  if (comparable.length) return { status: 'same', oq, o7, detail: `Every OQ package and O-7 import states the same EDC API release (${apiText(comparable[0].left.api)}).` };
-  return { status: 'not-comparable', oq, o7, detail: 'A side states no EDC API release, or the two state it in different kinds (a Git commit against an image ID).' };
+  // Same only when every OQ package and O-7 import pair compares: one pair that cannot be compared leaves it open.
+  if (comparable.length && comparable.length === pairs.length) {
+    return { status: 'same', oq, o7, detail: `Every OQ package and O-7 import states the same EDC API release (${apiText(comparable[0].left.api)}).` };
+  }
+  const open = pairs.filter(pair => !comparable.includes(pair));
+  return {
+    status: 'not-comparable', oq, o7,
+    detail: `${open.length} of ${pairs.length} OQ package and O-7 import pairs cannot be compared: a side states no EDC API release, `
+      + 'or the two state it in different kinds (a Git commit against an image ID)'
+      + (comparable.length ? `; the ${comparable.length} pairs that compare state the same release (${apiText(comparable[0].left.api)})` : '') + '.',
+  };
 }
 
 function pendingChange(change: typeof PENDING_VALIDATED_CHANGES[number], repository: (id: string) => string | null,

@@ -385,3 +385,38 @@ test('the summary and plan schemas require exactly what the generator writes and
     assert.equal(planSchema.definitions[name].additionalProperties, false, name);
   }
 });
+
+test('release consistency is same only when every OQ and O-7 pair compares', t => {
+  const { platformRoot } = fakePlatform(t);
+  const home = markedHome(t);
+  const sources = temporaryDirectory(t, 'accura-platform-pairs-');
+  const oq = oqPackage(home, API_A);
+  const comparing = o7Package(home, API_A, 'o7-comparing');
+  const silent = o7Package(home, undefined, 'o7-silent');
+  const summary = buildPlatformSummary(path.join(platformRoot, 'EDCProject'), {
+    platformRoot, now: NOW,
+    platformEvidencePlan: planFile(sources, { 'edc-api': { evidence: [packageEntry(oq)] }, 'command-center': { evidence: [packageEntry(comparing), packageEntry(silent)] } }),
+  });
+  assert.equal(summary.releaseConsistency.status, 'not-comparable');
+  assert.match(summary.releaseConsistency.detail, /^1 of 2 OQ package and O-7 import pairs cannot be compared: .*; the 1 pairs that compare state the same release \(git-commit a{40}\)\.$/);
+});
+
+test('a hash-only entry that is a package manifest must declare the synthetic flag the manifest states', t => {
+  const home = markedHome(t);
+  const sources = temporaryDirectory(t, 'accura-platform-hash-manifest-');
+  const oq = oqPackage(home, API_A);
+  const manifest = path.join(oq.dir, MANIFEST_FILE);
+  const entry = (synthetic: boolean) => ({ kind: 'bw-formal-qualification/1', path: manifest, sha256: oq.manifestSha256, synthetic });
+  assert.throws(() => checkPlatformEvidencePlan(planFile(sources, { workbench: { evidence: [entry(false)] } })),
+    /declares synthetic false, but the package manifest .*package-manifest\.json it cites by hash states synthetic true; correct the plan/);
+  const checked = checkPlatformEvidencePlan(planFile(sources, { workbench: { evidence: [entry(true)] } }));
+  assert.deepEqual(checked.entries.map(item => [item.status, item.synthetic]), [['hash-only', true]]);
+  assert.equal(checked.synthetic, true);
+});
+
+test('the Workbench printed-name gap states what the Workbench records, TA2 decision authorizations included', () => {
+  const gap = system('workbench').gaps.find(entry => entry.id === 'printed-name-optional')!;
+  assert.doesNotMatch(gap.text, /records none/);
+  assert.match(gap.text, /only when an administrator recorded one, and requires it only under BW_REQUIRE_PRINTED_NAME=true \(off by default\), TA2 decision authorizations included/);
+  assert.deepEqual(gap.probe, { file: 'src/storage.ts', rule: 'contains', literal: 'process.env.BW_REQUIRE_PRINTED_NAME!==\'true\'' });
+});

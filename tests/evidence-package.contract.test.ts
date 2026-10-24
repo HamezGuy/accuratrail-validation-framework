@@ -10,7 +10,7 @@ import {
 import {
   createPackage, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
   APPROVAL_RECORDED_IN, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_REQUIRED, MANIFEST_OPTIONAL, MANIFEST_REQUIRED,
-  SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, type PackageOptions,
+  QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, type PackageOptions,
 } from '../runners/evidence-package';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
@@ -176,9 +176,13 @@ test('a synthetic package needs the marked data root\'s package home, and a pack
   assert.throws(() => createPackage(syntheticPackage(inRepository, { syntheticBasis: [] })), /inside the git checkout/);
   assert.equal(fs.existsSync(inRepository), false);
   assert.equal(fs.existsSync(home), false, 'a refusal creates nothing');
-  assert.deepEqual(fs.readdirSync(plain), []);
 
-  // A package that is not synthetic, outside any marked tree: a documents package here.
+  // A package that is not synthetic needs a root QA marked (RF-070); a documents package here.
+  assert.throws(() => createPackage({ retainRoot: plain, version: 'docs-v1', executed: false, syntheticBasis: [] }),
+    new RegExp(`retained only under a retention root QA names: a directory tree holding ${QA_RETENTION_ROOT_MARKER}`));
+  assert.deepEqual(fs.readdirSync(plain), []);
+  fs.writeFileSync(path.join(plain, QA_RETENTION_ROOT_MARKER), 'Retention root for a contract test.\n');
+  assert.throws(() => createPackage(syntheticPackage(plain)), /retained only under a synthetic data root/);
   const documents = createPackage({ retainRoot: plain, version: 'docs-v1', executed: false, syntheticBasis: [] });
   assert.equal(currentEvidenceMarking()?.synthetic, false);
   fs.writeFileSync(path.join(documents.dir, '12-validation-summary.md'), header('Validation Summary'));
@@ -445,4 +449,61 @@ test('the package manifest schema requires exactly what the validator requires',
   assert.deepEqual(schema.definitions.category.properties.category.enum, [...EVIDENCE_CATEGORIES]);
   assert.equal(schema.properties.syntheticNotice.const, SYNTHETIC_NOTICE);
   assert.equal(schema.definitions.approval.properties.recordedIn.const, APPROVAL_RECORDED_IN);
+});
+
+test('an input is refused for a key ending in token, secret or private key, a JSON Web Token or a PEM block (RF-069)', t => {
+  const { home } = markedRoot(t);
+  const sources = temporaryDirectory(t, 'accura-package-credentials-');
+  const jwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from('{"sub":"synthetic"}').toString('base64url')}.c2lnbmF0dXJl`;
+  for (const [label, content, at] of [
+    ['a key ending in token', '{"github":{"githubToken":"ghp_synthetic"}}', '$.github.githubToken'],
+    ['a key ending in secret', '{"oauth":{"client_secret":"synthetic"}}', '$.oauth.client_secret'],
+    ['a key ending in private key', '{"sshPrivateKey":"synthetic"}', '$.sshPrivateKey'],
+    ['a JSON Web Token under any key', `{"notes":["session ${jwt}"]}`, '$.notes[0]'],
+    ['a PEM block under any key', '{"material":"-----BEGIN PRIVATE KEY-----\\nMIIB\\n-----END PRIVATE KEY-----"}', '$.material'],
+  ]) {
+    const file = path.join(sources, 'holds-secret.json');
+    fs.writeFileSync(file, content);
+    assert.throws(() => createPackage(syntheticPackage(home, { inputs: [{ role: 'ta3-oq-plan', file }] })),
+      (error: Error) => error.message.includes(`holds a credential at ${at};`), label);
+  }
+  // A key ending in Env names the environment variable, and an environment variable name is allowed where a secret would be.
+  const allowed = path.join(sources, 'p13-plan.json');
+  fs.writeFileSync(allowed, '{"tokenEnv":"P13_TOKEN","clientSecretEnv":"OAUTH_SECRET","githubToken":"GITHUB_TOKEN","revision":"r1"}');
+  const evidencePackage = createPackage(syntheticPackage(home, { inputs: [{ role: 'p13-plan', file: allowed }] }));
+  assert.deepEqual(evidencePackage.inputs.map(input => input.role), ['p13-plan']);
+  sealPackage(evidencePackage);
+});
+
+test('verification recomputes the configuration mismatches and binds the benchmark inputs to the records (RF-077, RF-071)', t => {
+  const { home } = markedRoot(t);
+  const sources = temporaryDirectory(t, 'accura-package-recompute-');
+  const { file } = declarationFile(sources, { ENABLE_DEVIATION_ENGINE: true });
+  const evidencePackage = createPackage(syntheticPackage(home, { inputs: [{ role: 'target-configuration', file }] }));
+  saveEvidence(evidencePackage.dir, 'oq', [record('OQ-206', { passed: false, outcomeCode: 'ENGINE_DISABLED', notes: 'Engine answered 503' })]);
+  const manifest = JSON.parse(fs.readFileSync(sealPackage(evidencePackage).manifestPath, 'utf8'));
+  assert.equal(manifest.configurationUnderTest.mismatches.length, 1);
+  const manifestPath = path.join(evidencePackage.dir, MANIFEST_FILE);
+  fs.chmodSync(manifestPath, 0o644);
+  const { packageHash: _hash, ...body } = { ...manifest, configurationUnderTest: { ...manifest.configurationUnderTest, mismatches: [] } };
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...body, packageHash: manifestHash(body) }));
+  assert.match(verifyPackage(evidencePackage.dir).problems.join('\n'),
+    /configurationUnderTest\.mismatches differ from those the retained IQ and OQ records give \(1 recomputed, 0 recorded\)/);
+
+  // A benchmark record that names other run files than the retained inputs does not verify.
+  const run = temporaryDirectory(t, 'accura-package-benchmark-run-');
+  const summary = Buffer.from('{"localEngineering":"passed"}');
+  const metrics = Buffer.from('{"metrics":[]}');
+  fs.writeFileSync(path.join(run, 'run-summary.json'), summary);
+  fs.writeFileSync(path.join(run, 'metrics.json'), metrics);
+  const bench = (version: string, summarySha256: string) => {
+    const imported = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['benchmark-import'],
+      inputs: [{ role: 'benchmark-run-summary', file: path.join(run, 'run-summary.json') }, { role: 'benchmark-metrics', file: path.join(run, 'metrics.json') }] });
+    saveEvidence(imported.dir, 'benchmark', [record('BENCHMARK-RECONSTRUCTION', {
+      method: 'OFFLINE', responseStatus: 0, responseBody: { summarySha256, metricsSha256: sha256(metrics) } })]);
+    try { sealPackage(imported); return ''; } catch (error) { return (error as Error).message; }
+  };
+  assert.equal(bench('bench-same', sha256(summary)), '');
+  assert.match(bench('bench-other', 'f'.repeat(64)),
+    new RegExp(`benchmark record BENCHMARK-RECONSTRUCTION states summarySha256 f{64}, not the retained benchmark-run-summary input ${sha256(summary)}`));
 });

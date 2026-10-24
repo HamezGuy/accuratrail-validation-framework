@@ -43,6 +43,9 @@ export const SYNTHETIC_ROOT_MARKER = 'SYNTHETIC-TRIAL-DATA-ROOT';
 /** Where synthetic packages live below the marked root: the existing runs zone. No new zone is created,
  * and the directory name carries no time stamp, so the data root's retention never moves it. */
 export const SYNTHETIC_PACKAGE_HOME = ['runs', 'validation-packages'] as const;
+/** The marker file QA places at the retention root it names for packages that are not synthetic.
+ * No code creates it: without it such a package is refused (RF-070). */
+export const QA_RETENTION_ROOT_MARKER = 'QA-RETENTION-ROOT';
 
 /** What a package retains in inputs/<role>.json. ta3-oq-plan is the --ta3-oq-plan file,
  * target-configuration the --target-config declaration and platform-evidence-plan the
@@ -153,6 +156,10 @@ const INPUT_BYTE_LIMIT = 64 * 1024 * 1024;
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]*$/;
 const URL_CREDENTIALS = /[a-z][a-z0-9+.-]*:\/\/[^\s/@]*:[^\s/@]*@/i;
 const AUTHORIZATION_VALUE = /^(?:bearer|basic)\s+\S/i;
+/** A JSON Web Token anywhere in a string: a base64url JSON header ("eyJ"), a payload and a signature part. */
+const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/;
+/** A PEM block (a private key, a certificate or any other) anywhere in a string. */
+const PEM_VALUE = /-----BEGIN [A-Z0-9 ]+-----/;
 
 function packageCheck(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
@@ -216,31 +223,55 @@ function enclosingCheckout(start: string): string | undefined {
   }
 }
 
+/** The nearest directory at or above `start` holding the QA retention root marker. */
+export function qaRetentionRoot(start: string): string | undefined {
+  for (let current = path.resolve(start); ; current = path.dirname(current)) {
+    if (isFile(path.join(current, QA_RETENTION_ROOT_MARKER))) return current;
+    if (path.dirname(current) === current) return undefined;
+  }
+}
+
 /** A synthetic package lives only under the marked data root's runs/validation-packages;
- * a package that is not synthetic never lives in a marked tree. Neither is written
+ * a package that is not synthetic lives only in a tree QA marked as its retention root
+ * (QA_RETENTION_ROOT_MARKER), never in a synthetic data root (RF-070). Neither is written
  * into a git checkout: executed evidence is never kept in a repository. */
 function retentionRoot(retainRoot: string, synthetic: boolean): string {
   const root = path.resolve(retainRoot);
   const checkout = enclosingCheckout(root);
   packageCheck(!checkout, `--retain-root ${root} is inside the git checkout ${checkout}; executed evidence is never retained in a repository.`);
   const marked = markedDataRoot(root);
+  const qaRoot = qaRetentionRoot(root);
   if (synthetic) {
     packageCheck(marked, `A synthetic package is retained only under a synthetic data root (a directory tree holding `
       + `${SYNTHETIC_ROOT_MARKER}), and ${root} is not in one; use C:/Projects/.synthetic-trial-data/runs/validation-packages.`);
     const home = path.join(marked, ...SYNTHETIC_PACKAGE_HOME);
     packageCheck(isWithin(home, root), `A synthetic package is retained under ${home}, the data root's runs zone, not ${root}.`);
+    packageCheck(!qaRoot, `A synthetic package is never retained in the QA retention root ${qaRoot}.`);
   } else {
     packageCheck(!marked, `A package that is not synthetic is never retained inside the synthetic data root ${marked}; `
       + 'use a retention root QA names.');
+    packageCheck(qaRoot, `A package that is not synthetic is retained only under a retention root QA names: a directory tree `
+      + `holding ${QA_RETENTION_ROOT_MARKER}, which QA places; ${root} is not in one.`);
   }
   return root;
 }
 
+/** A member name that holds a credential in a package input: the redaction list
+ * (isCredentialKey) and, wider than it, any name ending in token, secret or private
+ * key (githubToken, client_secret, sshPrivateKey). A name ending in Env names the
+ * environment variable instead and is not one (RF-069). */
+function credentialNamed(key: string): boolean {
+  const normal = key.replace(/[-_]/g, '').toLowerCase();
+  return isCredentialKey(key) || (!normal.endsWith('env') && /(?:token|secret|privatekey)$/.test(normal));
+}
+
 /** The first credential in a parsed input: a credential-named member that holds
- * anything but an environment variable name, a URL with a user and password, or
- * an authorization header value. */
+ * anything but an environment variable name, a URL with a user and password, an
+ * authorization header value, a JSON Web Token or a PEM block. */
 function credentialAt(value: unknown, at: string): string | undefined {
-  if (typeof value === 'string') return URL_CREDENTIALS.test(value) || AUTHORIZATION_VALUE.test(value) ? at : undefined;
+  if (typeof value === 'string') {
+    return URL_CREDENTIALS.test(value) || AUTHORIZATION_VALUE.test(value) || JWT_VALUE.test(value) || PEM_VALUE.test(value) ? at : undefined;
+  }
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
       const found = credentialAt(item, `${at}[${index}]`);
@@ -251,7 +282,7 @@ function credentialAt(value: unknown, at: string): string | undefined {
   if (!isRecord(value)) return undefined;
   for (const [key, item] of Object.entries(value)) {
     const where = `${at}.${key}`;
-    if (isCredentialKey(key) && item !== null && item !== '' && !(typeof item === 'string' && ENVIRONMENT_NAME.test(item))) return where;
+    if (credentialNamed(key) && item !== null && item !== '' && !(typeof item === 'string' && ENVIRONMENT_NAME.test(item))) return where;
     const found = credentialAt(item, where);
     if (found) return found;
   }
@@ -620,6 +651,34 @@ export function verifyPackage(directory: string): PackageVerification {
     if (recorded.sha256 !== declaration.sha256 || (flags !== undefined && flags !== canonicalJson(recorded.flags, 'Declared flags'))) {
       problems.push(`configurationUnderTest is not the retained declaration ${declaration.path}`);
     }
+    // The mismatches are recomputed from the retained IQ and OQ records, so a manifest cannot drop or add one (RF-077).
+    if (bytes && flags !== undefined) {
+      try {
+        const recomputed = configurationUnderTest(bytes, { iq: loadEvidence(dir, 'iq'), oq: loadEvidence(dir, 'oq') }).mismatches;
+        if (canonicalJson(recomputed, 'Configuration mismatches') !== canonicalJson(recorded.mismatches, 'Configuration mismatches')) {
+          problems.push(`configurationUnderTest.mismatches differ from those the retained IQ and OQ records give (${recomputed.length} recomputed, ${recorded.mismatches.length} recorded)`);
+        }
+      } catch (error) {
+        problems.push(`configurationUnderTest.mismatches cannot be recomputed from the retained records (${errorText(error)})`);
+      }
+    }
+  }
+  // A benchmark record states the SHA-256 of the run summary and metrics it reconstructed; the retained inputs
+  // must be those bytes, so a package cannot pair an import's records with another run's files (RF-071).
+  const benchmarkInputs = { summarySha256: 'benchmark-run-summary', metricsSha256: 'benchmark-metrics' } as const;
+  if (listed.has(resultsFile('benchmark'))) {
+    let records: EvidenceResult[] = [];
+    try { records = loadEvidence(dir, 'benchmark'); } catch { records = []; }
+    for (const record of records) {
+      const body = isRecord(record.responseBody) ? record.responseBody : undefined;
+      for (const [member, role] of Object.entries(benchmarkInputs)) {
+        const stated = body?.[member];
+        if (typeof stated !== 'string') continue;
+        const input = manifest.inputs.find(entry => entry.role === role);
+        if (!input) problems.push(`benchmark record ${record.testCaseId} states ${member} ${stated}, but the package retains no ${role} input`);
+        else if (input.sha256 !== stated) problems.push(`benchmark record ${record.testCaseId} states ${member} ${stated}, not the retained ${role} input ${input.sha256}`);
+      }
+    }
   }
   const counted = new Set(manifest.categories.map(entry => entry.category));
   for (const category of EVIDENCE_CATEGORIES) {
@@ -705,11 +764,28 @@ function fileSha256(file: string): { sha256: string } | { error: string } {
   }
 }
 
+/** The manifest a hash-only entry names when the file is a package-manifest.json that reads as one
+ * (at most 16 MiB); undefined for any other file. */
+function citedManifest(file: string): PackageManifest | undefined {
+  if (path.basename(file) !== MANIFEST_FILE) return undefined;
+  try {
+    if (fs.statSync(file).size > 16 * 1024 * 1024) return undefined;
+    const text = fs.readFileSync(file, 'utf8');
+    return parseManifest(JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text));
+  } catch {
+    return undefined;
+  }
+}
+
 /** A plan entry checked against the bytes it names. */
 function checkPlatformEvidence(system: PlatformSystemId, entry: PlatformEvidenceEntry, at: string): CheckedPlatformEvidence {
   if (entry.kind !== PACKAGE_EVIDENCE_KIND) {
     const hashed = fileSha256(entry.path);
     if ('error' in hashed) return { system, entry, status: 'unreadable', detail: `${entry.path} ${hashed.error}`, synthetic: entry.synthetic };
+    // A package manifest cited by hash alone still states whether its package is synthetic, and the plan must say the same.
+    const cited = citedManifest(entry.path);
+    packageCheck(!cited || cited.synthetic === entry.synthetic, `${at} declares synthetic ${entry.synthetic}, but the package manifest `
+      + `${entry.path} it cites by hash states synthetic ${cited?.synthetic}; correct the plan`);
     return hashed.sha256 === entry.sha256
       ? { system, entry, status: 'hash-only', detail: 'SHA-256 matches; admitted by hash only, not verified as a package', synthetic: entry.synthetic }
       : { system, entry, status: 'mismatch', detail: `SHA-256 is ${hashed.sha256}, the plan states ${entry.sha256}`, synthetic: entry.synthetic };

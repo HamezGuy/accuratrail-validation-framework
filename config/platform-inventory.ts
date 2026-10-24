@@ -210,7 +210,7 @@ export const PLATFORM_SYSTEMS = [
     gaps: [
       { id: 'printed-name-optional', item: 'VAL-1',
         text: 'A signature carries the signer\'s printed name only when an administrator recorded one, and requires it only under '
-          + 'BW_REQUIRE_PRINTED_NAME=true (off by default); the TA2 decision authorization records none (21 CFR 11.50)',
+          + 'BW_REQUIRE_PRINTED_NAME=true (off by default), TA2 decision authorizations included (21 CFR 11.50)',
         probe: { file: 'src/storage.ts', rule: 'contains', literal: 'process.env.BW_REQUIRE_PRINTED_NAME!==\'true\'' } },
       { id: 'model-providers', item: 'K-3', text: 'Model providers are Bedrock or Anthropic only, against the Azure-only inference policy (BW-19)' },
     ],
