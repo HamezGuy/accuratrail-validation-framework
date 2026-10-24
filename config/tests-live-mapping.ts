@@ -392,6 +392,50 @@ export const TESTS_LIVE_MAPPINGS: TestLiveMapping[] = [
     testCaseIds: ['PQM-007', 'OQ-050'],
     domain: 'test-infrastructure',
   },
+  // ─── Deviation engine live scripts (coverage pointers for OQ suite 13) ─────
+
+  {
+    scriptPath: 'scripts/deviation-engine/90-deviation-engine-live.ts',
+    description: 'Deviation engine end to end: an imported bundle arms the engine, a form save detects at submit time, an unevaluated subject is never clean, a save is never blocked',
+    testCaseIds: ['OQ-206', 'OQ-207', 'OQ-209'],
+    domain: 'deviation-engine',
+  },
+  {
+    scriptPath: 'scripts/deviation-engine/91-visit-identity-regression.ts',
+    description: 'Visit identity regression: a re-evaluated subject who attended every visit logs no fabricated missed-visit deviation',
+    testCaseIds: ['OQ-208', 'OQ-211'],
+    domain: 'deviation-engine',
+  },
+  {
+    scriptPath: 'scripts/deviation-engine/92-preflight-normalization.ts',
+    description: 'Visit preflight keeps "no timing requirement" apart from "could not be matched", a coverage gap',
+    testCaseIds: ['OQ-209'],
+    domain: 'deviation-engine',
+  },
+  {
+    scriptPath: 'scripts/deviation-engine/93-outcome-vocabulary.ts',
+    description: 'Per-subject outcome rows, the second record of every deviation, speak the study vocabulary',
+    testCaseIds: ['OQ-207'],
+    domain: 'deviation-engine',
+  },
+  {
+    scriptPath: 'scripts/deviation-engine/94-deviation-provenance.ts',
+    description: 'Protocol provenance: a deviation rule answers with the protocol text and where it sits',
+    testCaseIds: ['OQ-206'],
+    domain: 'deviation-engine',
+  },
+  {
+    scriptPath: 'scripts/deviation-engine/95-deviation-task-chain.ts',
+    description: 'A detected deviation raises its configured task through deviation.logged and the cron, one task per deviation',
+    testCaseIds: ['OQ-214'],
+    domain: 'deviation-engine',
+  },
+  {
+    scriptPath: 'scripts/deviation-engine/96-manual-protocol-link.ts',
+    description: 'Manual protocol source browse and link for a study fingerprint matching cannot link',
+    testCaseIds: ['OQ-206'],
+    domain: 'deviation-engine',
+  },
   {
     scriptPath: 'scripts/31-run-all.ts',
     description: 'Runner for 31a–31k query test suite',

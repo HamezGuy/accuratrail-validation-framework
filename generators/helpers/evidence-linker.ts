@@ -58,9 +58,10 @@ const weakPassword = (account: string) => `Synthetic fixture only: changing the 
   + 'with HTTP 400 PASSWORD_POLICY_VIOLATION and non-empty errors, and the unchanged password must still log in.';
 const ownedAuditRow = (table: string, entity: string) => `Synthetic fixture: the owned-study audit read must contain a ${table} `
   + `row whose entityId is the owned ${entity} (the action type is not checked).`;
+const TA3_PLAN = 'TA3 plan study (the designated armed duplicate a ta3-oq-plan/1 names)';
 
 /** Actual checks of the runner cases that generators cite, verified against
- * runners/oq-runner.ts, pq-runner.ts and security-runner.ts. A generator may cite a
+ * runners/oq-runner.ts, oq-ta3-runner.ts, pq-runner.ts and security-runner.ts. A generator may cite a
  * case only for a control this text shows it verifies; update both with the runner. */
 export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-001': { check: 'Operator login (POST /api/auth/login with the configured OQ operator) must succeed with a usable access token.' },
@@ -152,6 +153,101 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-154': { check: 'Synthetic fixture: passes only if all ten study-setup rows PQ-001 to PQ-010 (signed release, reviewed '
     + 'activation, enrollment and visit readbacks) passed.' },
   'OQ-193': { check: auditCsv },
+  // The TA3 suites 13 to 18 (runners/oq-ta3-runner.ts), against the armed study a ta3-oq-plan/1 names. A refusal
+  // that shows the feature off at the target or absent at the release fails with its code; a setup gap is not executed.
+  'OQ-206': { check: `${TA3_PLAN}: GET /api/deviation-engine/spec?studyId=<study> must answer 200 with hasSpec true and at least one machine rule `
+    + '(503 naming ENABLE_DEVIATION_ENGINE fails ENGINE_DISABLED); the spec hash of the OQ-207 receipt must equal the plan\'s expectedSpecHash, and a '
+    + 'stated expectedCslReleaseId must equal sourceManifest.releaseBinding.cslReleaseId.' },
+  'OQ-207': { check: `${TA3_PLAN}: an owned subject is enrolled at the OQ site, the plan's visit scheduled and its form located; a save of the violating `
+    + 'value must answer 200, a new receipt by the saving user (actorId) must mark the save rule violated within 120 seconds, and the site\'s machine '
+    + 'deviation log must hold exactly one deviation for that subject and rule. A training refusal of a clinical write records TRAINING_NOT_CURRENT.' },
+  'OQ-208': { check: `${TA3_PLAN}: a second owned subject saved with the compliant value must get a new receipt by the saving user that records the `
+    + 'rule passed, and no machine deviation for that subject and rule.' },
+  'OQ-209': { check: `${TA3_PLAN}: an owned subject read right after enrollment (outcomes, then receipts) must show no passed outcome; a sweep receipt `
+    + 'already present gives one retry with a new subject, then SWEEP_RACED (not executed).' },
+  'OQ-210': { check: `${TA3_PLAN}: an owned subject enrolled at the absence rule's anchor date with no visit data must, within sweep.maxWaitMinutes `
+    + '(polled every 30 seconds), get a receipt by the system actor (user 1) marking the rule violated (else SWEEP_NOT_OBSERVED) and exactly one machine '
+    + 'deviation for that subject and rule.' },
+  'OQ-211': { check: 'POST /api/deviation-engine/evaluate for the OQ-207 subject must add the receipt it returns, and the OQ-207 deviation must stay '
+    + 'the only machine deviation for the rule.' },
+  'OQ-212': { check: 'PUT, PATCH and DELETE on /api/deviation-engine/evaluations/:id of the OQ-207 receipt must each answer 404 or 405, and the '
+    + 'receipt read as exact bytes must hash the same before and after (API refusal only, not database enforcement).' },
+  'OQ-213': { check: 'Correcting the OQ-207 item to the compliant value with a reason must give a new receipt by the saving user that records the rule '
+    + 'neither violated nor missing; the OQ-207 receipt must still read violated in the subject\'s history and the deviation must read open.' },
+  'OQ-214': { check: 'The plan\'s follow-up study task must be an action trigger on deviation.logged (else FOLLOW_UP_TASK_NOT_CONFIGURED); within two '
+    + 'cron cycles and 30 seconds exactly one workflow task from it must name the OQ-207 deviation (else TASK_NOT_OBSERVED). ENABLE_DOMAIN_EVENTS '
+    + 'declared false records FEATURE_DISABLED_AT_TARGET after one read, or CONFIGURATION_MISMATCH when a task exists.' },
+  'OQ-215': { check: 'POST /api/deviation-engine/protocol-applicability for the OQ site must answer 403 to the monitor and 201 with an applicabilityId '
+    + 'to the operator, for an owned version established from 2099-12-31.' },
+  'OQ-216': { check: 'The OQ-215 record must read back effectiveFrom 2099-12-31, ethicsApprovalDate 2099-12-30 and documentedOn 2099-12-31 exactly; '
+    + 'a withdrawn record of the owned version must answer 201 and leave it not current.' },
+  'OQ-217': { check: 'Both plan versions must be current and established at the OQ site from their effectiveFrom (else VERSION_FIXTURE_ABSENT); for '
+    + 'owned subjects enrolled at the plan\'s early and late dates and evaluated, the versioned rule\'s applicability must name the first version for a '
+    + 'target date before the second effectiveFrom and the second version for one on or after it.' },
+  'OQ-218': { check: 'With an owned version recorded unresolved at the OQ site, a re-evaluated owned subject must have outcomes that state '
+    + 'applicability, each with version_status unresolved and protocol_version null and one listing the owned version as a candidate; the owned '
+    + 'version is then withdrawn.' },
+  'OQ-219': { check: 'GET /api/protocol-deviations?studyId=<study>&includeSites=true must list every owned deviation of the OQ site; rows or an owned '
+    + 'deviation without O-1\'s captureSource fail FEATURE_ABSENT_AT_RELEASE.' },
+  'OQ-220': { check: 'The OQ-207 machine deviation must carry occurredOn with basis visit-date, and a manual deviation logged with a stated occurredOn '
+    + 'must read back that date with basis stated; no captureSource, or a 400 refusing occurredOn, fails FEATURE_ABSENT_AT_RELEASE.' },
+  'OQ-221': { check: 'On an owned manual deviation the reviewer\'s unsigned POST /api/protocol-deviations/:id/assessment must answer 403 '
+    + 'SIGNATURE_REQUIRED and the logger\'s signed one 403, appending no assess event; 503 DEVIATION_DECISIONS_DISABLED fails '
+    + 'FEATURE_DISABLED_AT_TARGET and the unknown-route 404 FEATURE_ABSENT_AT_RELEASE.' },
+  'OQ-222': { check: 'The reviewer\'s signed assessment (confirmed, not important) must answer 201; the assessment in force must state them, assessedBy '
+    + 'the reviewer, a parseable assessedAt, an integer revision and the reviewer\'s signature with DEVIATION_ASSESSMENT_MEANING.' },
+  'OQ-223': { check: 'Signed assessments confirmed without importance and not a deviation with importance must each answer 400, appending no assess event.' },
+  'OQ-224': { check: 'After the reviewer\'s signed not-a-deviation assessment, a signed not-a-deviation closure must answer 403 to the assessor and 200 '
+    + 'to the third person; the close event must record closureKind not-a-deviation by the third person with DEVIATION_CLOSURE_MEANING and the '
+    + 'deviation must read closed.' },
+  'OQ-225': { check: 'On the assessed deviation, with a retained original uploaded, the operator plans and completes; the operator\'s review (signed when '
+    + 'an assessment is in force) must answer 403, the reviewer\'s unsigned review 403 and signed review 200. Without an assessment in force the '
+    + 'independence part runs and the signature part fails FEATURE_ABSENT_AT_RELEASE or FEATURE_DISABLED_AT_TARGET.' },
+  'OQ-226': { check: 'A corrective-action plan with a stale revision must answer 409 and, unless O-1 is absent or off, a signed assessment with a stale '
+    + 'source hash 409; the deviation\'s history and revision must be unchanged.' },
+  'OQ-227': { check: 'O-2 (spec P09 5.2.5): the policy workspace must read (a head answer, the deviation-id 400 or the unknown-route 404, fails '
+    + 'FEATURE_ABSENT_AT_RELEASE); the operator\'s signed proposal must answer 201 and not be in force, the proposer\'s signed review 403, and the '
+    + 'reviewer\'s signed acceptance 201, after which the OQ row is in force. 503 DEVIATION_DECISIONS_DISABLED fails FEATURE_DISABLED_AT_TARGET.' },
+  'OQ-228': { check: 'With the OQ policy in force and escalation.maxWaitMinutes at least 70 (else ESCALATION_WINDOW_NOT_WAITED), a fresh owned '
+    + 'deviation must show no escalation at 58 minutes, then exactly one escalate event (clock assessment, level 1) at least 59 minutes after it was '
+    + 'logged, naming the one deviation_escalation task listed for it. None while the recipient is unconfirmed in the site staff list records '
+    + 'RECIPIENT_UNAVAILABLE.' },
+  'OQ-229': { check: 'Two cron cycles and 15 seconds after the OQ-228 escalation the deviation must still have one level-1 assessment escalate event '
+    + 'and one deviation_escalation task.' },
+  'OQ-230': { check: 'With the OQ policy in force and at least four minutes allowed, a fresh owned deviation with a corrective-action plan due a minute '
+    + 'ago (a refusal naming the due date records DUE_AT_REFUSED) must show exactly one escalate event on a corrective-action clock within three '
+    + 'cron cycles and 30 seconds (RECIPIENT_UNAVAILABLE as in OQ-228).' },
+  'OQ-231': { check: 'Every escalate event of the OQ-228 and OQ-230 deviations and the task it names must carry no arm member (arm, armId, '
+    + 'studyGroupId, treatment and the like) and must not repeat the deviation description.' },
+  'OQ-232': { check: 'With a synthetic original in the OQ site\'s lifecycle evidence, the operator\'s signed contract.sent record must answer 201 and '
+    + 'await review, the recorder\'s signed review 403, and the reviewer\'s signed acceptance 201, after which the record is in force.' },
+  'OQ-233': { check: 'POST /api/sites/study/:studyId/milestone-measurements {requestKey} must answer 201; the measurement read by id must be exact bytes '
+    + 'of edc-milestone-measurement/1 hashing to both X-Content-SHA256 headers and the record\'s contentHash; the list must show that hash; the same '
+    + 'request key must answer 200 with the same id and hash.' },
+  'OQ-234': { check: 'The OQ-233 checks on /api/sites/study/:studyId/effort-ledger (edc-effort-ledger/1).' },
+  'OQ-235': { check: 'The OQ-233 checks on /api/data-cuts/latency-measurements {studyId, requestKey} (edc-latency-measurement/1 or /2).' },
+  'OQ-236': { check: 'The blinded account\'s milestone measurement, effort ledger and latency measurement must each read back withheld with no '
+    + 'arm-grouped content (allocation counts, per-arm target dates or first dosing, unwithheld windows ending at per-arm first dosing, byArm, a '
+    + 'per-form arm), and its reads of the operator\'s included documents must answer 403; no included operator document records OPERATOR_NOT_UNBLINDED.' },
+  'OQ-237': { check: 'M-2: POST /api/sites/study/:studyId/ta3-ledgers {requestKey} must answer 201 (the unknown-route 404 fails FEATURE_ABSENT_AT_RELEASE); '
+    + 'the ledger read by id must be exact bytes of edc-ta3-ledger/1 matching its stated hashes, with every required member and one repeatable-read '
+    + 'read-only snapshot; the blinded account\'s ledger must be withheld with no arm-grouped content and its list must show no included ledger.' },
+  'OQ-238': { check: 'The OQ-234 request key with a different period (from and to) must answer 409, and the ledger read by id must keep its SHA-256.' },
+  'OQ-239': { check: 'POST /api/regulatory-export/inspection-package/:studyId {requestKey} must answer 201 (a transport error is reconciled by reading '
+    + 'the history, never resent); the history must list it with fileSha256, the download must hash to X-Source-SHA256 and that entry, its manifest '
+    + 'must state edc-inspection-copy/1 or /2, and the same request key must answer 200 with the same package and hash.' },
+  'OQ-240': { check: 'Every owned deviation of the run must be an acc_protocol_deviations row of the OQ-239 copy, with as many '
+    + 'acc_deviation_action_events rows as its corrective-action history.' },
+  'OQ-241': { check: 'INSPECTION_COPY_TA3_INVENTORY declared true: the OQ-239 manifest\'s additionalStores must hold every coverage table not segmented only '
+    + 'and each late table whose item the run observed, and no segmented-only table (no TA3 table fails FEATURE_ABSENT_AT_RELEASE). Declared false: '
+    + 'no TA3 table, recorded FEATURE_DISABLED_AT_TARGET (CONFIGURATION_MISMATCH when one is present). No declaration: NO_TARGET_CONFIGURATION.' },
+  'OQ-242': { check: 'With both W-1 flags declared (else NO_TARGET_CONFIGURATION) and the TA3 flag true, the flat copy must state the segmented-only '
+    + 'limitation and hold no acc_deviation_evaluations; POST {requestKey, profile: edc-inspection-copy/3} must answer 201 with packageVersion '
+    + 'edc-inspection-copy/3 and 200 on replay, and the /3 history must list it. 503 SEGMENTED_INSPECTION_EXPORT_DISABLED fails '
+    + 'FEATURE_DISABLED_AT_TARGET; the head\'s 400 for profile FEATURE_ABSENT_AT_RELEASE.' },
+  'OQ-243': { check: 'Recorded not executed, SEGMENTED_READ_NOT_EXPOSED, with no request: segmented roots and parts reach only an M2M service '
+    + 'credential until a user download route exists.' },
+  'OQ-244': { check: 'As the monitor, POST /api/regulatory-export/inspection-package/:studyId and GET its history must each answer 403.' },
   'OQ-AUTH-FIXTURE': { check: 'Synthetic fixture only (auxiliary row): as the operator, POST /api/users creates a viewer account '
     + '(HTTP 201) and GET /api/users/:id must read back its username, email, viewer role and enabled state.' },
   'SEC-004': { check: 'GET /api/studies with a JWT whose payload claims userId 1 and role admin but whose signature is invalid '

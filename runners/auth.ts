@@ -5,6 +5,16 @@ export function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
 
+/** Unverified claims of an issued access token. The API verifies tokens; a case
+ * reads only the session ID it was issued under, and a long TA3 run reads its expiry
+ * to log in again before the token lapses. */
+export function tokenClaims(token: string): Record<string, unknown> | null {
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
+    return isRecord(claims) ? claims : null;
+  } catch { return null; }
+}
+
 /** Operator credentials for live qualification come only from the environment:
  * OQ_USERNAME / OQ_PASSWORD, else the runner's own variables passed as `fallback`
  * (named in `variables` for the refusal). There is no built-in account: a missing

@@ -338,8 +338,8 @@ export function sourceFlagValue(environment: SourceEnvironment, flag: TargetConf
 // ---------------------------------------------------------------------------
 
 /** The OQ cases that observe a declared flag at the target (spec P20 3.4 and 3.9: the
- * engine, the O-1 decision routes, and the two W-1 inspection flags). They land with
- * VAL-1/validation-oq; until then no OQ record observes a flag. OQ-219 and OQ-220
+ * engine, the O-1 decision routes, and the two W-1 inspection flags), recorded by
+ * runners/oq-ta3-runner.ts. OQ-219 and OQ-220
  * read ungated members and OQ-225 and OQ-226 exist without O-1, so they observe none. */
 export const FLAG_OBSERVING_CASES: ReadonlyArray<{ caseId: string; flag: TargetConfigurationFlag }> = [
   { caseId: 'OQ-206', flag: 'ENABLE_DEVIATION_ENGINE' },

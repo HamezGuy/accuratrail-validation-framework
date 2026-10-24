@@ -10,3 +10,6 @@ vendor/** -text
 
 # Contract schemas keep the same bytes, and so the same SHA-256, on every checkout.
 contracts/** -text
+
+# Retained EDC bytes from the K6b synthetic run; their SHA-256 is checked (tests/fixtures/edc-k6b/PROVENANCE.md).
+tests/fixtures/edc-k6b/** -text

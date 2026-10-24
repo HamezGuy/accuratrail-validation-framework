@@ -1,12 +1,14 @@
 import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { OQ_CASE_IDS, OQ_NOT_AUTOMATED } from '../config/oq-case-registry';
+import { ALL_OQ_SUITES, OQ_CASE_IDS, OQ_NOT_AUTOMATED, type OqSuiteSelection } from '../config/oq-case-registry';
+import { loadTa3OqPlan, runTa3Suites } from './oq-ta3-runner';
+import { readTargetConfiguration } from './target-configuration';
 /**
  * OQ Runner — Operational Qualification test execution.
  * Executes the OQ catalog of config/oq-case-registry.ts (OQ_CASE_IDS) and retains
  * unmet evidence as failures.
  */
-import { authHeaders, captureLoginProbe, login, qualificationCredentials } from './auth';
+import { authHeaders, captureLoginProbe, login, qualificationCredentials, tokenClaims } from './auth';
 import {
   EvidenceResult,
   captureApiCall,
@@ -1554,15 +1556,6 @@ export async function runPart11ComplianceTests(
 
 const SESSION_REFUSALS = ['TOKEN_REVOKED', 'SESSION_REVOKED', 'SESSION_NOT_ACTIVE'];
 
-/** Unverified claims of an issued access token. The API verifies tokens; a case
- * reads only the session ID it was issued under. */
-function tokenClaims(token: string): Record<string, unknown> | null {
-  try {
-    const claims: unknown = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
-    return isRecord(claims) ? claims : null;
-  } catch { return null; }
-}
-
 const sessionRefused = (exchange: EvidenceResult): boolean => exchange.responseStatus === 401
   && isRecord(exchange.responseBody) && exchange.responseBody.success === false && isRecord(exchange.responseBody.error)
   && SESSION_REFUSALS.includes(String(exchange.responseBody.error.code));
@@ -2415,13 +2408,63 @@ export async function runSecurityValidationTests(
 
 // ── Main Runner ──
 
-export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = []): Promise<EvidenceResult[]> {
-  const { username, password } = qualificationCredentials();
-  const qualification = qualificationFlags.length ? { ...qualificationOptions(qualificationFlags, baseUrl), username, password,
-    reason: 'Execute the explicitly requested synthetic operational qualification fixture' } : undefined;
+/** The OQ runner's own options (generate.ts passes them to this runner only). */
+export interface OqRunOptions {
+  /** A ta3-oq-plan/1 file: suites 13 to 18 run against the designated armed study it names. */
+  ta3PlanFile?: string;
+  /** `--oq-suites`; every suite when absent. */
+  suites?: OqSuiteSelection;
+  /** The run's validation-target-configuration/1 declaration, read by the TA3 suites. */
+  targetConfigFile?: string;
+}
+
+/** Order (spec P20 3.4, F-k): suites 1 to 12 and their fixture cleanup and logout; then
+ * suites 13 to 18, which open their own sessions; then the login quota probe, which
+ * leaves the caller's login bucket throttled; then the registry backfill. */
+export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = [],
+  options: OqRunOptions = {}): Promise<EvidenceResult[]> {
+  const selection = options.suites ?? ALL_OQ_SUITES;
+  // Read before any request, so a refused plan or declaration leaves nothing executed.
+  const ta3Plan = options.ta3PlanFile ? loadTa3OqPlan(options.ta3PlanFile).plan : null;
+  const declaredFlags = options.targetConfigFile ? readTargetConfiguration(options.targetConfigFile).configuration.flags : undefined;
+  // The TA3 suites write owned synthetic records: the same explicit synthetic qualification as the owned fixture.
+  if (ta3Plan && selection.ta3.length) qualificationOptions(qualificationFlags, baseUrl);
   console.log(`\n  Running OQ tests (${OQ_CASE_IDS.length} cases) against ${baseUrl}...`);
 
   const allResults: EvidenceResult[] = [];
+  if (selection.base) await runBaseSuites(allResults, baseUrl, qualificationFlags);
+
+  const ta3Results = await runTa3Suites(baseUrl, ta3Plan, selection.ta3, { declaredFlags });
+  allResults.push(...ta3Results);
+  const ta3Cases = ta3Results.filter(row => /^OQ-\d{3}$/.test(row.testCaseId));
+  console.log(`  Suites 13 to 18 (TA3): ${ta3Cases.filter(r => r.passed).length}/${ta3Cases.length} passed${ta3Plan ? '' : ' (no ta3-oq-plan/1)'}`);
+
+  if (selection.base) allResults.push(await runRateLimitTest(baseUrl));
+  // Every registry case has a result; the OQ protocol lists the same registry.
+  for (const testCaseId of OQ_CASE_IDS) {
+    if (allResults.some(row => row.testCaseId === testCaseId)) continue;
+    allResults.push(!selection.base
+      ? { ...manualResult(testCaseId, ''), method: 'CONTRACT', outcomeCode: 'OQ_SUITE_NOT_SELECTED',
+        notes: 'Suites 1 to 12 were not selected (--oq-suites); no request was made.' }
+      : { ...manualResult(testCaseId, OQ_NOT_AUTOMATED.has(testCaseId) ? 'This OQ case is not automated; separate execution evidence is required.' : 'This OQ case did not execute.'), method: 'CONTRACT' });
+  }
+  allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
+
+  const passed = allResults.filter(r => r.passed).length;
+  const manualCount = allResults.filter(r => r.method === 'MANUAL').length;
+  const failed = allResults.length - passed;
+  console.log(`\n  OQ Summary: ${passed} passed / ${failed} failed (${manualCount} manual) out of ${allResults.length} total`);
+
+  const evidencePath = saveEvidence(outputDir, 'oq', allResults);
+  console.log(`  Evidence saved: ${evidencePath}`);
+  return allResults;
+}
+
+/** Suites 1 to 12 under the operator session and, with the synthetic qualification flags, the owned fixture. */
+async function runBaseSuites(allResults: EvidenceResult[], baseUrl: string, qualificationFlags: readonly string[]): Promise<void> {
+  const { username, password } = qualificationCredentials();
+  const qualification = qualificationFlags.length ? { ...qualificationOptions(qualificationFlags, baseUrl), username, password,
+    reason: 'Execute the explicitly requested synthetic operational qualification fixture' } : undefined;
 
   const authResults = await runAuthenticationTests(baseUrl, username, password, !!qualification, true);
   allResults.push(...authResults);
@@ -2526,18 +2569,4 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
       passed: false, notes: 'Authentication failed; suites 2-12 skipped',
     });
   }
-
-  allResults.push(await runRateLimitTest(baseUrl));
-  // Every registry case has a result; the OQ protocol lists the same registry.
-  for (const testCaseId of OQ_CASE_IDS) { if (!allResults.some(row => row.testCaseId === testCaseId)) allResults.push({ ...manualResult(testCaseId, OQ_NOT_AUTOMATED.has(testCaseId) ? 'This OQ case is not automated; separate execution evidence is required.' : 'This OQ case did not execute.'), method: 'CONTRACT' }); }
-  allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
-
-  const passed = allResults.filter(r => r.passed).length;
-  const manualCount = allResults.filter(r => r.method === 'MANUAL').length;
-  const failed = allResults.length - passed;
-  console.log(`\n  OQ Summary: ${passed} passed / ${failed} failed (${manualCount} manual) out of ${allResults.length} total`);
-
-  const evidencePath = saveEvidence(outputDir, 'oq', allResults);
-  console.log(`  Evidence saved: ${evidencePath}`);
-  return allResults;
 }

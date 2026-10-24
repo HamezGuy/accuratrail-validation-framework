@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.accuratrials.com/validation-framework/ta3-oq-plan/1",
+  "title": "ta3-oq-plan/1",
+  "description": "The plan of the TA3 OQ suites 13 to 18 (OQ-206 to OQ-244; TA3 plan VAL-1, spec P20 VD-5 and 3.3). It names the designated armed synthetic study the suites run against (a dedicated duplicate of the release, never the study the O-7 benchmark scores), its OQ site, the synthetic named accounts by the environment variables that hold their credentials, the rules and fixtures the cases exercise, and the bounds of the waits. Producer: the operator (VAL-1/validation-run step 0, every member read back from the stack); owner and consumer: accuratrail-validation-framework (runners/ta3-oq-plan.ts parses it strictly, runners/oq-ta3-runner.ts runs it, a retained package copies it to inputs/ta3-oq-plan.json). It holds no secret: every account member is an environment variable name, and any other member refuses the file. Member names were finalised against the EDC routes: saveRule.item became itemId (the form save keys values by item_<itemId>), and applicability gained earlyEnrollmentDate and lateEnrollmentDate (a visit's planned target date runs from the subject's Day 1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "synthetic", "runLabel", "study", "accounts", "saveRule", "absenceRule", "followUpTask", "applicability", "sweep", "escalation"],
+  "properties": {
+    "contract": { "const": "ta3-oq-plan/1" },
+    "synthetic": { "description": "Always true: the suites write owned records only into a synthetic study on a test stack.", "const": true },
+    "runLabel": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$" },
+    "study": { "$ref": "#/definitions/study" },
+    "accounts": { "$ref": "#/definitions/accounts" },
+    "saveRule": { "$ref": "#/definitions/saveRule" },
+    "absenceRule": { "$ref": "#/definitions/absenceRule" },
+    "followUpTask": {
+      "description": "A study task with an action trigger on deviation.logged (OQ-214), or null.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/followUpTask" }]
+    },
+    "applicability": {
+      "description": "Two established protocol versions recorded at the OQ site and the rule whose visit they govern (OQ-217), or null (VERSION_FIXTURE_ABSENT).",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/applicability" }]
+    },
+    "sweep": { "$ref": "#/definitions/sweep" },
+    "escalation": { "$ref": "#/definitions/escalation" }
+  },
+  "definitions": {
+    "positiveId": { "type": "integer", "minimum": 1 },
+    "calendarDay": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "ruleId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}$" },
+    "environmentName": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+    "formValue": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "study": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["studyId", "siteStudyId", "expectedSpecHash"],
+      "properties": {
+        "studyId": { "description": "The root (platform) study that holds the armed spec.", "$ref": "#/definitions/positiveId" },
+        "siteStudyId": { "description": "The OQ site, where the owned subjects, deviations and applicability rows are made.", "$ref": "#/definitions/positiveId" },
+        "expectedSpecHash": { "description": "The spec hash the receipts carry (acc_deviation_evaluations.spec_hash).", "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "expectedCslReleaseId": { "description": "When stated, the stored release binding must name it.", "type": "string", "minLength": 1, "maxLength": 200 },
+        "duplicateOf": { "description": "The study this one duplicates (never studyId itself).", "$ref": "#/definitions/positiveId" }
+      }
+    },
+    "account": {
+      "description": "The environment variables that hold an account's username and password.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username", "password"],
+      "properties": { "username": { "$ref": "#/definitions/environmentName" }, "password": { "$ref": "#/definitions/environmentName" } }
+    },
+    "accounts": {
+      "description": "Five different synthetic people; the operator defaults to OQ_USERNAME and OQ_PASSWORD. No two accounts name the same username variable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer", "thirdPerson", "blinded", "monitor"],
+      "properties": {
+        "operator": { "$ref": "#/definitions/account" },
+        "reviewer": { "$ref": "#/definitions/account" },
+        "thirdPerson": { "$ref": "#/definitions/account" },
+        "blinded": { "$ref": "#/definitions/account" },
+        "monitor": { "$ref": "#/definitions/account" }
+      }
+    },
+    "saveRule": {
+      "description": "A save-time rule of the armed spec, the visit and form version it reads, the item it judges and the values that violate and comply with it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ruleId", "eventDefinitionId", "crfVersionId", "itemId", "violatingValue", "compliantValue", "visitDate"],
+      "properties": {
+        "ruleId": { "$ref": "#/definitions/ruleId" },
+        "eventDefinitionId": { "$ref": "#/definitions/positiveId" },
+        "crfVersionId": { "$ref": "#/definitions/positiveId" },
+        "itemId": { "$ref": "#/definitions/positiveId" },
+        "violatingValue": { "$ref": "#/definitions/formValue" },
+        "compliantValue": { "$ref": "#/definitions/formValue" },
+        "visitDate": { "$ref": "#/definitions/calendarDay" }
+      }
+    },
+    "absenceRule": {
+      "description": "An absence rule the sweep judges, and the anchor (enrollment) date that makes it violated with no visit data.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ruleId", "kind", "eventDefinitionId", "anchorDate"],
+      "properties": {
+        "ruleId": { "$ref": "#/definitions/ruleId" },
+        "kind": { "enum": ["missed_visit", "visit_window", "visit_after_disposition"] },
+        "eventDefinitionId": { "$ref": "#/definitions/positiveId" },
+        "anchorDate": { "$ref": "#/definitions/calendarDay" }
+      }
+    },
+    "followUpTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["studyTaskId"],
+      "properties": { "studyTaskId": { "$ref": "#/definitions/positiveId" } }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "effectiveFrom"],
+      "properties": {
+        "protocolVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$" },
+        "effectiveFrom": { "$ref": "#/definitions/calendarDay" },
+        "ethicsApprovalDate": { "$ref": "#/definitions/calendarDay" }
+      }
+    },
+    "applicability": {
+      "description": "The first version takes effect before the second; a subject enrolled at earlyEnrollmentDate has the versioned rule's visit planned before the second effectiveFrom, one enrolled at lateEnrollmentDate on or after it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["versions", "versionedRuleId", "earlyEnrollmentDate", "lateEnrollmentDate"],
+      "properties": {
+        "versions": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/definitions/version" } },
+        "versionedRuleId": { "$ref": "#/definitions/ruleId" },
+        "earlyEnrollmentDate": { "$ref": "#/definitions/calendarDay" },
+        "lateEnrollmentDate": { "$ref": "#/definitions/calendarDay" }
+      }
+    },
+    "sweep": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "maxWaitMinutes": { "description": "Default 5.", "type": "integer", "minimum": 0, "maximum": 60 } }
+    },
+    "escalation": {
+      "description": "maxWaitMinutes defaults to 0 (not waited): OQ-228 and OQ-229 need at least 70, OQ-230 at least 4. The recipient must hold recipientRole at the OQ site or its parent, or O-2 creates no task (RECIPIENT_UNAVAILABLE).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recipientRole", "recipientUsername"],
+      "properties": {
+        "maxWaitMinutes": { "type": "integer", "minimum": 0, "maximum": 240 },
+        "recipientRole": { "enum": ["investigator", "data_manager", "monitor", "coordinator"] },
+        "recipientUsername": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$" }
+      }
+    }
+  }
+}

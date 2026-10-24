@@ -10,6 +10,7 @@ import {
 import { TA3_ACCOUNTS, TA3_OQ_CASES, ta3RegulatoryRef } from '../config/ta3-oq-cases';
 import { TA3_INSPECTION_COVERAGE } from '../config/ta3-inspection-coverage';
 import { E6_R3_REFERENCES } from '../config/regulatory-scope';
+import { runnerCaseCheck } from '../generators/helpers/evidence-linker';
 import { TESTS_LIVE_MAPPINGS } from '../config/tests-live-mapping';
 import { generate as generateOqProtocol } from '../generators/08-oq-protocol';
 import { generate as generateTraceability } from '../generators/06-traceability-matrix';
@@ -54,8 +55,12 @@ test('the OQ protocol lists exactly the registry cases the runner records', t =>
   assert.doesNotMatch(runner, /id <= 205/);
   assert.match(runner, /for \(const testCaseId of OQ_CASE_IDS\)/);
   const registry = new Set(OQ_CASE_IDS);
-  const runnerIds = new Set([...runner.matchAll(/'(OQ-\d{3})'/g)].map(match => match[1]));
+  // The TA3 runner records the TA3 cases; every case literal of either runner is a registry case.
+  const ta3Runner = fs.readFileSync(path.join(__dirname, '..', 'runners', 'oq-ta3-runner.ts'), 'utf8');
+  const runnerIds = new Set([...`${runner}\n${ta3Runner}`.matchAll(/'(OQ-\d{3})'/g)].map(match => match[1]));
   assert.deepEqual([...runnerIds].filter(id => !registry.has(id)), []);
+  const ta3Ids = new Set([...ta3Runner.matchAll(/runCase\('(OQ-\d{3})'/g)].map(match => match[1]));
+  assert.deepEqual([...ta3Ids].sort(), TA3_OQ_CASES.map(entry => entry.id), 'the TA3 runner runs every TA3 case once');
 });
 
 test('the TA3 case catalog holds exactly suites 13 to 18 in registry order, each with its references', () => {
@@ -72,6 +77,9 @@ test('the TA3 case catalog holds exactly suites 13 to 18 in registry order, each
     assert.match(ta3RegulatoryRef(entry), /^§11\.\d+(\([a-z]\))?(, §11\.\d+(\([a-z]\))?)*; ICH E6\(R3\) /, entry.id);
     // No em or en dash in text the protocol prints.
     assert.doesNotMatch(JSON.stringify(entry), /[–—]/, entry.id);
+    // Generators may cite the case: its implemented check is recorded.
+    assert.ok(runnerCaseCheck(entry.id).check.length > 40, entry.id);
+    assert.doesNotMatch(runnerCaseCheck(entry.id).check, /[–—]/, entry.id);
   }
 });
 

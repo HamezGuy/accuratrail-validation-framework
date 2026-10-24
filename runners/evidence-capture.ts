@@ -92,6 +92,9 @@ export interface CaptureOptions {
   redirect?: 'error';
   /** Optional wire-body limit for potentially large evidence attachments. */
   maxResponseBytes?: number;
+  /** A multipart/form-data upload of one file (a retained original) instead of a JSON body;
+   * the evidence keeps the file's name, type, byte count and SHA-256, never its bytes. */
+  multipart?: { field: string; filename: string; contentType: string; bytes: Buffer };
 }
 
 /** Plain-object guard shared by every runner that inspects untyped API payloads. */
@@ -402,11 +405,17 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
   const fetchOpts: RequestInit = {
     method: opts.method,
     ...(opts.redirect ? { redirect: opts.redirect } : {}),
+    // fetch sets the multipart boundary itself.
     headers: {
-      'Content-Type': 'application/json',
+      ...(opts.multipart ? {} : { 'Content-Type': 'application/json' }),
       ...(opts.headers ?? {}),
     },
   };
+  const upload = opts.multipart;
+  const requestBody = upload
+    ? { multipart: { field: upload.field, filename: upload.filename, contentType: upload.contentType, byteLength: upload.bytes.length,
+      sha256: createHash('sha256').update(upload.bytes).digest('hex') } }
+    : opts.body;
 
   let responseStatus = 0;
   let responseBody: unknown = null;
@@ -420,7 +429,11 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
   const startTime = Date.now();
   try {
     fetchOpts.signal = AbortSignal.timeout(opts.timeoutMs ?? 30000);
-    if (opts.body !== undefined && opts.method !== 'GET' && opts.method !== 'HEAD') {
+    if (upload) {
+      const form = new FormData();
+      form.append(upload.field, new Blob([upload.bytes], { type: upload.contentType }), upload.filename);
+      fetchOpts.body = form;
+    } else if (opts.body !== undefined && opts.method !== 'GET' && opts.method !== 'HEAD') {
       fetchOpts.body = JSON.stringify(opts.body);
     }
     const response = await fetch(fullUrl, fetchOpts);
@@ -482,7 +495,7 @@ export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResu
     timestamp,
     endpoint: fullUrl,
     method: opts.method,
-    requestBody: opts.body,
+    requestBody,
     requestHeaders: fetchOpts.headers as Record<string, string>,
     responseStatus,
     responseHeaders,

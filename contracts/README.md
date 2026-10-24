@@ -11,6 +11,7 @@ validator dependency is added.
 | --- | --- | --- | --- |
 | `validation-evidence-package/1` | `validation-evidence-package-v1.schema.json` | this framework, `runners/evidence-package.ts` (`sealPackage`) | `npm run verify:package`; the Intelligence Layer eTMF stores the filed `package-manifest.json` as an original without parsing it |
 | `validation-target-configuration/1` | `validation-target-configuration-v1.schema.json` | owner: this framework, `runners/target-configuration.ts`; producer: the operator, later the CommandCenter harness | IQ-033 (`runners/iq-runner.ts`); `createPackage`, which retains it as `inputs/target-configuration.json`; `sealPackage` and `npm run verify:package` (`configurationUnderTest`) |
+| `ta3-oq-plan/1` | `ta3-oq-plan-v1.schema.json` | owner: this framework, `runners/ta3-oq-plan.ts`; producer: the operator (VAL-1/validation-run step 0, every member read back from the stack) | the TA3 OQ suites 13 to 18 (`runners/oq-ta3-runner.ts`); `createPackage`, which retains it as `inputs/ta3-oq-plan.json` |
 
 ## Versioning
 
@@ -41,7 +42,7 @@ no secret can enter a run or a package. In a sealed package,
 every contradiction the run recorded (`{flag, declared, observed, observedBy}`):
 IQ-033's source file cross-check, and the OQ cases that observe a flag at the
 target (OQ-206 the engine, OQ-221 to OQ-224 the O-1 decision routes, OQ-241 and
-OQ-242 the two W-1 inspection flags, once VAL-1/validation-oq lands them). An
+OQ-242 the two W-1 inspection flags, recorded by `runners/oq-ta3-runner.ts`). An
 observing case observed its flag off when it recorded `ENGINE_DISABLED` or
 `FEATURE_DISABLED_AT_TARGET`, on when it passed, and the opposite of the
 declaration when it recorded `CONFIGURATION_MISMATCH` itself. The package schema
@@ -57,3 +58,21 @@ the canonical JSON of the manifest without `packageHash` (object keys in the
 default string order, UTF-16 code units, arrays in order, no whitespace). The
 SHA-256 of the manifest file's own bytes is the `contentHash` the eTMF records
 for the filed manifest, and the value `npm run verify:package` prints.
+
+## ta3-oq-plan/1
+
+The plan of the TA3 OQ suites 13 to 18 (`--ta3-oq-plan <file>`): the designated
+armed synthetic study (`study.studyId`, the root that holds the armed spec, and
+`study.siteStudyId`, the OQ site), the spec hash the receipts must carry, the
+five synthetic named accounts (operator, reviewer, third person, blinded,
+monitor), each as the names of the environment variables that hold its username
+and password, the save-time rule (`saveRule`: rule, visit definition, form
+version, item, violating and compliant values, visit date), the sweep's absence
+rule and its anchor date, the optional follow-up study task and protocol version
+fixture, and the bounds of the sweep and escalation waits with the escalation
+recipient. `synthetic` is the literal `true`. Any other member, a literal secret
+where a variable name belongs, or two accounts naming one username variable
+refuses the file. Member names were finalised against the EDC routes:
+`saveRule.item` became `itemId` (the form save keys values by `item_<itemId>`),
+and `applicability` gained `earlyEnrollmentDate` and `lateEnrollmentDate`,
+because a visit's planned target date runs from the subject's Day 1.
