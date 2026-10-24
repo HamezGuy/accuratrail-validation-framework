@@ -147,6 +147,20 @@ output/2026-05-02_v1.0/
   evidence/iq/  evidence/oq/  evidence/pq/
 ```
 
+## Shared types build
+
+The framework builds on the same `@accura-trial/shared-types` build as the EDC
+API: `vendor/` holds byte copies of the API's archive and its
+`edc-study-contract-package/1` receipt (0.2.0 build `d786631b516b95fc`), and
+`package.json` and the lockfile name that archive with the receipt's integrity.
+Install with `npm install --offline`. `tests/shared-types-parity.contract.test.ts`
+(in `test:contracts`) checks the archive against its receipt, the lockfile and
+the installed release manifest. `npm run test:cross-repo` reads the sibling
+libreclinicaapi checkout and fails, naming the missing path, unless both
+repositories pin the same build with identical archive and receipt bytes; it
+never skips. When the API re-vendors, copy its new archive and receipt here,
+delete the old pair and reinstall.
+
 ## Architecture
 
 - **config/** — Human-editable system metadata, regulatory scope, risk ratings

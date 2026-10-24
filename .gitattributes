@@ -3,3 +3,7 @@ fixtures/synthetic-usdm4-core/** -text
 
 # PDF streams and cross-reference offsets require byte-for-byte preservation.
 *.pdf binary
+
+# Vendored archives and their receipts are byte copies of the EDC API's; keep them identical
+# on every checkout, so the receipt bytes and SHA-256 still match (tests/cross-repo.contract.test.ts).
+vendor/** -text
