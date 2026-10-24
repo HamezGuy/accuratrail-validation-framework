@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
+import { e6r3 } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -1365,7 +1366,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += '**Relevant Industry Standards:**\n\n';
   c += markdownTable(['Standard', 'Organization', 'Relevance'], [
     ['GAMP 5 (2nd Edition)', 'ISPE', 'Risk-based validation approach used in this document'],
-    ['ICH E6(R2) GCP', 'ICH', 'Good Clinical Practice requirements for electronic systems'],
+    [e6r3('gcp'), 'ICH', 'Good Clinical Practice requirements for electronic systems'],
     ['CDISC ODM', 'CDISC', 'Clinical data interchange standards for export compliance'],
     ['ISO 27001', 'ISO', 'Information security management framework referenced for controls'],
     ['NIST SP 800-53', 'NIST', 'Security control catalog used for control identification'],

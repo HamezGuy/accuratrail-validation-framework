@@ -1,3 +1,5 @@
+import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
+
 export interface DocumentHeaderOptions {
   title: string;
   documentId: string;
@@ -35,6 +37,9 @@ export function documentHeader(opts: DocumentHeaderOptions): string {
     `| Date | ${opts.date} |`,
     `| System | ${opts.system} |`,
     `| Classification | ${opts.classification} |`,
+    // Every document cites the guideline through config/regulatory-scope.ts,
+    // whose section numbers QA has not yet verified.
+    `| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`,
     '',
     '---',
     '',

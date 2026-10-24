@@ -30,7 +30,7 @@ The following definitions apply throughout all validation documents in this pack
 | FHIR | FHIR | Fast Healthcare Interoperability Resources — HL7 standard for exchanging healthcare information electronically. |
 | Functional Requirements Specification | FRS | A document specifying all functional requirements of the system, describing what the system must do. Serves as the basis for OQ test protocols. |
 | GAMP 5 | GAMP | Good Automated Manufacturing Practice, version 5 — ISPE guideline for a risk-based approach to compliant GxP computerized systems. Defines software categories (1–5) and a scalable V-model lifecycle. |
-| Good Clinical Practice | GCP | ICH E6(R2) — an international ethical and scientific quality standard for designing, conducting, recording, and reporting clinical trials. |
+| Good Clinical Practice | GCP | ICH E6(R3) (ICH Step 4, 6 January 2025): an international ethical and scientific quality standard for designing, conducting, recording, and reporting clinical trials. |
 | GxP | GxP | A general abbreviation for Good Practice regulations and guidelines (GCP, GMP, GLP, GDP, etc.) that govern regulated industries. |
 | HIPAA | HIPAA | Health Insurance Portability and Accountability Act — US federal law establishing national standards for the protection of health information. |
 | HIPAA Security Rule | — | 45 CFR 164 Subpart C — establishes technical, administrative, and physical safeguards for the protection of ePHI. |

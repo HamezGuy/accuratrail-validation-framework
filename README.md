@@ -88,6 +88,18 @@ exercise each case and marks any mapped script missing from that checkout. The
 live suite retains only failures, so these rows are coverage pointers, not
 execution evidence.
 
+### ICH E6(R3) references
+
+Generated documents cite ICH E6(R3) (ICH Step 4, 6 January 2025) only through
+`config/regulatory-scope.ts`: `ICH_E6_R3.citation` for a general mention and
+`e6r3(key)` for a topic in `E6_R3_REFERENCES`. The section numbers there are an
+analyst's reading of the Step 4 text, which no retained copy pins, so they are
+pending QA verification: every document header states that status and the
+validation plan lists the whole mapping. A correction is one edit to the
+mapping. `tests/e6-r3-references.contract.test.ts` fails when a tracked file
+outside `vendor/` or a generated document cites the superseded revision, or a
+generator cites a key the mapping lacks.
+
 ## Output
 
 Each run creates a versioned folder under `output/`:

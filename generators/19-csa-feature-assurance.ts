@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
 import { FEATURE_RISKS } from '../config/risk-ratings';
+import { e6r3 } from '../config/regulatory-scope';
 import {
   loadRunnerEvidence, mappedCaseState, runnerCaseCheck, type MappedCaseState, type RunnerResult,
 } from './helpers/evidence-linker';
@@ -333,7 +334,7 @@ FEATURE_DATA.set('FEAT-014', {
   intendedUse:
     'Requires users to provide a documented reason for every data correction made to clinical data at the time ' +
     'of the change. The reason is stored as part of the immutable audit trail entry, enabling reconstruction of ' +
-    'the data correction history as required by ICH E6(R2) GCP and 21 CFR Part 11 §11.10(e).',
+    `the data correction history as required by ${e6r3('dataCorrections')} and 21 CFR Part 11 §11.10(e).`,
   analysisText:
     'High Process Risk because missing reasons for change would invalidate the clinical data correction process ' +
     'per GCP requirements. Per CSA guidance, this foreseeably compromises the ability to reconstruct the data ' +
@@ -668,7 +669,7 @@ FEATURE_DATA.set('FEAT-050', {
   intendedUse:
     'Implements the data freeze control that prevents further modifications to reviewed clinical data while ' +
     'still allowing query resolution workflows to proceed. Data freeze is applied at the CRF level after data ' +
-    'review to protect the reviewed state as a standard clinical data management control per ICH E6(R2) GCP.',
+    `review to protect the reviewed state as a standard clinical data management control per ${e6r3('reviewOfData')}.`,
   analysisText:
     'High Process Risk because failure of the freeze mechanism would allow modifications to reviewed data, ' +
     'invalidating the data review process. Per CSA guidance, uncontrolled modification of reviewed clinical ' +

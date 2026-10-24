@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
+import { e6r3 } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -62,11 +63,11 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['acc_audit_log', 'API-level audit trail with actor, action, entity, old/new values, hash chain', '11.10(e)'],
     ['acc_esignatures', 'E-signature records with SHA-256 record hash, signer name, meaning, auto-invalidation', '11.50, 11.70'],
     ['acc_data_locks', 'Casebook and form-level freeze/lock status controlling immutability', '11.10(c)'],
-    ['acc_queries', 'Clinical data query lifecycle: creation, response, resolution, escalation', 'ICH E6(R2)'],
-    ['acc_workflow_tasks', 'Persisted work items for SDV, DDE, signature, query and fired study tasks', 'ICH E6(R2)'],
-    ['acc_study_tasks', 'Study task definitions: trigger/timer config, audience, due days', 'ICH E6(R2)'],
-    ['acc_study_task_schedule', 'Queued firings for time and delayed question triggers', 'ICH E6(R2)'],
-    ['acc_task_status', 'Completion/dismissal receipts for the synthesized task board', 'ICH E6(R2)'],
+    ['acc_queries', 'Clinical data query lifecycle: creation, response, resolution, escalation', e6r3('essentialRecords')],
+    ['acc_workflow_tasks', 'Persisted work items for SDV, DDE, signature, query and fired study tasks', e6r3('essentialRecords')],
+    ['acc_study_tasks', 'Study task definitions: trigger/timer config, audience, due days', e6r3('essentialRecords')],
+    ['acc_study_task_schedule', 'Queued firings for time and delayed question triggers', e6r3('essentialRecords')],
+    ['acc_task_status', 'Completion/dismissal receipts for the synthesized task board', e6r3('essentialRecords')],
     ['acc_password_history', 'Password reuse prevention - stores hashed previous passwords', '11.300'],
     ['acc_validation_rules', 'Field-level edit check rules for eCRF data entry', '11.10(f)'],
     ['user_account_extended', 'bcrypt password hashes, upgrade tracking', '11.300'],

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { e6r3 } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -153,7 +154,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Users understand the system\'s intended use and their responsibilities\n';
   content += '- Users are qualified to perform their assigned tasks per 21 CFR Part 11 (11.10(i))\n';
   content += '- Workforce members understand HIPAA security requirements for ePHI protection\n';
-  content += '- All training is documented per regulatory requirements (ICH E6(R2), 21 CFR 11)\n\n';
+  content += `- All training is documented per regulatory requirements: 21 CFR 11 and ${e6r3('training')}\n\n`;
   content += 'Every requirement and status below is read from the training module\'s retained inspection capture, ';
   content += 'not from a table maintained in this framework.\n\n';
   content += hr();

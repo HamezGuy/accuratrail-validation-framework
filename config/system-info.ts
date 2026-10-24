@@ -3,6 +3,8 @@
  * Edit this file before each validation run with current system details.
  */
 
+import { ICH_E6_R3 } from './regulatory-scope';
+
 export const SYSTEM_INFO = {
   name: 'AccuraTrial EDC',
   fullName: 'AccuraTrial Electronic Data Capture System',
@@ -17,7 +19,7 @@ export const SYSTEM_INFO = {
 
   intendedUse:
     'Capture, store, manage, and report clinical trial data in compliance with FDA ' +
-    'regulations (21 CFR Part 11), ICH E6(R2) GCP, and HIPAA where applicable.',
+    `regulations (21 CFR Part 11), ${ICH_E6_R3.citation} GCP, and HIPAA where applicable.`,
 
   architecture: {
     frontend: { name: 'Angular SPA', version: '19', runtime: 'Browser' },

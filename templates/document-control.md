@@ -39,7 +39,7 @@
 |-----------------------|---------------|
 | 21 CFR Part 11 | Electronic records and electronic signatures |
 | 45 CFR 164 (HIPAA) | Protection of ePHI |
-| ICH E6(R2) GCP | Good Clinical Practice — data integrity, monitoring |
+| ICH E6(R3) GCP | Guideline for Good Clinical Practice, Principles and Annex 1 (ICH Step 4, 6 January 2025): data governance, computerised systems, monitoring. Section references pending QA verification against the ICH Step 4 text |
 | GAMP 5 | Risk-based validation approach |
 
 ---

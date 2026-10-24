@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { currentReleaseIdentity, type ReleaseIdentity } from '../../runners/release-identity';
+import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
 
 export interface DocumentMeta {
   generatedAt: string;
@@ -102,6 +103,7 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
   } else {
     lines.push('| Release Identity | not recorded: no release under test was supplied |');
   }
+  lines.push(`| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`);
 
   lines.push('');
   return lines.join('\n');

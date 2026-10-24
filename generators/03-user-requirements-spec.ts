@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
+import { ICH_E6_R3, e6r3 } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -251,7 +252,7 @@ function buildDetailedDescriptions(): DetailedDescription[] {
     },
     {
       id: 'URS-018',
-      rationale: '21 CFR Part 11 §11.10(e) and ICH E6(R2) §8.0 require that any correction to trial data ' +
+      rationale: `21 CFR Part 11 §11.10(e) and ${e6r3('dataCorrections')} require that any correction to trial data ` +
         'include an explanation. The reason for change distinguishes legitimate corrections from data manipulation. ' +
         'It provides the clinical context that auditors need to assess whether a change was appropriate.',
       context: 'In practice, data corrections happen frequently in clinical trials — typos, measurement ' +
@@ -559,7 +560,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   content += section(2, 'Purpose and Scope');
   content += `This User Requirements Specification defines the business and regulatory requirements for the **${SYSTEM_INFO.fullName}** (v${SYSTEM_INFO.version}). `;
-  content += 'These requirements form the basis for system validation and are traceable to specific 21 CFR Part 11 sections, HIPAA Security Rule sections, and ICH E6(R2) GCP principles.\n\n';
+  content += `These requirements form the basis for system validation and are traceable to specific 21 CFR Part 11 sections, HIPAA Security Rule sections, and ${ICH_E6_R3.citation} GCP principles.\n\n`;
   content += 'Each requirement is assigned a priority (Must/Should/Could per MoSCoW), a risk level, ' +
     'a regulatory reference, and formal acceptance criteria.\n\n';
   content += 'This is a specification and records no test results. The **Planned Verification** of each detailed ' +
@@ -650,7 +651,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   // Regulatory Cross-Reference Matrix
   content += section(2, 'Regulatory Cross-Reference Matrix');
   content += 'The following matrix maps each URS requirement to the applicable regulatory sections from ' +
-    '21 CFR Part 11, the HIPAA Security Rule (45 CFR 164), and ICH E6(R2) GCP guidelines. This cross-reference ' +
+    `21 CFR Part 11, the HIPAA Security Rule (45 CFR 164), and ${ICH_E6_R3.citation} GCP guidelines. This cross-reference ` +
     'ensures complete regulatory traceability and facilitates inspection readiness.\n\n';
 
   const allReqs = categories.flatMap((c) => c.requirements);
@@ -664,16 +665,16 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     } else if (ref !== 'N/A') {
       part11 = ref;
     }
-    if (r.id >= 'URS-016' && r.id <= 'URS-028') gcp = 'ICH E6(R2) §8.0';
-    if (r.id >= 'URS-029' && r.id <= 'URS-040') gcp = 'ICH E6(R2) §8.0, §2.10';
-    if (r.id >= 'URS-041' && r.id <= 'URS-055') gcp = 'ICH E6(R2) §5.5, §8.0';
-    if (r.id >= 'URS-056' && r.id <= 'URS-068') gcp = 'ICH E6(R2) §6.4, §8.0';
+    if (r.id >= 'URS-016' && r.id <= 'URS-028') gcp = e6r3('auditTrails');
+    if (r.id >= 'URS-029' && r.id <= 'URS-040') gcp = e6r3('signatures');
+    if (r.id >= 'URS-041' && r.id <= 'URS-055') gcp = e6r3('dataCapture');
+    if (r.id >= 'URS-056' && r.id <= 'URS-068') gcp = e6r3('protocolAndRecords');
     if (r.id >= 'URS-069' && r.id <= 'URS-080') hipaa = r.part11Ref.includes('164.') ? r.part11Ref : hipaa;
     return [r.id, r.description.substring(0, 60) + '...', part11, hipaa, gcp];
   });
 
   content += markdownTable(
-    ['URS ID', 'Requirement (abbreviated)', '21 CFR Part 11', 'HIPAA (45 CFR 164)', 'ICH E6(R2) GCP'],
+    ['URS ID', 'Requirement (abbreviated)', '21 CFR Part 11', 'HIPAA (45 CFR 164)', `${ICH_E6_R3.citation} GCP`],
     crossRefRows,
   );
   content += '\n';

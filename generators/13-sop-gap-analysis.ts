@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { ICH_E6_R3 } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -138,7 +139,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   content += 'This document identifies gaps between the Standard Operating Procedures (SOPs) required for a ';
   content += '21 CFR Part 11 and HIPAA-compliant EDC system and the SOPs that currently exist for the AccuraTrial EDC System.\n\n';
   content += 'The gap analysis covers 17 required SOP categories derived from regulatory requirements (21 CFR Part 11, ';
-  content += 'HIPAA Security Rule, ICH E6(R2)) and industry best practices (GAMP 5, ISPE).\n\n';
+  content += `HIPAA Security Rule, ${ICH_E6_R3.citation}) and industry best practices (GAMP 5, ISPE).\n\n`;
   content += hr();
 
   // Section 2: Existing SOPs Inventory

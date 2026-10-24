@@ -19,6 +19,59 @@ export interface PredicateRule {
   applicability: string;
 }
 
+/**
+ * ICH E6(R3), the GCP guideline every generated document cites. Generators cite
+ * it only through this mapping: `ICH_E6_R3.citation` for a general mention and
+ * `e6r3(key)` for a topic. The section numbers are the analyst's reading of the
+ * ICH Step 4 text (TA3 plan VAL-1), which no retained copy pins yet, so they stay
+ * pending QA verification and every document states that; a correction is one
+ * edit here.
+ */
+export const ICH_E6_R3 = {
+  citation: 'ICH E6(R3)',
+  title: 'Guideline for Good Clinical Practice, Principles and Annex 1',
+  step: 'ICH Step 4, 6 January 2025',
+  sectionVerification: 'pending-qa',
+} as const;
+
+/** The verification status every generated document states for the section references. */
+export const E6_R3_SECTION_STATUS = 'Pending QA verification against the ICH Step 4 text';
+
+export const E6_R3_REFERENCES = {
+  gcp: { topic: 'Good clinical practice (general)', section: 'Principles and Annex 1' },
+  auditTrails: { topic: 'Audit trails', section: 'Annex 1, 4.2.2 Relevant metadata, including audit trails' },
+  dataCorrections: { topic: 'Data corrections', section: 'Annex 1, 4.2.4 Data corrections' },
+  signatures: { topic: 'Electronic signatures', section: 'Annex 1, 4.2.2 and 4.3 Computerised systems' },
+  dataCapture: { topic: 'Data capture and records', section: 'Annex 1, 4.2.1 Data capture; 3.16 Data and records' },
+  protocolAndRecords: {
+    topic: 'Protocol, amendments and essential records',
+    section: 'Appendix B (protocol and amendments); Appendix C (essential records)',
+  },
+  reviewOfData: { topic: 'Review of data', section: 'Annex 1, 4.2.3 Review of data and metadata' },
+  validation: { topic: 'Computerised system validation', section: 'Annex 1, 4.3.4 Validation' },
+  essentialRecords: { topic: 'Essential records', section: 'Appendix C' },
+  training: {
+    topic: 'Qualification and training',
+    section: 'Annex 1, 2.1 and 3.4 (qualification and training); 4.3.2 Training',
+  },
+  nonCompliance: { topic: 'Noncompliance (protocol deviations)', section: 'Annex 1, 3.12 Noncompliance' },
+  qualityManagement: {
+    topic: 'Quality management',
+    section: 'Annex 1, 3.10 Quality management; 3.11 Quality assurance and quality control',
+  },
+  blinding: { topic: 'Blinding', section: 'Annex 1, 4.1 Safeguard blinding in data governance' },
+  retention: { topic: 'Retention and access', section: 'Annex 1, 4.2.7 Retention and access' },
+} as const;
+
+export type E6R3Key = keyof typeof E6_R3_REFERENCES;
+
+/** The citation of one mapped topic, for example "ICH E6(R3) Annex 1, 4.2.4 Data corrections". */
+export function e6r3(key: E6R3Key): string {
+  const reference = E6_R3_REFERENCES[key];
+  if (!reference) throw new Error(`No ICH E6(R3) reference is mapped for ${JSON.stringify(key)}.`);
+  return `${ICH_E6_R3.citation} ${reference.section}`;
+}
+
 export const REGULATORY_SCOPE = {
   part11Applicable: true,
   hipaaApplicable: true,
@@ -62,7 +115,8 @@ export const REGULATORY_SCOPE = {
     { citation: '21 CFR 56', title: 'Institutional Review Boards', applicability: 'IRB submission documentation and approval records' },
     { citation: '21 CFR 11', title: 'Electronic Records; Electronic Signatures', applicability: 'Directly applicable — governs all electronic records and signatures' },
     { citation: '21 CFR 54', title: 'Financial Disclosure by Clinical Investigators', applicability: 'Investigator financial disclosure records if managed in system' },
-    { citation: 'ICH E6(R2)', title: 'Good Clinical Practice', applicability: 'Source data integrity, monitoring, audit trail requirements' },
+    { citation: ICH_E6_R3.citation, title: `${ICH_E6_R3.title} (${ICH_E6_R3.step})`, applicability: `Data governance and computerised systems, data integrity, audit trails, essential records and noncompliance. Section references: ${E6_R3_SECTION_STATUS}` },
+    { citation: 'FDA draft guidance (December 2024)', title: 'Protocol Deviations for Clinical Investigations of Drugs, Biological Products, and Devices', applicability: 'Classification and importance of protocol deviations recorded in the deviation log' },
     { citation: '45 CFR 164 Subpart C', title: 'HIPAA Security Rule', applicability: 'Technical, administrative, and physical safeguards for ePHI' },
     { citation: '45 CFR 164 Subpart D', title: 'HIPAA Breach Notification Rule', applicability: 'Breach notification procedures for ePHI' },
     { citation: '45 CFR 164 Subpart E', title: 'HIPAA Privacy Rule', applicability: 'Use and disclosure limitations for PHI' },

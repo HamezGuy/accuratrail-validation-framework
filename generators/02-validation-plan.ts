@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
-import { REGULATORY_SCOPE } from '../config/regulatory-scope';
+import { REGULATORY_SCOPE, ICH_E6_R3, E6_R3_REFERENCES, E6_R3_SECTION_STATUS, e6r3, type E6R3Key } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -51,7 +51,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     `and deliverables for the computer system validation of **${SYSTEM_INFO.fullName}** ` +
     `(v${SYSTEM_INFO.version}). ` +
     'The validation program establishes documented evidence that the system consistently performs ' +
-    'its intended functions in compliance with 21 CFR Part 11, HIPAA Security Rule, and ICH E6(R2) GCP.\n\n';
+    `its intended functions in compliance with 21 CFR Part 11, HIPAA Security Rule, and ${ICH_E6_R3.citation} GCP.\n\n`;
 
   content += section(3, 'Scope');
   content += 'This VMP covers the complete validation lifecycle for all regulated functionality:\n\n';
@@ -91,9 +91,22 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- GAMP 5 — A Risk-Based Approach to Compliant GxP Computerized Systems\n';
   content += '- FDA Guidance: General Principles of Software Validation (2002)\n';
   content += '- FDA Guidance: Part 11, Scope and Application (2003)\n';
-  content += '- ICH E6(R2) — Guideline for Good Clinical Practice\n';
+  content += `- ${ICH_E6_R3.citation}: ${ICH_E6_R3.title} (${ICH_E6_R3.step}); section references in the mapping below\n`;
   content += '- 45 CFR 164 — HIPAA Security Rule\n';
   content += '- NIST SP 800-53 — Security and Privacy Controls (reference framework)\n\n';
+
+  content += section(3, `${ICH_E6_R3.citation} Reference Mapping`);
+  content += `Every generated document cites ${ICH_E6_R3.citation} through this one mapping ` +
+    '(`config/regulatory-scope.ts`). The section references are the framework\'s reading of the ' +
+    `Step 4 text (${ICH_E6_R3.step}); no retained copy of that text pins them, so each stays ` +
+    `"${E6_R3_SECTION_STATUS}" until QA verifies it. A correction is one edit to the mapping.\n\n`;
+  content += markdownTable(
+    ['Key', 'Topic', `${ICH_E6_R3.citation} Reference`, 'Verification'],
+    (Object.keys(E6_R3_REFERENCES) as E6R3Key[]).map(key => [
+      `\`${key}\``, E6_R3_REFERENCES[key].topic, e6r3(key), E6_R3_SECTION_STATUS,
+    ]),
+  );
+  content += '\n';
   content += hr();
 
   // Section 3: System Architecture

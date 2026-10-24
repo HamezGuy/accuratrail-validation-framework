@@ -15,6 +15,7 @@ import {
   statusBadge,
 } from './helpers/markdown-writer';
 import { SYSTEM_INFO } from '../config/system-info';
+import { e6r3 } from '../config/regulatory-scope';
 import {
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
   loadEvidence as loadCategoryResults,
@@ -392,7 +393,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += 'This document, together with the referenced JSON evidence files, constitutes the complete ';
   content += 'test execution record for the validation as required by:\n\n';
   content += '- **21 CFR Part 11 §11.10(a):** Documented evidence of system validation\n';
-  content += '- **ICH E6(R2) §5.5.3:** Documentation of computerized system validation\n';
+  content += `- **${e6r3('validation')}:** Documentation of computerised system validation\n`;
   content += '- **GAMP 5:** Test execution evidence within the V-model lifecycle\n\n';
   content += hr();
 

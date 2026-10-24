@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
+import { ICH_E6_R3, e6r3 } from '../config/regulatory-scope';
 import {
   RISK_DEFINITIONS,
   FEATURE_RISKS,
@@ -115,7 +116,7 @@ function buildDetailedRiskAnalyses(criticalFeatures: FeatureRisk[]): DetailedRis
     'FEAT-014': {
       failureMode: 'Data corrections are allowed without capturing a reason for change.',
       patientSafetyImpact: 'Without documented reasons, corrections to adverse event severity or dosing data cannot be clinically reviewed for appropriateness.',
-      dataIntegrityImpact: 'Missing reasons for change violate §11.10(e) and ICH E6(R2) requirements, and are a common FDA 483 observation.',
+      dataIntegrityImpact: `Missing reasons for change violate §11.10(e) and ${e6r3('dataCorrections')}, and are a common FDA 483 observation.`,
       mitigationControls: ['Joi validation rejects PUT requests missing reason field', 'reason column NOT NULL in acc_audit_log for data corrections', 'Frontend UI requires reason input before submission', 'Audit entry stores reason alongside old/new values'],
       residualRisk: 'Low — Mandatory field enforced at validation, application, and database layers.',
       csaClassification: 'High Process Risk',
@@ -534,7 +535,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += 'This risk assessment is performed in accordance with:\n\n';
   content += '- **21 CFR Part 11** — Electronic Records; Electronic Signatures\n';
   content += '- **HIPAA Security Rule** (45 CFR 164 Subpart C) — Technical Safeguards\n';
-  content += '- **ICH E6(R2)** — Good Clinical Practice\n';
+  content += `- **${ICH_E6_R3.citation}**: ${ICH_E6_R3.title}\n`;
   content += '- **GAMP 5** — Risk-Based Approach to Compliant GxP Computerized Systems\n\n';
   content += 'The assessment covers all system features that create, modify, store, retrieve, or transmit ';
   content += 'electronic records, electronic signatures, or electronic protected health information (ePHI).\n\n';
