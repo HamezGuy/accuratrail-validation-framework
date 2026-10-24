@@ -249,6 +249,8 @@ function installationRows(): TraceRow[] {
     ['Production auth required', '§11.10(d)', riskBadge('Critical'), 'Auth middleware', 'IQ-031', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Admin strong passwords', '§11.300', riskBadge('Critical'), 'Password policy enforcement', 'IQ-032', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Configuration under test declared and checked against its source', '§11.10(a)', riskBadge('High'), 'validation-target-configuration/1 declaration (--target-config); configurationUnderTest in package-manifest.json', 'IQ-033', 'Pending', 'evidence/iq/', 'None', 'Pending'],
+    ['No dead or misnamed production settings', '§11.10(a)', riskBadge('Medium'), '.env.production.example and the production compose core-api environment against readers in libreclinicaapi/src', 'IQ-034', 'Pending', 'evidence/iq/', 'None', 'Pending'],
+    ['Vendored package receipts', '§11.10(a)', riskBadge('High'), 'libreclinicaapi vendor/*.tgz.json receipts and lockfile integrity', 'IQ-035', 'Pending', 'evidence/iq/', 'None', 'Pending'],
   ];
 }
 

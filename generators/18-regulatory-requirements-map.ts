@@ -1383,7 +1383,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += section(2, 'Installation Qualification (IQ) Test Cases');
   c += '\n';
   c += markdownTable(['Test Case Range', 'Regulatory Section(s)', 'Verification Scope'], [
-    ['IQ-001 through IQ-033', '§11.10(a)', 'System installation verification; database schema integrity; service deployment validation; configuration under test'],
+    ['IQ-001 through IQ-035', '§11.10(a)', 'System installation verification; database schema integrity; service deployment validation; configuration under test; production settings and vendored receipts'],
     ['IQ-025, IQ-026', '§11.10(c)', 'Backup infrastructure installation verification; encryption library deployment'],
     ['IQ-027, IQ-028', '§11.30', 'TLS certificate installation; encryption at rest configuration verification'],
     ['IQ-005, IQ-006', '§11.10(d)', 'Authentication system installation; RBAC configuration deployment'],

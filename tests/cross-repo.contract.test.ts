@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
 import { SYSTEM_INFO } from '../config/system-info';
-import { checkSoftwareInstallation, declaredMajor, SHARED_TYPES_VERIFIER } from '../runners/iq-runner';
+import { checkDeadSettings, checkSoftwareInstallation, checkVendoredReceipts, declaredMajor, SHARED_TYPES_VERIFIER } from '../runners/iq-runner';
 
 // Checks against sibling checkouts of the estate (npm run test:cross-repo). A
 // missing sibling file fails the check and names its path; nothing is skipped.
@@ -54,4 +54,21 @@ test('on the real trees IQ-005, IQ-006 and IQ-008 pass for the API, the UI and t
   const consumers = (results.find(entry => entry.testCaseId === 'IQ-008')!.responseBody as { consumers: Array<{ name: string; root: string; verified: boolean }> }).consumers;
   assert.deepEqual(consumers.map(entry => [entry.name, entry.root, entry.verified]),
     [['api', edc, true], ['ui', ui, true], ['validation-framework', root, true]]);
+});
+
+test('on the real trees IQ-034 lists the dead production settings of map/repo-runtime.md 5.4 and IQ-035 names the interop archive', () => {
+  // These are open defects of the EDC (RT-20, F17-09); when the EDC fixes one, update this block.
+  const workspace = defaultWorkspaceRoot();
+  const edc = resolveLibreclinicaApiRoot(workspace);
+  sibling(path.join(edc, '.env.production.example'));
+  sibling(path.join(resolveFrontendRoot(workspace), 'docker-compose.production.yml'));
+  const dead = checkDeadSettings(edc, resolveFrontendRoot(workspace), workspace);
+  assert.equal(dead.passed, false, dead.notes);
+  const keys = (dead.responseBody as { deadKeys: Array<{ key: string }> }).deadKeys.map(entry => entry.key);
+  for (const key of ['STRICT_VALIDATION_RULE_SIGNATURES', 'BACKUP_ENABLED', 'BACKUP_SCHEDULE', 'BACKUP_RETENTION_DAYS', 'BACKUP_S3_BUCKET']) {
+    assert.ok(keys.includes(key), `IQ-034 lists ${key}: ${dead.notes}`);
+  }
+  const receipts = checkVendoredReceipts(edc);
+  assert.equal(receipts.passed, false, receipts.notes);
+  assert.match(receipts.notes, /@accura-trial\/interop-middleware: no receipt .*accura-trial-interop-middleware-0\.3\.0\.[0-9a-f]{16}\.tgz\.json/);
 });

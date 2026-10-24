@@ -24,8 +24,8 @@ import {
   type ConfigurationMismatch, type DeclaredConfiguration, type FlagValue, type SourceEnvironment, type TargetConfigurationFlag,
 } from './target-configuration';
 
-/** The IQ protocol's cases, IQ-001 to IQ-033; the runner records a result for each. */
-export const IQ_CASE_COUNT = 33;
+/** The IQ protocol's cases, IQ-001 to IQ-035; the runner records a result for each. */
+export const IQ_CASE_COUNT = 35;
 
 export interface IqRunOptions {
   /** The validation-target-configuration/1 declaration IQ-033 checks (--target-config);
@@ -137,6 +137,8 @@ export interface VendoredArchive {
   receipt: Record<string, unknown> | null;
   bytes: number | null;
   sha256: string | null;
+  /** The archive's SHA-512 in the lockfile's integrity form. */
+  integrity: string | null;
   /** Empty when the receipt exists and its filename, byte count, SHA-256, integrity
    * and package name describe the archive's bytes. */
   problems: string[];
@@ -145,7 +147,9 @@ export interface VendoredArchive {
 export function readVendoredArchive(root: string, packageName: string, selector: string): VendoredArchive {
   const archive = path.resolve(root, selector.replace(/^file:/, ''));
   const receiptPath = `${archive}.json`;
-  const result: VendoredArchive = { packageName, selector, archive, receiptPath, receipt: null, bytes: null, sha256: null, problems: [] };
+  const result: VendoredArchive = {
+    packageName, selector, archive, receiptPath, receipt: null, bytes: null, sha256: null, integrity: null, problems: [],
+  };
   if (!VENDORED_SELECTOR.test(selector)) {
     result.problems.push(`${packageName} is not installed from a vendored archive (${JSON.stringify(selector)})`);
     return result;
@@ -155,6 +159,7 @@ export function readVendoredArchive(root: string, packageName: string, selector:
     bytes = fs.readFileSync(archive);
     result.bytes = bytes.length;
     result.sha256 = sha256(bytes);
+    result.integrity = sha512Integrity(bytes);
   } catch (error) {
     result.problems.push(`archive ${archive} cannot be read (${(error as NodeJS.ErrnoException).code ?? errorText(error)})`);
   }
@@ -174,10 +179,149 @@ export function readVendoredArchive(root: string, packageName: string, selector:
   if (receipt.filename !== path.basename(archive)) result.problems.push(`receipt ${receiptPath} names file ${JSON.stringify(receipt.filename)}`);
   if (receipt.byteLength !== bytes.length) result.problems.push(`archive ${archive} has ${bytes.length} bytes, its receipt ${JSON.stringify(receipt.byteLength)}`);
   if (receipt.sha256 !== result.sha256) result.problems.push(`archive ${archive} does not match its receipt's SHA-256`);
-  if (receipt.integrity !== undefined && receipt.integrity !== sha512Integrity(bytes)) {
+  if (receipt.integrity !== undefined && receipt.integrity !== result.integrity) {
     result.problems.push(`archive ${archive} does not match its receipt's integrity`);
   }
   return result;
+}
+
+/** IQ-035: every `file:vendor/*.tgz` dependency of the API has a receipt beside its
+ * archive (`<archive>.tgz.json`) that describes the archive's bytes, and the lockfile
+ * installed that archive (its integrity is the archive's). Shared types are verified
+ * in full by IQ-008; an archive without a receipt fails the case. */
+export function checkVendoredReceipts(apiRoot: string): EvidenceResult {
+  const label = 'Vendored package receipts';
+  const packageFile = path.join(apiRoot, 'package.json');
+  const pkg = readPackageJson(packageFile);
+  if (!pkg) return fileResult('IQ-035', label, false, 'package.json not found or not JSON', packageFile);
+  const vendored = ['dependencies', 'devDependencies', 'optionalDependencies']
+    .flatMap(group => (isRecord(pkg[group]) ? Object.entries(pkg[group] as Record<string, unknown>) : []))
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].startsWith('file:vendor/'));
+  if (!vendored.length) {
+    return fileResult('IQ-035', label, false, 'package.json declares no file:vendor dependency, so no receipt is verified', packageFile);
+  }
+  const lockFile = path.join(apiRoot, 'package-lock.json');
+  const lock = readPackageJson(lockFile);
+  const lockPackages = isRecord(lock?.packages) ? lock.packages as Record<string, unknown> : {};
+  const archives = vendored.map(([name, selector]) => {
+    const archive = readVendoredArchive(apiRoot, name, selector);
+    const locked = lockPackages[`node_modules/${name}`];
+    const lockedIntegrity = isRecord(locked) && typeof locked.integrity === 'string' ? locked.integrity : null;
+    if (archive.integrity && lockedIntegrity !== archive.integrity) {
+      archive.problems.push(`${lockFile} does not install ${name} from this archive (its integrity is ${lockedIntegrity ? 'another archive\'s' : 'missing'})`);
+    }
+    return archive;
+  });
+  const failing = archives.filter(archive => archive.problems.length);
+  const passed = failing.length === 0;
+  return fileResult('IQ-035', label, passed,
+    passed
+      ? `${archives.length} vendored archives each match their receipt and the lockfile: `
+        + archives.map(archive => `${archive.packageName} (${String(archive.receipt?.contract)})`).join(', ')
+      : `${failing.length} of ${archives.length} vendored archives fail: `
+        + failing.map(archive => `${archive.packageName}: ${archive.problems.join('; ')}`).join('; '),
+    packageFile, {
+      archives: archives.map(archive => ({
+        packageName: archive.packageName, selector: archive.selector, archive: archive.archive, receipt: archive.receiptPath,
+        receiptContract: typeof archive.receipt?.contract === 'string' ? archive.receipt.contract : null,
+        sha256: archive.sha256, problems: archive.problems,
+      })),
+    });
+}
+
+/** Settings the Node.js runtime or a library the EDC uses reads, not its src. */
+export const RUNTIME_READERS: Readonly<Record<string, string>> = {
+  NODE_OPTIONS: 'the Node.js runtime',
+  NODE_EXTRA_CA_CERTS: 'the Node.js runtime',
+  TZ: 'the Node.js runtime',
+  // The EDC creates S3Client with a region only (src/services/backup/cloud-storage.service.ts),
+  // so the AWS SDK's default credential chain reads these.
+  AWS_ACCESS_KEY_ID: 'the AWS SDK default credential chain',
+  AWS_SECRET_ACCESS_KEY: 'the AWS SDK default credential chain',
+  AWS_SESSION_TOKEN: 'the AWS SDK default credential chain',
+};
+
+/** Settings the production files name that the code reads under another name
+ * (map/repo-runtime.md 5.4); IQ-034 states the other name only when it has a reader. */
+const READ_UNDER_ANOTHER_NAME: Readonly<Record<string, string>> = {
+  BACKUP_ENABLED: 'BACKUP_SCHEDULER_ENABLED',
+  BACKUP_S3_BUCKET: 'AWS_S3_BUCKET',
+  SOAP_URL: 'LIBRECLINICA_SOAP_URL',
+  EMAIL_FROM: 'SMTP_FROM_EMAIL',
+  LIBRECLINICA_DB_POOL_MAX: 'LIBRECLINICA_DB_MAX_CONNECTIONS',
+};
+
+/** The settings EDC src reads: process.env.KEY, an environment parameter's env.KEY or
+ * env['KEY'] (as src/config/production-guards.ts reads them), or the key as a whole
+ * string literal, the form helpers that read process.env[name] take. Test files are
+ * not readers. */
+export function settingsReadBy(srcRoot: string): { names: Set<string>; files: number } {
+  const names = new Set<string>();
+  let files = 0;
+  const walk = (directory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules' && entry.name !== '__tests__') walk(full);
+        continue;
+      }
+      if (!entry.isFile() || !/\.(?:ts|js|cjs|mjs)$/.test(entry.name) || /\.(?:test|spec)\.[cm]?[jt]s$/.test(entry.name)) continue;
+      const text = fs.readFileSync(full, 'utf-8');
+      files++;
+      for (const match of text.matchAll(/\benv\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*(['"`])([A-Za-z_][A-Za-z0-9_]*)\2\s*\])/g)) {
+        names.add(match[1] ?? match[3]);
+      }
+      for (const match of text.matchAll(/(['"`])([A-Z][A-Z0-9_]*)\1/g)) names.add(match[2]);
+    }
+  };
+  walk(srcRoot);
+  return { names, files };
+}
+
+/** IQ-034: every key the EDC production example sets, and every key the core-api
+ * service environment of the frontend's production compose file sets, has a reader
+ * in EDC src (settingsReadBy) or in the runtime (RUNTIME_READERS). The case lists
+ * the dead keys, with where each is set, and fails while any exist (RT-20). */
+export function checkDeadSettings(apiRoot: string, frontendRoot: string, workspaceRoot: string): EvidenceResult {
+  const label = 'Dead or misnamed settings';
+  const shown = (file: string) => path.relative(workspaceRoot, file).split(path.sep).join('/');
+  const srcRoot = path.join(apiRoot, 'src');
+  const exampleFile = path.join(apiRoot, PRODUCTION_EXAMPLE);
+  const composeFile = path.join(frontendRoot, 'docker-compose.production.yml');
+  const problems: string[] = [];
+  const setIn = new Map<string, string[]>();
+  const sources: Array<{ file: string; keys: number }> = [];
+  for (const [file, parse] of [
+    [exampleFile, (text: string) => dotenvEnvironment(text)],
+    [composeFile, (text: string) => composeServiceEnvironment(text, CORE_API_SERVICE)],
+  ] as const) {
+    const text = safeReadFile(file);
+    const environment = text === null ? undefined : parse(text);
+    if (!environment) {
+      problems.push(text === null ? `${file} is not found` : `${file} has no ${CORE_API_SERVICE} service environment`);
+      continue;
+    }
+    sources.push({ file, keys: environment.entries.size });
+    for (const [key, entry] of environment.entries) setIn.set(key, [...(setIn.get(key) ?? []), `${shown(file)}:${entry.line}`]);
+  }
+  let read: { names: Set<string>; files: number } = { names: new Set(), files: 0 };
+  try { read = settingsReadBy(srcRoot); }
+  catch (error) { problems.push(`${srcRoot} cannot be read (${(error as NodeJS.ErrnoException).code ?? errorText(error)})`); }
+  if (!read.files && !problems.length) problems.push(`${srcRoot} holds no source file`);
+  const deadKeys = [...setIn].filter(([key]) => !read.names.has(key) && !RUNTIME_READERS[key]).map(([key, places]) => {
+    const other = READ_UNDER_ANOTHER_NAME[key];
+    return { key, setIn: places, ...(other && read.names.has(other) ? { readUnder: other } : {}) };
+  });
+  const passed = problems.length === 0 && deadKeys.length === 0;
+  const listed = deadKeys.map(dead => `${dead.key} (${dead.setIn.join(', ')}${dead.readUnder ? `; the code reads ${dead.readUnder}` : ''})`);
+  return fileResult('IQ-034', label, passed,
+    [
+      ...problems,
+      deadKeys.length
+        ? `${deadKeys.length} of ${setIn.size} settings set in the production example and the production compose file have no reader in ${shown(srcRoot)}: ${listed.join('; ')}`
+        : `every one of ${setIn.size} settings set in the production example and the production compose file has a reader in ${shown(srcRoot)} (${read.files} files) or the runtime`,
+    ].join('; '),
+    exampleFile, { sources, srcRoot, srcFilesScanned: read.files, deadKeys });
 }
 
 /** The files a refusal of the EDC's verifier concerns, by its message, relative to
@@ -356,7 +500,7 @@ export function checkConfigurationUnderTest(declarationFile: string | undefined,
     for (const [flag, value] of flags) {
       const production = sourceFlagValue(example, flag) ?? null;
       const entry = example.entries.get(flag);
-      if (production !== value) productionDelta.push({ flag, declared: value, productionExample: production, setIn: entry ? `line ${entry.line}` : 'not set (code default)' });
+      if (production !== value) productionDelta.push({ flag, declared: value, productionExample: production, setIn: entry ? `line ${entry.line}` : 'not set, so the code default' });
     }
     findings.push(`production delta against ${examplePath}: ${productionDelta.length
       ? productionDelta.map(delta => `${delta.flag} declared ${valueText(delta.declared)}, the example ${valueText(delta.productionExample)} (${delta.setIn})`).join('; ')
@@ -799,7 +943,7 @@ export async function run(
 
   const results: EvidenceResult[] = [];
 
-  // --- File-based checks (IQ-003..IQ-030, IQ-032, IQ-033) ---
+  // --- File-based checks (IQ-003..IQ-030, IQ-032..IQ-035) ---
   try { results.push(...checkSoftwareInstallation(wsRoot, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkSoftwareInstallation error:', err);
   }
@@ -814,6 +958,12 @@ export async function run(
   }
   try { results.push(checkConfigurationUnderTest(options.targetConfigFile, baseUrl, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkConfigurationUnderTest error:', err);
+  }
+  try { results.push(checkDeadSettings(apiRoot, resolveFrontendRoot(wsRoot), wsRoot)); } catch (err: unknown) {
+    console.error('  [IQ] checkDeadSettings error:', err);
+  }
+  try { results.push(checkVendoredReceipts(apiRoot)); } catch (err: unknown) {
+    console.error('  [IQ] checkVendoredReceipts error:', err);
   }
 
   // --- API-based checks ---

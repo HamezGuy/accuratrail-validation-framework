@@ -11,7 +11,8 @@ import { collectSharedTypes } from '../collectors/shared-types-collector';
 import { collectFrontend } from '../collectors/frontend-collector';
 import { collectSOPs } from '../collectors/sop-collector';
 import {
-  checkConfigurationUnderTest, checkSharedTypesInstallation, checkSoftwareInstallation, declaredMajor, readVendoredArchive, run as runIq,
+  checkConfigurationUnderTest, checkDeadSettings, checkSharedTypesInstallation, checkSoftwareInstallation, checkVendoredReceipts,
+  declaredMajor, readVendoredArchive, run as runIq,
   IQ_CASE_COUNT, LIVE_PRODUCTION_STATEMENT, PRODUCTION_EXAMPLE, SHARED_TYPES_VERIFIER, type SharedTypesConsumer,
 } from '../runners/iq-runner';
 import {
@@ -327,9 +328,9 @@ test('IQ-033 verifies the source hash, cross-checks the core-api environment and
   assert.deepEqual(body.source.undetermined, ['ENABLE_DEVIATION_DECISIONS']);
   assert.deepEqual(body.productionExample.delta, [
     { flag: 'NODE_ENV', declared: 'development', productionExample: 'production', setIn: 'line 1' },
-    { flag: 'ENABLE_DEVIATION_ENGINE', declared: true, productionExample: false, setIn: 'not set (code default)' },
-    { flag: 'ENABLE_DEVIATION_DECISIONS', declared: true, productionExample: false, setIn: 'not set (code default)' },
-    { flag: 'TRAINING_SERVICE_URL', declared: 'set', productionExample: 'unset', setIn: 'not set (code default)' },
+    { flag: 'ENABLE_DEVIATION_ENGINE', declared: true, productionExample: false, setIn: 'not set, so the code default' },
+    { flag: 'ENABLE_DEVIATION_DECISIONS', declared: true, productionExample: false, setIn: 'not set, so the code default' },
+    { flag: 'TRAINING_SERVICE_URL', declared: 'set', productionExample: 'unset', setIn: 'not set, so the code default' },
   ]);
   assert.equal(body.liveProduction, LIVE_PRODUCTION_STATEMENT);
   assert.ok(result.notes.includes(LIVE_PRODUCTION_STATEMENT));
@@ -447,4 +448,80 @@ test('the IQ runner records exactly the protocol\'s cases, IQ-033 with the decla
   const protocol = fs.readFileSync(path.join(output, '07-iq-protocol.md'), 'utf8');
   assert.deepEqual([...protocol.matchAll(/^### (IQ-\d{3}):/gm)].map(match => match[1]), expected);
   assert.ok(protocol.includes(`**Total test cases:** ${IQ_CASE_COUNT}`));
+});
+
+// ---------------------------------------------------------------------------
+// IQ-034 dead or misnamed settings, IQ-035 vendored package receipts
+// ---------------------------------------------------------------------------
+
+test('IQ-034 lists every production setting with no reader in EDC src, where it is set, and the name read instead', t => {
+  const workspace = temporaryDirectory(t, 'accura-iq-settings-');
+  const api = path.join(workspace, 'libreclinicaapi');
+  const ui = path.join(workspace, 'EDCProjectCompliant');
+  write(path.join(api, PRODUCTION_EXAMPLE), ['# synthetic production example', 'NODE_ENV=production', 'STRICT_VALIDATION_RULE_SIGNATURES=true',
+    'BACKUP_ENABLED=true', 'AWS_ACCESS_KEY_ID=', 'READ_BY_HELPER=5', 'READ_BY_PARAMETER=on', 'READ_IN_TEST_ONLY=1', ''].join('\n'));
+  write(path.join(api, 'src', 'config', 'environment.ts'),
+    'export const mode = process.env.NODE_ENV;\nexport const backups = process.env[\'BACKUP_SCHEDULER_ENABLED\'];\n'
+    + '// STRICT_VALIDATION_RULE_SIGNATURES is named in a comment only.\n');
+  write(path.join(api, 'src', 'config', 'guards.ts'), 'export function guard(env = process.env) { return env.READ_BY_PARAMETER; }\n');
+  write(path.join(api, 'src', 'services', 'queue.ts'), 'declare function numberSetting(name: string): number;\nexport const limit = numberSetting(\'READ_BY_HELPER\');\n');
+  write(path.join(api, 'src', 'services', 'queue.test.ts'), 'process.env.READ_IN_TEST_ONLY;\n');
+  write(path.join(api, 'src', '__tests__', 'fixture.ts'), 'process.env.READ_IN_TEST_ONLY;\n');
+  const compose = path.join(ui, 'docker-compose.production.yml');
+  write(compose, ['services:', '  db:', '    environment:', '      ORPHAN_IN_ANOTHER_SERVICE: "x"', '  core-api:', '    environment:',
+    '      NODE_ENV: production', '      DISABLE_SOAP: "false"', '      TZ: UTC', ''].join('\n'));
+
+  const result = checkDeadSettings(api, ui, workspace);
+  assert.equal(result.passed, false);
+  const body = result.responseBody as { srcFilesScanned: number; deadKeys: Array<{ key: string; setIn: string[]; readUnder?: string }> };
+  assert.equal(body.srcFilesScanned, 3, 'test files are not readers');
+  assert.deepEqual(body.deadKeys, [
+    { key: 'STRICT_VALIDATION_RULE_SIGNATURES', setIn: ['libreclinicaapi/.env.production.example:3'] },
+    { key: 'BACKUP_ENABLED', setIn: ['libreclinicaapi/.env.production.example:4'], readUnder: 'BACKUP_SCHEDULER_ENABLED' },
+    { key: 'READ_IN_TEST_ONLY', setIn: ['libreclinicaapi/.env.production.example:8'] },
+    { key: 'DISABLE_SOAP', setIn: ['EDCProjectCompliant/docker-compose.production.yml:8'] },
+  ]);
+  assert.match(result.notes, /4 of 9 settings set in the production example and the production compose file have no reader in libreclinicaapi\/src/);
+  assert.match(result.notes, /BACKUP_ENABLED \(libreclinicaapi\/\.env\.production\.example:4; the code reads BACKUP_SCHEDULER_ENABLED\)/);
+
+  write(path.join(api, 'src', 'config', 'readers.ts'),
+    'export const read = [process.env.STRICT_VALIDATION_RULE_SIGNATURES, process.env.BACKUP_ENABLED, process.env.READ_IN_TEST_ONLY, process.env.DISABLE_SOAP];\n');
+  const clean = checkDeadSettings(api, ui, workspace);
+  assert.equal(clean.passed, true, clean.notes);
+  fs.rmSync(compose);
+  const missing = checkDeadSettings(api, ui, workspace);
+  assert.equal(missing.passed, false);
+  assert.ok(missing.notes.includes(`${compose} is not found`), missing.notes);
+});
+
+test('IQ-035 fails a vendored archive without a matching receipt or not the one the lockfile installed', t => {
+  const api = temporaryDirectory(t, 'accura-iq-receipts-');
+  const archive = (name: string) => Buffer.from(`SYNTHETIC vendored archive ${name}; not a real package.\n`);
+  const receipt = (name: string, bytes: Buffer, overrides: Record<string, unknown> = {}) => writeJson(path.join(api, 'vendor', `${name}.tgz.json`), {
+    contract: 'accura-local-package-release/1', packageName: `@accura-trial/${name}`, version: '0.1.0', filename: `${name}.tgz`,
+    byteLength: bytes.length, sha256: sha256(bytes), integrity: sha512(bytes), ...overrides,
+  });
+  const lock = (integrities: Record<string, string>) => writeJson(path.join(api, 'package-lock.json'), {
+    lockfileVersion: 3, packages: Object.fromEntries(Object.entries(integrities).map(([name, integrity]) => [`node_modules/@accura-trial/${name}`, { integrity }])),
+  });
+  for (const name of ['alpha', 'beta']) write(path.join(api, 'vendor', `${name}.tgz`), archive(name));
+  writeJson(path.join(api, 'package.json'), { name: 'synthetic-api', version: '0.0.1', dependencies: {
+    '@accura-trial/alpha': 'file:vendor/alpha.tgz', '@accura-trial/beta': 'file:vendor/beta.tgz', 'left-pad': '^1.3.0' } });
+  receipt('alpha', archive('alpha'));
+  lock({ alpha: sha512(archive('alpha')), beta: sha512(archive('beta')) });
+
+  const unreceipted = checkVendoredReceipts(api);
+  assert.equal(unreceipted.passed, false);
+  assert.match(unreceipted.notes, /1 of 2 vendored archives fail: @accura-trial\/beta: no receipt .*beta\.tgz\.json/);
+  receipt('beta', archive('beta'), { sha256: sha256('another archive') });
+  assert.match(checkVendoredReceipts(api).notes, /beta\.tgz does not match its receipt's SHA-256/);
+  receipt('beta', archive('beta'));
+  lock({ alpha: sha512(Buffer.from('another archive')), beta: sha512(archive('beta')) });
+  assert.match(checkVendoredReceipts(api).notes, /does not install @accura-trial\/alpha from this archive \(its integrity is another archive's\)/);
+  lock({ alpha: sha512(archive('alpha')), beta: sha512(archive('beta')) });
+  const verified = checkVendoredReceipts(api);
+  assert.equal(verified.passed, true, verified.notes);
+  assert.match(verified.notes, /2 vendored archives each match their receipt and the lockfile/);
+  writeJson(path.join(api, 'package.json'), { name: 'synthetic-api', version: '0.0.1', dependencies: { 'left-pad': '^1.3.0' } });
+  assert.match(checkVendoredReceipts(api).notes, /declares no file:vendor dependency, so no receipt is verified/);
 });

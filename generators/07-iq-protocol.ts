@@ -534,6 +534,37 @@ function configurationUnderTestCases(): IqTestCase[] {
         + 'the case is not executed (NO_TARGET_CONFIGURATION).',
       evidence: 'See evidence/iq/IQ-033.json and configurationUnderTest in package-manifest.json',
     },
+    {
+      id: 'IQ-034',
+      title: 'No dead or misnamed settings in the production configuration',
+      requirement: 'Every setting the production example and the production compose file set is read by the EDC, so an '
+        + 'operator cannot believe a control is on when nothing reads it',
+      cfr: '§11.10(a) Validation',
+      steps: [
+        `List the keys ${SYSTEM_INFO.projectPaths.backend}/.env.production.example sets and the keys the core-api service `
+          + `environment of ${SYSTEM_INFO.projectPaths.frontend}/docker-compose.production.yml sets.`,
+        `For each key, find a reader in ${SYSTEM_INFO.projectPaths.backend}/src: process.env.KEY, an environment parameter's `
+          + 'env.KEY, or the key as a whole string literal (the form helpers that read process.env[name] take); test files are not readers.',
+        'Keys the Node.js runtime or the AWS SDK reads (NODE_OPTIONS, TZ, the AWS credential variables) count as read.',
+        'List every dead key with the file and line that set it, and the name the code reads instead where one is known.',
+      ],
+      expectedResult: 'No dead key. While any exists the case fails and lists them.',
+      evidence: 'See evidence/iq/IQ-034.json',
+    },
+    {
+      id: 'IQ-035',
+      title: 'Vendored package receipts',
+      requirement: 'Every package the API installs from a vendored archive has a receipt that describes the archive\'s bytes',
+      cfr: '§11.10(a) Validation',
+      steps: [
+        `For each \`file:vendor/*.tgz\` dependency in ${SYSTEM_INFO.projectPaths.backend}/package.json, read the receipt beside the archive (\`<archive>.tgz.json\`).`,
+        'Verify the receipt names the package and the file, and that its byte count, SHA-256 and integrity are the archive\'s.',
+        'Verify the lockfile\'s integrity for the package is the archive\'s.',
+        'Shared types are verified in full by IQ-008; this case covers every vendored archive.',
+      ],
+      expectedResult: 'Every vendored archive has a matching receipt and is the one the lockfile installed. An archive without a receipt fails the case.',
+      evidence: 'See evidence/iq/IQ-035.json',
+    },
   ];
 }
 

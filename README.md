@@ -141,6 +141,23 @@ npm run generate -- --iq --base-url http://localhost:3000 --synthetic-qualificat
   --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages --version val1-iq-<date>
 ```
 
+### Production settings and vendored receipts
+
+IQ-034 lists every key that libreclinicaapi `.env.production.example` or the
+`core-api` environment of EDCProjectCompliant `docker-compose.production.yml`
+sets and nothing reads: a key is read when libreclinicaapi `src` (test files
+excluded) holds `process.env.KEY`, an environment parameter's `env.KEY`, or the
+key as a whole string literal (the form helpers that read `process.env[name]`
+take), or when the Node.js runtime or the AWS SDK reads it. Each dead key is
+listed with the file and line that set it, and with the name the code reads
+instead where one is known; the case fails while any exists (today, among
+others, `STRICT_VALIDATION_RULE_SIGNATURES` and the four `BACKUP_` keys).
+IQ-035 checks every `file:vendor/*.tgz` dependency of the API against the
+receipt beside its archive (package, file name, byte count, SHA-256 and
+integrity) and the lockfile's integrity; the interop archive, which has no
+receipt, fails it. The IQ protocol has 35 cases, and the runner records a
+result for each.
+
 The production host is refused. A production host is the production API or
 frontend in `config/system-info.ts`, or any other host under `accuratrials.com` or
 `acuratrials.com` that the file does not list as staging. Only an approved
