@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.accuratrials.com/validation-framework/validation-target-configuration/1",
+  "title": "validation-target-configuration/1",
+  "description": "The configuration under test of a validation run (TA3 plan VAL-1, spec P20 VD-9 and 3.3): the EDC settings of the target that decide what the OQ can observe. Producer: the operator, later the CommandCenter harness; owner and consumer: accuratrail-validation-framework (runners/target-configuration.ts parses it strictly, IQ-033 checks it against its source file and the EDC production example, and a retained package copies it to inputs/target-configuration.json and records it as configurationUnderTest). Flag names come only from the allowlist below and every other member has a fixed form, so no secret can enter: any other member refuses the file. Booleans state the setting as the EDC reads it; TRAINING_SERVICE_URL is only set or unset.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "target", "source", "declaredBy", "declaredAt", "flags"],
+  "properties": {
+    "contract": { "const": "validation-target-configuration/1" },
+    "target": {
+      "description": "The API base URL the declaration describes; it must be the run's --base-url. http or https, with no credentials, query or fragment.",
+      "type": "string",
+      "pattern": "^https?://",
+      "maxLength": 2048
+    },
+    "source": { "$ref": "#/definitions/source" },
+    "declaredBy": {
+      "description": "Who declares the configuration (a person, a role or the harness), as printable text.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "declaredAt": {
+      "description": "UTC instant of the declaration.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+    },
+    "flags": { "$ref": "#/definitions/flags" }
+  },
+  "definitions": {
+    "source": {
+      "description": "The file that sets the target's environment: a compose file (its core-api service environment is cross-checked) or an env file (its KEY=value lines are). IQ-033 verifies the SHA-256 when the file is present where the framework runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "description": "Absolute path of the source file.", "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "flags": {
+      "description": "The declared settings, at least one. Each boolean is the setting's effect as the EDC reads it (libreclinicaapi src): ENABLE_STUDY_TASK_CRON is on unless false, ENABLE_DATA_CLEANING is on when unset or true, every other boolean is on only when true.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "ENABLE_DEVIATION_ENGINE": { "type": "boolean" },
+        "ENABLE_DOMAIN_EVENTS": { "type": "boolean" },
+        "ENABLE_DEVIATION_DECISIONS": { "type": "boolean" },
+        "ENABLE_STUDY_TASK_CRON": { "type": "boolean" },
+        "ESIG_ACKNOWLEDGEMENT_ENFORCED": { "type": "boolean" },
+        "ENABLE_M2M_API_KEYS": { "type": "boolean" },
+        "ENABLE_DATA_CLEANING": { "type": "boolean" },
+        "INSPECTION_COPY_TA3_INVENTORY": { "type": "boolean" },
+        "ENABLE_SEGMENTED_INSPECTION_EXPORT": { "type": "boolean" },
+        "NODE_ENV": { "enum": ["production", "staging", "development", "test"] },
+        "TRAINING_SERVICE_URL": { "enum": ["set", "unset"] }
+      }
+    }
+  }
+}

@@ -66,8 +66,8 @@
       "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/target" }]
     },
     "configurationUnderTest": {
-      "description": "Null in this version. IQ-033 (VAL-1/validation-iq) records the declared configuration here and adds its object form.",
-      "type": "null"
+      "description": "The run's --target-config declaration (validation-target-configuration/1), retained as inputs/target-configuration.json, with every contradiction of its flags the run recorded; null when the run declared none. Present exactly when that input is retained.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/configurationUnderTest" }]
     },
     "inputs": {
       "description": "Byte copies of the plan files, declarations and captures the run read, retained as inputs/<role>.json; an input holding a credential is refused.",
@@ -189,6 +189,47 @@
         "state": { "const": "unapproved" },
         "recordedIn": { "const": "eTMF governance decision on the filing of package-manifest.json; this package carries no signature" }
       }
+    },
+    "configurationUnderTest": {
+      "description": "The configuration under test (spec P20 3.9). flags are the retained declaration's; mismatches lists each declared flag that IQ-033's source file cross-check or an observing OQ case contradicted, in that order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "sha256", "flags", "mismatches"],
+      "properties": {
+        "contract": { "const": "validation-target-configuration/1" },
+        "sha256": { "description": "SHA-256 of the retained declaration's bytes, the target-configuration input's.", "$ref": "#/definitions/sha256" },
+        "flags": { "$ref": "https://schemas.accuratrials.com/validation-framework/validation-target-configuration/1#/definitions/flags" },
+        "mismatches": { "type": "array", "items": { "$ref": "#/definitions/mismatch" } }
+      }
+    },
+    "mismatch": {
+      "description": "A declared flag the run observed otherwise. observedBy is IQ-033 for the source file, or the OQ case whose answer from the target contradicted it (spec P20 VD-5: CONFIGURATION_MISMATCH).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flag", "declared", "observed", "observedBy"],
+      "properties": {
+        "flag": {
+          "enum": [
+            "ENABLE_DEVIATION_ENGINE",
+            "ENABLE_DOMAIN_EVENTS",
+            "ENABLE_DEVIATION_DECISIONS",
+            "ENABLE_STUDY_TASK_CRON",
+            "ESIG_ACKNOWLEDGEMENT_ENFORCED",
+            "ENABLE_M2M_API_KEYS",
+            "ENABLE_DATA_CLEANING",
+            "INSPECTION_COPY_TA3_INVENTORY",
+            "ENABLE_SEGMENTED_INSPECTION_EXPORT",
+            "NODE_ENV",
+            "TRAINING_SERVICE_URL"
+          ]
+        },
+        "declared": { "$ref": "#/definitions/flagValue" },
+        "observed": { "$ref": "#/definitions/flagValue" },
+        "observedBy": { "type": "string", "pattern": "^[A-Z]{2,4}-\\d{3}$" }
+      }
+    },
+    "flagValue": {
+      "oneOf": [{ "type": "boolean" }, { "enum": ["production", "staging", "development", "test", "set", "unset"] }]
     }
   }
 }

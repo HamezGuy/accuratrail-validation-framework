@@ -512,12 +512,38 @@ function securityBackupCases(): IqTestCase[] {
   ];
 }
 
+/** The configuration under test and the vendored releases (TA3 plan VAL-1, spec P20 3.9). */
+function configurationUnderTestCases(): IqTestCase[] {
+  return [
+    {
+      id: 'IQ-033',
+      title: 'Configuration under test declared and checked against its source',
+      requirement: 'The run records the target\'s settings that decide what the OQ observes, in a validation-target-configuration/1 '
+        + 'declaration whose flags come only from an allowlist, so no secret can enter',
+      cfr: '§11.10(a) Validation',
+      steps: [
+        'Pass the declaration with --target-config; the run refuses one that breaks the contract or describes another target than --base-url.',
+        'Verify the declaration\'s target is the run\'s target.',
+        'When the declared source file is present, verify its SHA-256; for a compose file, verify that the core-api service '
+          + 'environment sets every declared flag as declared, read as the EDC reads it (a value set where the stack starts is undetermined).',
+        `State the delta of the declared flags to ${SYSTEM_INFO.projectPaths.backend}/.env.production.example, and that live production values are not visible.`,
+        'At sealing, the package manifest records the declaration as configurationUnderTest with every contradiction of IQ-033 '
+          + 'and of the OQ cases that observe a flag (CONFIGURATION_MISMATCH).',
+      ],
+      expectedResult: 'The declaration is retained, its source matches, and no declared flag is contradicted. Without a declaration '
+        + 'the case is not executed (NO_TARGET_CONFIGURATION).',
+      evidence: 'See evidence/iq/IQ-033.json and configurationUnderTest in package-manifest.json',
+    },
+  ];
+}
+
 export function generate(outputDir: string, _workspaceRoot: string): void {
   const allCases: IqTestCase[][] = [
     softwareInstallationCases(),
     databaseInstallationCases(),
     configurationCases(),
     securityBackupCases(),
+    configurationUnderTestCases(),
   ];
 
   const sectionTitles = [
@@ -525,6 +551,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     'Database Installation Verification',
     'Configuration Verification',
     'Security & Backup Verification',
+    'Configuration Under Test and Vendored Releases',
   ];
 
   const tocEntries: SectionEntry[] = [

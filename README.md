@@ -28,6 +28,7 @@ npx ts-node generate.ts --version "v2.1"     # Custom version label
 npx ts-node generate.ts --benchmark-run "C:/path/to/retained-run" --version "benchmark-001"
 npx ts-node generate.ts --iq ... --retain-root <dir>  # Live runners: a retained, sealed evidence package
 npx ts-node generate.ts --iq ... --no-retain         # Live runners: a development run, not retained
+npx ts-node generate.ts --iq ... --target-config <file>  # The configuration under test (IQ-033)
 npm run verify:package -- <package directory>        # Recheck a sealed package; prints its manifest SHA-256
 ```
 
@@ -72,7 +73,8 @@ Synthetic data on a test stack. Not a real trial, not an approval."
 
 Inputs are copied byte for byte into `inputs/<role>.json` with their SHA-256
 and original path: `--p13-plan` (`p13-plan`), `--training-evidence`
-(`training-evidence`), and for `--benchmark-run` the run's `run-summary.json`
+(`training-evidence`), `--target-config` (`target-configuration`, read strictly
+against its contract first), and for `--benchmark-run` the run's `run-summary.json`
 and `metrics.json` (`benchmark-run-summary`, `benchmark-metrics`), so the
 package keeps them when the data root's retention later moves the run. Inputs
 are read and checked before the package is created: an input that cannot be
@@ -93,8 +95,10 @@ package (`executed: false`).
 `npm run verify:package -- <dir>` exits 0 only when every listed file is present
 with its byte count and SHA-256, no unlisted file exists and the package hash
 recomputes; it also checks that the inputs and evidence counts match their
-files, that a synthetic package marks every record and document, and that no
-record or document of a package is stamped as a development run. On success it
+files, that `configurationUnderTest` is recorded exactly when a declaration is
+retained and holds that declaration's SHA-256 and flags, that a synthetic package
+marks every record and document, and that no record or document of a package is
+stamped as a development run. On success it
 prints the SHA-256 of `package-manifest.json`, the `contentHash` the eTMF must
 show for the filed manifest. `TMF-FILING.md` gives the filing steps: upload
 `package-manifest.json` (and `12-validation-summary.md` for reading) as
@@ -110,6 +114,32 @@ Live runners (`--iq`, `--oq`, `--pq`, `--security`, `--dr`, `--perf`, `--all`) h
 default target. Pass `--base-url` with the API under test, for example
 `--base-url http://localhost:3000`; the command stops before any runner when it is
 missing. Documents only and offline benchmark imports need no target.
+
+### Configuration under test
+
+`--target-config <file>` names a `validation-target-configuration/1` declaration
+of the target's settings (contract and allowlist in
+`contracts/validation-target-configuration-v1.schema.json` and
+`contracts/README.md`). Before any runner starts, the run refuses a declaration
+that cannot be read, holds a member or flag off the allowlist, or describes
+another target than `--base-url`; it needs a live runner, and `--docs-only` reads
+none. A retained package copies it to `inputs/target-configuration.json`, and
+IQ-033 checks that copy: the target, the source file's SHA-256 when the file is
+present, and, for a compose file, that the `core-api` service environment sets
+each declared flag as declared, read as the EDC reads it (a value an
+interpolation or the shell supplies is listed undetermined). The record states
+the delta to libreclinicaapi `.env.production.example` for the same flags and
+that live production values are not visible. Without a declaration IQ-033 is
+not executed (`NO_TARGET_CONFIGURATION`). When the package is sealed, the
+manifest's `configurationUnderTest` records the declaration with every
+contradiction IQ-033 and the observing OQ cases recorded.
+
+```powershell
+npm run generate -- --iq --base-url http://localhost:3000 --synthetic-qualification `
+  --release-api <api commit> --release-ui none --release-core none --release-training <training commit> `
+  --target-config C:/path/to/target-configuration.json `
+  --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages --version val1-iq-<date>
+```
 
 The production host is refused. A production host is the production API or
 frontend in `config/system-info.ts`, or any other host under `accuratrials.com` or

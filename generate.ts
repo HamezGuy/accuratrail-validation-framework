@@ -8,7 +8,7 @@ import {
 } from './runners/release-identity';
 import { approvalBlock } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, createPackage, evidenceNoticeLines, markDevelopmentRun, sealPackage, syntheticBasis,
+  benchmarkRunInputs, checkTargetConfiguration, createPackage, evidenceNoticeLines, markDevelopmentRun, sealPackage, syntheticBasis,
   DEVELOPMENT_RUN_NOTICE, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
 
@@ -37,6 +37,8 @@ interface CliArgs {
   retainRoot?: string;
   /** A development run: output/ scratch, every record and document marked not retained. */
   noRetain: boolean;
+  /** The validation-target-configuration/1 declaration of the live runners' target (IQ-033). */
+  targetConfig?: string;
 }
 
 function parseArgs(): CliArgs {
@@ -122,12 +124,14 @@ function parseArgs(): CliArgs {
       case '--benchmark-run':
       case '--p13-plan':
       case '--training-evidence':
-      case '--benchmark-evaluator-root': {
+      case '--benchmark-evaluator-root':
+      case '--target-config': {
         const value = argv[++i];
         if (!value || value.startsWith('--')) throw new Error(`${arg} requires a path`);
         if (arg === '--benchmark-run') args.benchmarkRun = value;
         else if (arg === '--p13-plan') args.p13Plan = value;
         else if (arg === '--training-evidence') args.trainingEvidence = value;
+        else if (arg === '--target-config') args.targetConfig = value;
         else args.benchmarkEvaluatorRoot = value;
         break;
       }
@@ -153,6 +157,11 @@ function parseArgs(): CliArgs {
 
   if (args.benchmarkEvaluatorRoot && !args.benchmarkRun) throw new Error('--benchmark-evaluator-root requires --benchmark-run');
   if (args.retainRoot && args.noRetain) throw new Error('Pass --retain-root or --no-retain, not both.');
+  // A documents run reads no declaration, as it imports no evidence.
+  if (args.targetConfig && !args.docsOnly && !liveRunnerSelected(args)) {
+    throw new Error('--target-config declares the configuration of the live runners\' target; select a live runner '
+      + '(--iq, --oq, --pq, --security, --dr, --perf or --all).');
+  }
   if (!args.docsOnly && liveRunnerSelected(args)) {
     // Executed live-runner evidence goes to a retained, sealed package, or is
     // stated not to be validation evidence; never to unmarked scratch.
@@ -301,11 +310,17 @@ function packageInputs(args: CliArgs): PackageInputSource[] {
   if (args.trainingEvidence) inputs.push({ role: 'training-evidence', file: args.trainingEvidence });
   if (!args.docsOnly && args.p13Plan) inputs.push({ role: 'p13-plan', file: args.p13Plan });
   if (!args.docsOnly && args.benchmarkRun) inputs.push(...benchmarkRunInputs(args.benchmarkRun));
+  if (!args.docsOnly && args.targetConfig) inputs.push({ role: 'target-configuration', file: args.targetConfig });
   return inputs;
 }
 
 async function main(): Promise<void> {
   const args = parseArgs();
+  if (!args.docsOnly && args.targetConfig) {
+    // Refused before anything runs: a declaration that breaks its contract or describes another target.
+    const declared = checkTargetConfiguration(args.targetConfig, args.baseUrl as string);
+    console.log(`Configuration under test: ${declared.file} (${declared.configuration.contract}, SHA-256 ${declared.sha256.slice(0, 12)})`);
+  }
   const version = args.version || 'v1.0';
   const imports = !args.docsOnly && Boolean(args.benchmarkRun || args.p13Plan);
   const executed = imports || (!args.docsOnly && liveRunnerSelected(args));
@@ -491,8 +506,12 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
       }
     }
 
-    const runners: { flag: boolean; name: string; file: string }[] = [
-      { flag: args.runIq, name: 'IQ Runner', file: './runners/iq-runner' },
+    // IQ-033 reads the declaration a package retained, so it checks the bytes the manifest lists.
+    const retained = retention.kind === 'package' ? retention.evidencePackage : undefined;
+    const declarationInput = retained?.inputs.find(input => input.role === 'target-configuration');
+    const targetConfigFile = retained && declarationInput ? path.join(retained.dir, ...declarationInput.path.split('/')) : args.targetConfig;
+    const runners: { flag: boolean; name: string; file: string; options?: Record<string, unknown> }[] = [
+      { flag: args.runIq, name: 'IQ Runner', file: './runners/iq-runner', options: targetConfigFile ? { targetConfigFile } : undefined },
       { flag: args.runOq, name: 'OQ Runner', file: './runners/oq-runner' },
       { flag: args.runSecurity || args.runOq, name: 'Security Runner', file: './runners/security-runner' },
       { flag: args.runPq, name: 'PQ Runner', file: './runners/pq-runner' },
@@ -503,8 +522,13 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     for (const runner of runners) {
       if (!runner.flag || !releaseVerified) continue;
       try {
-        const mod = require(runner.file) as { run: (outputDir: string, baseUrl: string, workspaceRoot: string, qualificationFlags: readonly string[]) => Promise<EvidenceResult[]> };
-        const results = await mod.run(outputDir, args.baseUrl as string, WORKSPACE_ROOT, args.qualificationFlags);
+        const mod = require(runner.file) as {
+          run: (outputDir: string, baseUrl: string, workspaceRoot: string, qualificationFlags: readonly string[], options?: Record<string, unknown>) => Promise<EvidenceResult[]>;
+        };
+        // Runner-specific options go only to the runner that takes them.
+        const results = runner.options
+          ? await mod.run(outputDir, args.baseUrl as string, WORKSPACE_ROOT, args.qualificationFlags, runner.options)
+          : await mod.run(outputDir, args.baseUrl as string, WORKSPACE_ROOT, args.qualificationFlags);
         const failedCases = failedRunnerCases(results);
         if (failedCases.length > 0) {
           runnersFailed++;

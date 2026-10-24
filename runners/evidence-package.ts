@@ -2,13 +2,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  canonicalJson, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking,
+  canonicalJson, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking, strictObject,
   DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceCategory, type EvidenceResult,
 } from './evidence-capture';
 import {
   currentReleaseIdentity, frameworkCommit, releaseComponentNames, RELEASE_CONTRACT_V1, RELEASE_CONTRACT_V2, type ReleaseIdentity,
 } from './release-identity';
 import { BENCHMARK_RUN_FILES } from './benchmark-evidence';
+import {
+  configurationUnderTest, parseConfigurationUnderTest, parseTargetConfiguration,
+  CONFIGURATION_MISMATCH_REQUIRED, CONFIGURATION_UNDER_TEST_REQUIRED, type ConfigurationUnderTest,
+} from './target-configuration';
 import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 
 // Retained evidence packages (TA3 plan VAL-1, spec P20 VD-3, 3.2). A package is
@@ -18,9 +22,11 @@ import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing
 // call packaging needs: generate.ts calls it and makes none of its own, so the
 // offline CLI fixture passes this module through to the real filesystem.
 
-// generate.ts reaches the evidence marking through this module, because the
-// offline CLI fixture replaces every other runner module it requires.
+// generate.ts reaches the evidence marking and the configuration declaration check
+// through this module, because the offline CLI fixture replaces every other runner
+// module it requires.
 export { DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE, evidenceNoticeLines } from './evidence-capture';
+export { checkTargetConfiguration } from './target-configuration';
 
 export const PACKAGE_CONTRACT = 'validation-evidence-package/1';
 export const MANIFEST_FILE = 'package-manifest.json';
@@ -31,7 +37,7 @@ export const SYNTHETIC_ROOT_MARKER = 'SYNTHETIC-TRIAL-DATA-ROOT';
 export const SYNTHETIC_PACKAGE_HOME = ['runs', 'validation-packages'] as const;
 
 /** What a package retains in inputs/<role>.json. Later VAL-1 subtasks add the producers of
- * ta3-oq-plan, platform-evidence-plan and target-configuration. */
+ * ta3-oq-plan and platform-evidence-plan; target-configuration is the --target-config declaration. */
 export const INPUT_ROLES = [
   'ta3-oq-plan', 'platform-evidence-plan', 'p13-plan', 'training-evidence',
   'benchmark-run-summary', 'benchmark-metrics', 'target-configuration',
@@ -59,6 +65,8 @@ export const MANIFEST_MEMBER_REQUIRED = {
   category: ['category', 'total', 'passed', 'failed', 'manual', 'notExecuted'],
   file: ['path', 'bytes', 'sha256'],
   approval: ['state', 'recordedIn'],
+  configurationUnderTest: CONFIGURATION_UNDER_TEST_REQUIRED,
+  mismatch: CONFIGURATION_MISMATCH_REQUIRED,
 } as const;
 
 export interface PackageInputSource { role: PackageInputRole; file: string }
@@ -88,8 +96,9 @@ export interface PackageManifest {
   framework: { commit: string | null; dirty: boolean | null };
   releaseUnderTest: ReleaseIdentity | null;
   target: PackageTarget | null;
-  /** Null until IQ-033 (VAL-1/validation-iq) records the declared configuration. */
-  configurationUnderTest: null;
+  /** The retained --target-config declaration (validation-target-configuration/1) with every
+   * contradiction IQ-033 and the observing OQ cases recorded; null when the run declared none. */
+  configurationUnderTest: ConfigurationUnderTest | null;
   inputs: PackageInput[];
   categories: PackageCategory[];
   files: PackageFile[];
@@ -263,8 +272,15 @@ function prepareInput(source: PackageInputSource): PreparedInput {
   const credential = credentialAt(parsed, '$');
   packageCheck(!credential, `Package input ${source.role} (${originalPath}) holds a credential at ${credential}; `
     + 'inputs name the environment variables that hold secrets, never the secrets.');
+  INPUT_CONTRACTS[source.role]?.(parsed, `Package input ${source.role} (${originalPath})`);
   return { role: source.role, path: `inputs/${source.role}.json`, sha256: sha256(bytes), originalPath, bytes };
 }
+
+/** Inputs whose contract this framework owns are read strictly before they are retained,
+ * so a declaration with a key off its allowlist never enters a package. */
+const INPUT_CONTRACTS: Partial<Record<PackageInputRole, (value: unknown, at: string) => void>> = {
+  'target-configuration': (value, at) => { parseTargetConfiguration(value, at); },
+};
 
 function writeInput(evidencePackage: EvidencePackage, input: PreparedInput): PackageInput {
   packageCheck(!evidencePackage.sealed, `Package ${evidencePackage.dir} is sealed; nothing more is retained in it.`);
@@ -387,6 +403,7 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
     });
     const identity = currentReleaseIdentity();
     const framework = frameworkCommit();
+    const declaration = evidencePackage.inputs.find(input => input.role === 'target-configuration');
     const body: Omit<PackageManifest, 'packageHash'> = {
       contract: PACKAGE_CONTRACT,
       packageId: evidencePackage.packageId,
@@ -403,7 +420,11 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
       target: options.baseUrl
         ? { baseUrl: options.baseUrl, observedAt: identity?.target?.observedAt ?? null, reportedVersion: identity?.target?.version ?? null }
         : null,
-      configurationUnderTest: null,
+      // The retained declaration with what IQ-033 and the observing OQ cases contradicted (spec P20 3.9).
+      configurationUnderTest: declaration
+        ? configurationUnderTest(fs.readFileSync(path.join(dir, ...declaration.path.split('/'))),
+          { iq: loadEvidence(dir, 'iq'), oq: loadEvidence(dir, 'oq') })
+        : null,
       inputs: evidencePackage.inputs.map(input => ({ ...input })),
       categories,
       files,
@@ -422,14 +443,6 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
   }
 }
 
-function strictObject(value: unknown, at: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
-  packageCheck(isRecord(value), `${at} must be an object`);
-  const missing = required.filter(key => !Object.prototype.hasOwnProperty.call(value, key));
-  packageCheck(!missing.length, `${at} lacks ${missing.join(', ')}`);
-  const unknown = Object.keys(value).filter(key => !required.includes(key) && !optional.includes(key));
-  packageCheck(!unknown.length, `${at} has unknown member ${unknown.join(', ')}`);
-  return value;
-}
 function manifestText(value: unknown, at: string): string {
   packageCheck(typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value), `${at} must be text`);
   return value;
@@ -497,7 +510,7 @@ export function parseManifest(value: unknown): PackageManifest {
       `${at} target.observedAt must be an instant or null`);
     if (target.reportedVersion !== null) manifestText(target.reportedVersion, `${at} target.reportedVersion`);
   }
-  packageCheck(manifest.configurationUnderTest === null, `${at} configurationUnderTest must be null in this version`);
+  if (manifest.configurationUnderTest !== null) parseConfigurationUnderTest(manifest.configurationUnderTest, `${at} configurationUnderTest`);
   const roles = manifestArray(manifest.inputs, `${at} inputs`).map((item, index) => {
     const input = strictObject(item, `${at} inputs[${index}]`, MANIFEST_MEMBER_REQUIRED.input);
     const role = oneOf(input.role, `${at} inputs[${index}].role`, INPUT_ROLES);
@@ -581,6 +594,20 @@ export function verifyPackage(directory: string): PackageVerification {
 
   for (const input of manifest.inputs) {
     if (listed.get(input.path)?.sha256 !== input.sha256) problems.push(`input ${input.role} is not the listed ${input.path}`);
+  }
+  // The configuration under test is the retained declaration's; its mismatches are what the run recorded.
+  const declaration = manifest.inputs.find(input => input.role === 'target-configuration');
+  const recorded = manifest.configurationUnderTest;
+  if (Boolean(declaration) !== (recorded !== null)) {
+    problems.push('configurationUnderTest must be recorded exactly when a target-configuration input is retained');
+  } else if (declaration && recorded) {
+    const bytes = contents.get(declaration.path);
+    let flags: string | undefined;
+    try { flags = bytes ? canonicalJson(parseTargetConfiguration(JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''))).flags, 'Declared flags') : undefined; }
+    catch (error) { problems.push(`the retained declaration ${declaration.path} cannot be read (${errorText(error)})`); }
+    if (recorded.sha256 !== declaration.sha256 || (flags !== undefined && flags !== canonicalJson(recorded.flags, 'Declared flags'))) {
+      problems.push(`configurationUnderTest is not the retained declaration ${declaration.path}`);
+    }
   }
   const counted = new Set(manifest.categories.map(entry => entry.category));
   for (const category of EVIDENCE_CATEGORIES) {

@@ -345,6 +345,90 @@ test('the filing instructions name the requirement, the bytes check and the peop
   }
 });
 
+/** A synthetic validation-target-configuration/1 declaration file. */
+function declarationFile(directory: string, flags: Record<string, unknown>, extra: Record<string, unknown> = {}): { file: string; bytes: Buffer } {
+  const bytes = Buffer.from(JSON.stringify({
+    contract: 'validation-target-configuration/1', target: 'http://127.0.0.1:3000',
+    source: { path: path.join(directory, 'compose.yaml'), sha256: sha256('synthetic compose') },
+    declaredBy: 'evidence package contract test (synthetic)', declaredAt: '2026-10-24T00:00:00Z', flags, ...extra,
+  }, null, 2));
+  const file = path.join(directory, `declaration-${sha256(bytes).slice(0, 8)}.json`);
+  fs.writeFileSync(file, bytes);
+  return { file, bytes };
+}
+
+test('a package with a retained declaration records the configuration under test and what the run contradicted', t => {
+  const { home } = markedRoot(t);
+  const sources = temporaryDirectory(t, 'accura-package-declaration-');
+  const flags = { ENABLE_DEVIATION_ENGINE: true, ENABLE_DEVIATION_DECISIONS: false, INSPECTION_COPY_TA3_INVENTORY: true,
+    ENABLE_SEGMENTED_INSPECTION_EXPORT: false, ENABLE_DOMAIN_EVENTS: false, TRAINING_SERVICE_URL: 'set' };
+  const { file, bytes } = declarationFile(sources, flags);
+  const evidencePackage = createPackage(syntheticPackage(home, { inputs: [{ role: 'target-configuration', file }] }));
+  saveEvidence(evidencePackage.dir, 'iq', [record('IQ-033', {
+    passed: false, notes: 'Synthetic source cross-check',
+    responseBody: { source: { mismatches: [{ flag: 'TRAINING_SERVICE_URL', declared: 'set', observed: 'unset', observedBy: 'IQ-033' }] } },
+  })]);
+  saveEvidence(evidencePackage.dir, 'oq', [
+    // Declared on, answered disabled.
+    record('OQ-206', { passed: false, responseStatus: 503, outcomeCode: 'ENGINE_DISABLED', notes: 'Engine answered 503' }),
+    // Declared off, answered enabled (the case passed).
+    record('OQ-221', { notes: 'Assessment refusals observed' }),
+    // Declared on, but the release lacks W-1: no observation of the flag.
+    record('OQ-241', { passed: false, outcomeCode: 'FEATURE_ABSENT_AT_RELEASE', notes: 'No TA3 table' }),
+    // The case itself observed the contradiction.
+    record('OQ-242', { passed: false, outcomeCode: 'CONFIGURATION_MISMATCH', notes: 'Segmented copy generated although declared off' }),
+    // Not an observing case, and not executed.
+    record('OQ-219', { notes: 'Ungated list read' }),
+    record('OQ-222', { passed: false, method: 'CONTRACT', outcomeCode: 'NO_TA3_PLAN', notes: 'Not executed: no TA3 plan' }),
+  ]);
+  const manifest = JSON.parse(fs.readFileSync(sealPackage(evidencePackage).manifestPath, 'utf8'));
+  assert.deepEqual(manifest.configurationUnderTest, {
+    contract: 'validation-target-configuration/1', sha256: sha256(bytes), flags,
+    mismatches: [
+      { flag: 'TRAINING_SERVICE_URL', declared: 'set', observed: 'unset', observedBy: 'IQ-033' },
+      { flag: 'ENABLE_DEVIATION_ENGINE', declared: true, observed: false, observedBy: 'OQ-206' },
+      { flag: 'ENABLE_DEVIATION_DECISIONS', declared: false, observed: true, observedBy: 'OQ-221' },
+      { flag: 'ENABLE_SEGMENTED_INSPECTION_EXPORT', declared: false, observed: true, observedBy: 'OQ-242' },
+    ],
+  });
+  assert.deepEqual(manifest.inputs.map((input: { role: string; sha256: string }) => [input.role, input.sha256]), [['target-configuration', sha256(bytes)]]);
+  assert.deepEqual(verifyPackage(evidencePackage.dir).problems, []);
+
+  // The recorded configuration is bound to the retained declaration.
+  const manifestPath = path.join(evidencePackage.dir, MANIFEST_FILE);
+  fs.chmodSync(manifestPath, 0o644);
+  const rewrite = (configurationUnderTest: unknown) => {
+    const { packageHash: _hash, ...body } = { ...manifest, configurationUnderTest };
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...body, packageHash: manifestHash(body) }));
+    return verifyPackage(evidencePackage.dir).problems.join('\n');
+  };
+  assert.match(rewrite({ ...manifest.configurationUnderTest, flags: { ...flags, ENABLE_DEVIATION_ENGINE: false } }),
+    /configurationUnderTest is not the retained declaration inputs\/target-configuration\.json/);
+  assert.match(rewrite(null), /configurationUnderTest must be recorded exactly when a target-configuration input is retained/);
+  assert.match(rewrite({ ...manifest.configurationUnderTest, mismatches: [{ flag: 'NODE_ENV', declared: 'test', observed: 'test', observedBy: 'OQ-206' }] }),
+    /mismatches\[0\] must hold two different values of NODE_ENV/);
+  assert.match(rewrite({ ...manifest.configurationUnderTest, flags: { SECRET: 'x' } }), /flags names "SECRET", which is not on the allowlist/);
+  assert.equal(rewrite(manifest.configurationUnderTest), '');
+});
+
+test('a declaration that breaks its contract is refused before the package exists', t => {
+  const { home } = markedRoot(t);
+  const sources = temporaryDirectory(t, 'accura-package-bad-declaration-');
+  for (const [label, flags, extra, expected] of [
+    ['a flag off the allowlist', { DATABASE_URL: true }, {}, /names "DATABASE_URL", which is not on the allowlist/],
+    ['a URL for TRAINING_SERVICE_URL', { TRAINING_SERVICE_URL: 'https://training.invalid' }, {}, /TRAINING_SERVICE_URL must be set or unset/],
+    ['a string boolean', { ENABLE_DEVIATION_ENGINE: 'true' }, {}, /ENABLE_DEVIATION_ENGINE must be true or false/],
+    ['no flag', {}, {}, /flags declares no flag/],
+    ['an unknown member', { ENABLE_DEVIATION_ENGINE: true }, { notes: 'x' }, /has unknown member notes/],
+    ['a relative source path', { ENABLE_DEVIATION_ENGINE: true }, { source: { path: 'compose.yaml', sha256: sha256('x') } }, /source\.path must be an absolute path/],
+    ['credentials in the target', { ENABLE_DEVIATION_ENGINE: true }, { target: 'http://user:pass@127.0.0.1:3000' }, /holds a credential at \$\.target|target must be an http or https URL with no credentials/],
+  ] as const) {
+    const { file } = declarationFile(sources, flags, extra);
+    assert.throws(() => createPackage(syntheticPackage(home, { inputs: [{ role: 'target-configuration', file }] })), expected, label);
+  }
+  assert.equal(fs.existsSync(home), false, 'a refused declaration leaves no package behind');
+});
+
 test('the package manifest schema requires exactly what the validator requires', () => {
   const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'contracts', 'validation-evidence-package-v1.schema.json'), 'utf8'));
   assert.equal(schema.$schema, 'http://json-schema.org/draft-07/schema#');

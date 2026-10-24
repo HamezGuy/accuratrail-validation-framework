@@ -248,6 +248,7 @@ function installationRows(): TraceRow[] {
     ['UTC timezone configured', '§11.10(k)(1)', riskBadge('High'), 'Server timezone', 'IQ-030', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Production auth required', '§11.10(d)', riskBadge('Critical'), 'Auth middleware', 'IQ-031', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Admin strong passwords', '§11.300', riskBadge('Critical'), 'Password policy enforcement', 'IQ-032', 'Pending', 'evidence/iq/', 'None', 'Pending'],
+    ['Configuration under test declared and checked against its source', '§11.10(a)', riskBadge('High'), 'validation-target-configuration/1 declaration (--target-config); configurationUnderTest in package-manifest.json', 'IQ-033', 'Pending', 'evidence/iq/', 'None', 'Pending'],
   ];
 }
 

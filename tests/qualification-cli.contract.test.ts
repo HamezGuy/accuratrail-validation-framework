@@ -284,3 +284,74 @@ test('--retain-root under a marked data root creates, seals and verifies a packa
     { baseUrl: 'https://qualification.invalid', observedAt: 'string', reportedVersion: null });
   assert.ok(fs.readFileSync(path.join(dir, TMF_FILING_FILE), 'utf8').startsWith(SYNTHETIC_FILING_LINE));
 });
+
+/** A synthetic validation-target-configuration/1 declaration of the offline target, with its source file. */
+function declaration(t: { after(callback: () => void): void }, overrides: Record<string, unknown> = {}): { file: string; bytes: Buffer } {
+  const directory = temporaryDirectory(t, 'accura-cli-declaration-');
+  const source = path.join(directory, 'compose.yaml');
+  fs.writeFileSync(source, 'services:\n  core-api:\n    environment:\n      ENABLE_DEVIATION_ENGINE: "true"\n');
+  const bytes = Buffer.from(JSON.stringify({
+    contract: 'validation-target-configuration/1', target: 'https://qualification.invalid',
+    source: { path: source, sha256: createHash('sha256').update(fs.readFileSync(source)).digest('hex') },
+    declaredBy: 'CLI contract test (synthetic)', declaredAt: '2026-10-24T00:00:00Z', flags: { ENABLE_DEVIATION_ENGINE: true },
+    ...overrides,
+  }));
+  const file = path.join(directory, 'target-configuration.json');
+  fs.writeFileSync(file, bytes);
+  return { file, bytes };
+}
+
+test('--target-config reaches the IQ runner only, and the run names the declaration', t => {
+  const { file, bytes } = declaration(t);
+  const result = runCli('pass', ['--all', '--target-config', file]);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(result.output.includes(`RUNNER_OPTIONS ./runners/iq-runner ${JSON.stringify({ targetConfigFile: file })}`), result.output);
+  assert.equal((result.output.match(/RUNNER_OPTIONS /g) || []).length, 1, 'no other runner receives runner options');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  assert.ok(result.output.includes(`Configuration under test: ${file} (validation-target-configuration/1, SHA-256 ${digest.slice(0, 12)})`), result.output);
+  assert.doesNotMatch(runCli('pass', ['--iq']).output, /RUNNER_OPTIONS|Configuration under test/, 'no declaration, no options');
+});
+
+test('a declaration for another target, off its allowlist or without a live runner is refused before any runner starts', t => {
+  for (const [overrides, expected, secret] of [
+    [{ target: 'http://localhost:3000' }, /describes target http:\/\/localhost:3000, not the run's --base-url https:\/\/qualification\.invalid/, undefined],
+    [{ flags: { SYNTHETIC_SECRET_KEY: true } }, /flags names "SYNTHETIC_SECRET_KEY", which is not on the allowlist/, undefined],
+    [{ flags: { TRAINING_SERVICE_URL: 'https://training.invalid/synthetic-secret' } }, /flags\.TRAINING_SERVICE_URL must be set or unset/, 'synthetic-secret'],
+    [{ apiToken: 'synthetic-secret' }, /has unknown member apiToken/, 'synthetic-secret'],
+  ] as const) {
+    const { file } = declaration(t, overrides);
+    const result = runCli('pass', ['--iq', '--target-config', file]);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, expected);
+    assert.doesNotMatch(result.output, /OFFLINE_RUNNER /);
+    if (secret) assert.equal(result.output.includes(secret), false, 'a refusal never prints a value the file held');
+  }
+  const missing = runCli('pass', ['--iq', '--target-config', path.join(temporaryDirectory(t, 'accura-cli-absent-'), 'absent.json')]);
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(missing.output, /The configuration declaration .*absent\.json cannot be read \(ENOENT\)/);
+  const { file } = declaration(t);
+  const imported = runCli('pass', ['--benchmark-run', 'offline-fixture', '--target-config', file], null, []);
+  assert.equal(imported.status, 1, imported.output);
+  assert.match(imported.output, /--target-config declares the configuration of the live runners' target; select a live runner/);
+  assert.doesNotMatch(imported.output, /OFFLINE_BENCHMARK/);
+  assert.equal(runCli('pass', ['--docs-only', '--all', '--target-config', 'absent.json'], null, []).status, 0, 'a documents run reads no declaration');
+  assert.match(runCli('pass', ['--iq', '--target-config']).output, /--target-config requires a path/);
+});
+
+test('a retained package keeps the declaration as an input, hands that copy to IQ and records the configuration under test', t => {
+  const { file, bytes } = declaration(t);
+  const home = markedRoot(t);
+  const result = runCli('pass', ['--iq', '--synthetic-qualification', '--target-config', file, '--version', 'cli-config'], undefined, undefined,
+    ['--retain-root', home]);
+  assert.equal(result.status, 0, result.output);
+  const dir = path.join(home, fs.readdirSync(home)[0]);
+  const retained = path.join(dir, 'inputs', 'target-configuration.json');
+  assert.ok(result.output.includes(`RUNNER_OPTIONS ./runners/iq-runner ${JSON.stringify({ targetConfigFile: retained })}`), result.output);
+  assert.deepEqual(fs.readFileSync(retained), bytes);
+  const verified = verifyPackage(dir);
+  assert.deepEqual(verified.problems, []);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual(verified.manifest!.inputs, [{ role: 'target-configuration', path: 'inputs/target-configuration.json', sha256: digest, originalPath: file }]);
+  assert.deepEqual(verified.manifest!.configurationUnderTest,
+    { contract: 'validation-target-configuration/1', sha256: digest, flags: { ENABLE_DEVIATION_ENGINE: true }, mismatches: [] });
+});

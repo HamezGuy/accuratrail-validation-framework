@@ -18,9 +18,25 @@ import {
 } from './evidence-capture';
 import { defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
 import { SYSTEM_INFO } from '../config/system-info';
+import {
+  composeServiceEnvironment, dotenvEnvironment, readTargetConfiguration, sameTarget, sourceFlagValue,
+  CORE_API_SERVICE, TARGET_CONFIGURATION_CONTRACT,
+  type ConfigurationMismatch, type DeclaredConfiguration, type FlagValue, type SourceEnvironment, type TargetConfigurationFlag,
+} from './target-configuration';
 
-/** The IQ protocol's cases, IQ-001 to IQ-032; the runner records a result for each. */
-export const IQ_CASE_COUNT = 32;
+/** The IQ protocol's cases, IQ-001 to IQ-033; the runner records a result for each. */
+export const IQ_CASE_COUNT = 33;
+
+export interface IqRunOptions {
+  /** The validation-target-configuration/1 declaration IQ-033 checks (--target-config);
+   * without one IQ-033 is not executed (NO_TARGET_CONFIGURATION). */
+  targetConfigFile?: string;
+}
+
+/** The EDC's committed production example, which IQ-033 states its production delta against. */
+export const PRODUCTION_EXAMPLE = '.env.production.example';
+export const LIVE_PRODUCTION_STATEMENT = 'Live production values are not visible to the framework: the delta is stated against '
+  + `libreclinicaapi/${PRODUCTION_EXAMPLE}, not the deployed task definition.`;
 
 /** The validation framework checkout, itself a shared types consumer IQ-008 verifies. */
 const FRAMEWORK_ROOT = path.resolve(__dirname, '..');
@@ -254,6 +270,108 @@ export function checkSharedTypesInstallation(
         + `are recorded, not failed); the ${sameBuild.consumer} archive is the ${sameBuild.reference} build`
       : problems.join('; '),
     verifierFile, { verifier: verifierFile, consumers: installs, sameBuild: { ...sameBuild, consumerSha256: consumerSha, referenceSha256: referenceSha } });
+}
+
+/** The environment a declaration's source file sets: a compose file's core-api service,
+ * or an env file's KEY=value lines. */
+function sourceEnvironment(file: string, text: string): { reader: string; environment?: SourceEnvironment; missing?: string } {
+  const name = path.basename(file).toLowerCase();
+  if (/\.ya?ml$/.test(name)) {
+    const environment = composeServiceEnvironment(text, CORE_API_SERVICE);
+    return environment ? { reader: `the ${CORE_API_SERVICE} service environment`, environment }
+      : { reader: 'none', missing: `the compose file has no ${CORE_API_SERVICE} service` };
+  }
+  if (name.startsWith('.env') || name.endsWith('.env')) return { reader: 'its KEY=value lines', environment: dotenvEnvironment(text) };
+  return { reader: 'none', missing: 'no reader for this kind of file (a compose file or an env file)' };
+}
+
+const valueText = (value: FlagValue | null | undefined) => (value === null || value === undefined ? 'not determinable' : String(value));
+
+/** IQ-033: the configuration under test. The declaration's target is the run's; its
+ * source file, when present here, has the declared SHA-256 and, for a compose or env
+ * file, sets every declared flag as declared (a flag the file leaves to an
+ * interpolation or to the shell is listed undetermined, not failed). The record
+ * states the delta to the EDC production example and that live production values
+ * are not visible. Without a declaration the case is not executed. */
+export function checkConfigurationUnderTest(declarationFile: string | undefined, baseUrl: string, apiRoot: string): EvidenceResult {
+  const label = 'Configuration under test';
+  if (!declarationFile) {
+    return {
+      testCaseId: 'IQ-033', timestamp: ts(), endpoint: 'Configuration declaration (--target-config)', method: 'CONTRACT',
+      responseStatus: 0, responseBody: null, passed: false, outcomeCode: 'NO_TARGET_CONFIGURATION',
+      notes: `${label}: not executed. No --target-config declaration (${TARGET_CONFIGURATION_CONTRACT}) was given, `
+        + 'so the configuration under test is not recorded.',
+    };
+  }
+  let declared: DeclaredConfiguration;
+  try { declared = readTargetConfiguration(declarationFile); }
+  catch (error) { return fileResult('IQ-033', label, false, errorText(error), path.resolve(declarationFile)); }
+  const { configuration } = declared;
+  const flags = Object.entries(configuration.flags) as Array<[TargetConfigurationFlag, FlagValue]>;
+  const problems: string[] = [];
+  const findings: string[] = [];
+  if (!sameTarget(configuration.target, baseUrl)) problems.push(`the declaration describes target ${configuration.target}, not the run's target ${baseUrl}`);
+
+  const source = {
+    path: configuration.source.path, declaredSha256: configuration.source.sha256, observedSha256: null as string | null,
+    verified: null as boolean | null, crossCheck: 'not made', mismatches: [] as ConfigurationMismatch[], undetermined: [] as string[],
+  };
+  let sourceBytes: Buffer | undefined;
+  try { sourceBytes = fs.readFileSync(configuration.source.path); } catch { sourceBytes = undefined; }
+  if (!sourceBytes) {
+    source.crossCheck = 'not made: the source is not present here';
+    findings.push(`source ${configuration.source.path} is not present here, so its hash is not verified`);
+  } else {
+    source.observedSha256 = sha256(sourceBytes);
+    source.verified = source.observedSha256 === configuration.source.sha256;
+    if (!source.verified) {
+      source.crossCheck = 'not made: the source bytes differ from the declaration';
+      problems.push(`source ${configuration.source.path} does not match its declared SHA-256, so it is not the declared source`);
+    } else {
+      const { reader, environment, missing } = sourceEnvironment(configuration.source.path, sourceBytes.toString('utf8'));
+      source.crossCheck = environment ? reader : `not made: ${missing}`;
+      for (const [flag, value] of environment ? flags : []) {
+        const observed = sourceFlagValue(environment!, flag);
+        if (observed === undefined) source.undetermined.push(flag);
+        else if (observed !== value) source.mismatches.push({ flag, declared: value, observed, observedBy: 'IQ-033' });
+      }
+      findings.push(environment
+        ? `source ${configuration.source.path} has the declared SHA-256 and was cross-checked against ${reader}: `
+          + `${source.mismatches.length} mismatch(es)${source.undetermined.length ? `, set outside the file: ${source.undetermined.join(', ')}` : ''}`
+        : `source ${configuration.source.path} has the declared SHA-256; cross-check ${source.crossCheck}`);
+      for (const mismatch of source.mismatches) {
+        problems.push(`the source sets ${mismatch.flag} to ${valueText(mismatch.observed)} where the declaration states ${valueText(mismatch.declared)}`);
+      }
+    }
+  }
+
+  // The delta to the committed production example, for the same flags.
+  const examplePath = path.join(apiRoot, PRODUCTION_EXAMPLE);
+  const exampleText = safeReadFile(examplePath);
+  const productionDelta: Array<{ flag: TargetConfigurationFlag; declared: FlagValue; productionExample: FlagValue | null; setIn: string }> = [];
+  if (exampleText === null) {
+    problems.push(`the production example ${examplePath} is not found, so no production delta is stated`);
+  } else {
+    const example = dotenvEnvironment(exampleText);
+    for (const [flag, value] of flags) {
+      const production = sourceFlagValue(example, flag) ?? null;
+      const entry = example.entries.get(flag);
+      if (production !== value) productionDelta.push({ flag, declared: value, productionExample: production, setIn: entry ? `line ${entry.line}` : 'not set (code default)' });
+    }
+    findings.push(`production delta against ${examplePath}: ${productionDelta.length
+      ? productionDelta.map(delta => `${delta.flag} declared ${valueText(delta.declared)}, the example ${valueText(delta.productionExample)} (${delta.setIn})`).join('; ')
+      : 'none'}`);
+  }
+
+  const passed = problems.length === 0;
+  return fileResult('IQ-033', label, passed,
+    `${passed ? '' : `${problems.join('; ')}. `}${flags.length} flag(s) declared for ${configuration.target} by ${configuration.declaredBy} at `
+      + `${configuration.declaredAt} (declaration SHA-256 ${declared.sha256}); ${findings.join('; ')}. ${LIVE_PRODUCTION_STATEMENT}`,
+    declared.file, {
+      contract: configuration.contract, sha256: declared.sha256, target: configuration.target,
+      declaredBy: configuration.declaredBy, declaredAt: configuration.declaredAt, flags: configuration.flags,
+      source, productionExample: { path: examplePath, delta: productionDelta }, liveProduction: LIVE_PRODUCTION_STATEMENT,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +790,8 @@ export async function run(
   outputDir: string,
   baseUrl: string,
   workspaceRoot?: string,
+  _qualificationFlags: readonly string[] = [],
+  options: IqRunOptions = {},
 ): Promise<EvidenceResult[]> {
   const wsRoot = workspaceRoot || defaultWorkspaceRoot();
   const apiRoot = resolveLibreclinicaApiRoot(wsRoot);
@@ -679,7 +799,7 @@ export async function run(
 
   const results: EvidenceResult[] = [];
 
-  // --- File-based checks (IQ-003..IQ-030, IQ-032) ---
+  // --- File-based checks (IQ-003..IQ-030, IQ-032, IQ-033) ---
   try { results.push(...checkSoftwareInstallation(wsRoot, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkSoftwareInstallation error:', err);
   }
@@ -691,6 +811,9 @@ export async function run(
   }
   try { results.push(...checkSecurityAndBackup(wsRoot, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkSecurityAndBackup error:', err);
+  }
+  try { results.push(checkConfigurationUnderTest(options.targetConfigFile, baseUrl, apiRoot)); } catch (err: unknown) {
+    console.error('  [IQ] checkConfigurationUnderTest error:', err);
   }
 
   // --- API-based checks ---

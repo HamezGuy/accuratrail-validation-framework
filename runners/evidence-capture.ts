@@ -117,6 +117,18 @@ export function redactEvidenceSecrets(value: unknown): unknown {
 
 function canonicalCheck(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 
+/** A plain object holding every required member and no member outside required and
+ * optional: the strict reading of the framework's own contracts (the package manifest,
+ * the configuration declaration). `at` names the object in the refusal. */
+export function strictObject(value: unknown, at: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
+  canonicalCheck(isRecord(value), `${at} must be an object`);
+  const missing = required.filter(key => !Object.prototype.hasOwnProperty.call(value, key));
+  canonicalCheck(!missing.length, `${at} lacks ${missing.join(', ')}`);
+  const unknown = Object.keys(value).filter(key => !required.includes(key) && !optional.includes(key));
+  canonicalCheck(!unknown.length, `${at} has unknown member ${unknown.join(', ')}`);
+  return value;
+}
+
 /** Canonical JSON for hashing: object keys in the default string order (UTF-16
  * code units, never localeCompare), arrays in their order, exact JSON values.
  * Anything JSON cannot carry exactly (an unsafe integer, -0, undefined, a cycle,
