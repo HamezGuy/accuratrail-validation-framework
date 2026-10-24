@@ -50,17 +50,36 @@ body carries `release.api`, `release.ui` or `release.core`, each must equal the
 operator input or no runner starts; today the API reports only its semantic
 version, so the identity is the operator's input and is labelled as such.
 
-Every evidence record carries `releaseUnderTest` (the three identities, their
-SHA-256 identity hash and the framework commit). Each category's summary,
-execution report and `release-identity.json` hold the full identity with the
-target's observation, generated documents list it in their metadata, and the
-master evidence index shows each category's release and flags categories
-produced against different releases. Documents generated without a release are
-marked "not recorded".
+`--release-training` states the training service release the same way. The UI,
+core and training also take `none` for a component that is not deployed;
+`--release-api none` is refused, because the API is the system under test. Either
+one makes the identity `validation-release-identity/2`: all four components
+(`api`, `ui`, `core`, `training`) must then be stated, and the identity hash is
+the SHA-256 of the four lines `name=kind:identity` in that order, a `none`
+hashing as `not-deployed:-`. Without them the identity stays
+`validation-release-identity/1`, with the same bytes and hash as before version
+2. The training release matters wherever the training service decides clinical
+saves (`TRAINING_SERVICE_URL` set on the stack), so a run that selects the TA3
+OQ suites (13 to 18) must state it: `requireTrainingRelease` in
+`runners/release-identity.ts` is the check that refuses such a run before any
+runner starts.
+
+Every evidence record carries `releaseUnderTest` (the three identities, or four
+in version 2, their SHA-256 identity hash and the framework commit). Each
+category's summary, execution report and `release-identity.json` hold the full
+identity with the target's observation, generated documents list it in their
+metadata, and the master evidence index shows each category's release and flags
+categories produced against different releases. Evidence readers accept
+versions 1 and 2 and refuse any other. A version 1 identity names no training
+release, so its training row and column read "not recorded"; a component stated
+as `none` reads "not deployed". Documents generated without a release are marked
+"not recorded".
 
 ```powershell
 npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification `
   --release-api <api commit> --release-ui <ui commit> --release-core <core image id>
+npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification `
+  --release-api <api commit> --release-ui none --release-core none --release-training <training commit>
 ```
 
 ### System description and test environment

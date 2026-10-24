@@ -164,3 +164,31 @@ test('the run reports the release under test and records an unreachable version 
   assert.ok(result.output.includes(`Release under test: api ${API}, ui ${UI}, core ${CORE}`), result.output);
   assert.match(result.output, /Target version endpoint unavailable \(Offline CLI test attempted network access\)/);
 });
+
+test('--release-training and none reach the release under test as identity version 2', () => {
+  const TRAINING = 'd'.repeat(40);
+  const trained = runCli('pass', ['--iq'], undefined, [...RELEASE, '--release-training', TRAINING]);
+  assert.equal(trained.status, 0, trained.output);
+  assert.ok(trained.output.includes(`Release under test: api ${API}, ui ${UI}, core ${CORE}, training ${TRAINING} (`), trained.output);
+  const undeployed = runCli('pass', ['--oq'], undefined,
+    ['--release-api', API, '--release-ui', 'none', '--release-core', 'none', '--release-training', 'none']);
+  assert.equal(undeployed.status, 0, undeployed.output);
+  assert.ok(undeployed.output.includes(`Release under test: api ${API}, ui not deployed, core not deployed, training not deployed (`),
+    undeployed.output);
+  assert.match(undeployed.output, /OFFLINE_RUNNER \.\/runners\/oq-runner/);
+});
+
+test('none is refused for the API, and a none needs the training release stated before any runner starts', () => {
+  const api = runCli('pass', ['--oq'], undefined, ['--release-api', 'none', '--release-ui', UI, '--release-core', CORE]);
+  assert.equal(api.status, 1, api.output);
+  assert.match(api.output, /--release-api cannot be none: the API under test is always deployed/);
+  assert.doesNotMatch(api.output, /OFFLINE_RUNNER /);
+  const untrained = runCli('pass', ['--oq'], undefined, ['--release-api', API, '--release-ui', 'none', '--release-core', CORE]);
+  assert.equal(untrained.status, 1, untrained.output);
+  assert.match(untrained.output, /require the release under test: pass --release-training \(/);
+  assert.doesNotMatch(untrained.output, /OFFLINE_RUNNER /);
+  const missingValue = runCli('pass', ['--oq'], undefined, [...RELEASE, '--release-training']);
+  assert.equal(missingValue.status, 1, missingValue.output);
+  assert.match(missingValue.output, /--release-training requires a Git commit or image ID, or none/);
+  assert.doesNotMatch(missingValue.output, /OFFLINE_RUNNER /);
+});

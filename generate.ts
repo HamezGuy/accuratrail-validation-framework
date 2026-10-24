@@ -3,7 +3,8 @@ import * as path from 'path';
 import type { EvidenceResult } from './runners/evidence-capture';
 import { SYSTEM_INFO } from './config/system-info';
 import {
-  observeTargetVersion, releaseIdentityFromInputs, setReleaseIdentity, type ReleaseComponentName, type ReleaseIdentity,
+  observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, setReleaseIdentity,
+  type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
 import { approvalBlock } from './generators/helpers/markdown-writer';
 
@@ -99,9 +100,13 @@ function parseArgs(): CliArgs {
         break;
       case '--release-api':
       case '--release-ui':
-      case '--release-core': {
+      case '--release-core':
+      case '--release-training': {
+        // The UI, core and training may be stated as `none` (not deployed); the API may not.
         const value = argv[++i];
-        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a Git commit or image ID`);
+        if (!value || value.startsWith('--')) {
+          throw new Error(`${arg} requires a Git commit or image ID${arg === '--release-api' ? '' : ', or none'}`);
+        }
         args.releaseInputs[arg.slice('--release-'.length) as ReleaseComponentName] = value;
         break;
       }
@@ -285,8 +290,7 @@ async function main(): Promise<void> {
     console.log(`Base URL: ${args.baseUrl}`);
   }
   if (args.releaseIdentity) {
-    const { api, ui, core } = args.releaseIdentity.components;
-    console.log(`Release under test: api ${api.identity}, ui ${ui.identity}, core ${core.identity} (${args.releaseIdentity.identityHash.slice(0, 12)})`);
+    console.log(`Release under test: ${releaseSummary(args.releaseIdentity)} (${args.releaseIdentity.identityHash.slice(0, 12)})`);
   }
   console.log('');
 
@@ -537,23 +541,23 @@ function generateMasterEvidenceIndex(outputDir: string): void {
   lines.push('');
   lines.push('## Release Under Test');
   lines.push('');
-  lines.push('| Category | Release Identity | API | UI | Core |');
-  lines.push('| --- | --- | --- | --- | --- |');
+  lines.push('| Category | Release Identity | API | UI | Core | Training |');
+  lines.push('| --- | --- | --- | --- | --- | --- |');
   const identities = new Set<string>();
   for (const cat of categories) {
     const identityPath = path.join(evidenceBase, cat, 'release-identity.json');
     if (!fs.existsSync(path.join(evidenceBase, cat, `${cat}-summary.json`))) continue;
     if (!fs.existsSync(identityPath)) {
-      lines.push(`| ${cat.toUpperCase()} | not recorded | | | |`);
+      lines.push(`| ${cat.toUpperCase()} | not recorded | | | | |`);
       continue;
     }
     try {
+      // Version 1 or 2; a version 1 identity's training cell reads "not recorded".
       const identity = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as ReleaseIdentity;
       identities.add(identity.identityHash);
-      const { api, ui, core } = identity.components;
-      lines.push(`| ${cat.toUpperCase()} | ${identity.identityHash} | ${api.identity} | ${ui.identity} | ${core.identity} |`);
+      lines.push(`| ${cat.toUpperCase()} | ${releaseIndexCells(identity).join(' | ')} |`);
     } catch {
-      lines.push(`| ${cat.toUpperCase()} | unreadable | | | |`);
+      lines.push(`| ${cat.toUpperCase()} | unreadable | | | | |`);
     }
   }
   if (identities.size > 1) {
