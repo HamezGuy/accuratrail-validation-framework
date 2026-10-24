@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
+import { defaultPlatformRoot, defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
+import { buildPlatformSummary } from '../generators/22-platform-validation-summary';
 import { SYSTEM_INFO } from '../config/system-info';
 import { TA3_INSPECTION_COVERAGE } from '../config/ta3-inspection-coverage';
 import { checkDeadSettings, checkSoftwareInstallation, checkVendoredReceipts, declaredMajor, SHARED_TYPES_VERIFIER } from '../runners/iq-runner';
@@ -131,4 +132,30 @@ test('the signature meanings the TA3 cases expect are the EDC\'s own', () => {
     assert.ok(match, `${middleware} defines ${name}`);
     assert.equal(match[1], meaning, name);
   }
+});
+
+// The platform inventory against the sibling heads (VAL-1/validation-platform, spec P20 4.4). A statement that
+// moved or a probe that stopped matching fails here and forces an update of config/platform-inventory.ts.
+
+test('every platform repository resolves, and every statement literal and probe of the inventory is found at the sibling heads', () => {
+  const summary = buildPlatformSummary(defaultWorkspaceRoot());
+  assert.equal(summary.systems.length, 14, 'the summary lists the fourteen systems of the inventory');
+  assert.equal(summary.platformRoot, defaultPlatformRoot());
+  for (const system of summary.systems) {
+    assert.ok(system.repo, `${system.id}: no repository found under ${summary.platformRoot}`);
+    assert.match(system.head ?? '', /^[0-9a-f]{40}$/, `${system.id}: ${system.repo} is not its own git checkout`);
+    if ('status' in system.statement) {
+      assert.equal(system.statement.status, 'not-stated', `${system.id}: ${'detail' in system.statement ? system.statement.detail : ''}`);
+    }
+    for (const gap of system.gaps) {
+      if (!gap.probe) continue;
+      assert.equal(gap.probe.status, 'open', `${system.id} ${gap.id}: ${gap.probe.rule} ${JSON.stringify(gap.probe.literal)} in ${gap.probe.file} `
+        + `is ${gap.probe.status}; update config/platform-inventory.ts`);
+    }
+  }
+  const [change] = summary.pendingValidatedChanges;
+  assert.ok('file' in change.category.sop, `the SOP-CC-001 category row: ${JSON.stringify(change.category.sop)}`);
+  assert.deepEqual(change.flags.map(flag => [flag.flag, flag.value]),
+    [['ENABLE_DEVIATION_ENGINE', false], ['ENABLE_DOMAIN_EVENTS', false], ['ENABLE_DEVIATION_DECISIONS', false]],
+    'the EDC production profile keeps the D-04 settings off');
 });
