@@ -556,6 +556,61 @@ missing, mismatched-evaluator, and blocked-gate cases. This checks the adapter;
 it is not a product benchmark. See [P13 evidence attachment contract](docs/p13-evidence-attachment.md)
 for the separate protocol-extraction evaluation boundary.
 
+### PQ tied to the O-7 run (PQT-001 to PQT-006)
+
+When the run's `run-summary.json` names the contract
+`synthetic-trial.deviation-detection-summary/1` (in `contract`, `schema` or
+`schemaVersion`; another contract in one of the others refuses the run), the run
+is an O-7 deviation detection run on a public protocol (TA3 plan items O-7 and
+VAL-1, spec P20 3.5). The import then reconstructs it through the CommandCenter
+entry `synthetic-trial/surpass/deviations/reconstruct-detection.mjs` instead of
+`synthetic-trial/evaluate/reconstruct.mjs` (a missing entry fails
+BENCHMARK-RECONSTRUCTION with its path named), requires the summary to record
+the SHA-256 of `metrics.json` under `artifacts`, and adds PQT-001 to PQT-006
+after the two benchmark rows, derived from the reconstructed summary without
+re-scoring (`derivePqtResults`). Every other run keeps exactly its two rows and
+its entry. The cases are catalogued in `config/ta3-pq-cases.ts` and printed in
+the PQ protocol (09), the validation summary (12) and the execution records (20):
+
+| Case | Passes when | Outcome code otherwise |
+| --- | --- | --- |
+| PQT-001 | BENCHMARK-RECONSTRUCTION passed for the deviation run | `RECONSTRUCTION_FAILED` (PQT-002 to PQT-005 are then not executed) |
+| PQT-002 | the gate `DEV-CRITICAL-EXPLAINED` in `gateGroups` is passed | `UNEXPLAINED_CRITICAL_MISS` |
+| PQT-003 | `ruleClasses` reports each of the ten machine classes once, or states it not seedable with a reason | `CLASS_NOT_REPORTED` |
+| PQT-004 | `manualRules` holds counts only, and no rule class is manual | `MANUAL_RULE_SCORED` |
+| PQT-005 | `release.api` states the run's EDC API release (commit or image) | `RELEASE_NOT_RECORDED` |
+| PQT-006 | a qualified person's adjudication record of the answer key exists | manual: never passes automatically |
+
+What the import reads, strictly, in each case's part of the summary (a member,
+value or shape outside this records `UNSUPPORTED_DEVIATION_SUMMARY` for that
+case, never a guess). Beyond these, the import reads only what every import
+reads (`evaluator`, `gateGroups`, `localEngineering`) and `artifacts`; other
+top-level members, such as a label or a run id, are not read:
+
+- `gateGroups[].gates[]`: `id` and `status` (the evaluator's gate statuses).
+- `ruleClasses[]`: a reported class is `{class, status: "reported", seeded,
+  detected, recall: {value, lower, upper, method: "wilson", confidence},
+  precision: {matched, governed, value}}` with the optional `unmatched`,
+  `critical` and `criticalMisses: [{code, count}]` (`code` one of the scorer's
+  explanation codes, or null for an unexplained miss); a class the protocol
+  states no requirement for is `{class, status: "not-seedable", reason}`. A
+  reported class must have seeded at least one deviation, and its recall,
+  interval, precision and unmatched count must agree with its counts.
+- `manualRules`: `{specRules, manualReviewRequired}`.
+- `release`: `api` (required for PQT-005 to pass), optional `ui`, `core` and
+  `training` (commit, image or `none`), `il` (commit) and `csl` (release id).
+
+PQT-005 is what the platform summary (document 22) compares with the OQ
+package's release (`RELEASE_MISMATCH`); it never reads the OQ release itself.
+The answer key of an O-7 run stays a draft, unadjudicated self-review until a
+qualified person adjudicates it (D-10), so an O-7 import always lists PQT-006
+among the cases not passed and the CLI exits nonzero. The PQ cases are synthetic
+engineering evidence, not clinical accuracy, independent validation or SURPASS
+attainment. `tests/pq-ta3.contract.test.ts` covers the dispatch and the
+derivation with a synthetic summary (`tests/fixtures/deviation-detection-summary.synthetic.json`)
+and a test stub of the CommandCenter entry; `npm run test:cross-repo` fails by
+name until O-7/cc lands that entry and its scorer.
+
 `--p13-plan C:/qualification/p13-plan.json` attaches a scoped native P13 terminal
 record using three authenticated GETs and an explicit expected identity/census
 plan. It preserves source refs, native metric statuses and available denominators;

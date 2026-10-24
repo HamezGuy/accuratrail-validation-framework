@@ -124,3 +124,13 @@ many of them passed in each cited OQ package, the SOP-CC-001 category row and
 the status `no-change-control-record`. A synthetic or development run adds
 `synthetic`, `syntheticNotice` or `retention`, as evidence summaries do. The
 summary holds no subject, site or arm data.
+
+## Read, not owned: synthetic-trial.deviation-detection-summary/1
+
+The summary contract of the CommandCenter O-7 deviation detection runs (spec
+P09 8.2). CommandCenter owns and produces it, so this framework publishes no
+schema for it. The benchmark import (`runners/benchmark-evidence.ts`) reads it
+only to derive PQT-001 to PQT-006 from a reconstructed run, never re-scoring:
+the members it reads and how strictly are listed in the main README, section
+"PQ tied to the O-7 run". When CommandCenter publishes a schema for this
+contract, that schema is the reference and the reader follows it.
