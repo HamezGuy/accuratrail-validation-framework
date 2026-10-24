@@ -23,11 +23,14 @@
 
 ## Approval Signatures
 
-| Role | Name | Signature | Date |
-|------|------|-----------|------|
-| QA Lead | _________________ | _________________ | ____/____/____ |
-| Product Manager | _________________ | _________________ | ____/____/____ |
-| System Owner | _________________ | _________________ | ____/____/____ |
+Approval of this document is recorded in the eTMF as a governance decision on the filing of this
+package (TMF-FILING.md). This file carries no signature.
+
+| Role | Approval |
+|------|----------|
+| QA Lead | To approve |
+| Product Manager | To approve |
+| System Owner | To approve |
 
 ---
 

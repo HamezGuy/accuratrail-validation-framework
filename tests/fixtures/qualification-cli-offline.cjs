@@ -25,6 +25,8 @@ Module._load = function (request, parent, isMain) {
       }
       return {};
     }
+    // The markdown helpers only build text; the master evidence index uses them.
+    if (request === './generators/helpers/markdown-writer') return originalLoad.call(this, request, parent, isMain);
     if (request.startsWith('./generators/')) {
       return {
         generate() {

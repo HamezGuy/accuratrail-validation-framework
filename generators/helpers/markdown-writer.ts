@@ -129,16 +129,23 @@ export function statusBadge(status: 'Pass' | 'Fail' | 'Not Tested' | 'N/A'): str
   return `${icons[status]} ${status}`;
 }
 
+/** Approval is a person's act recorded in the eTMF (TA3 plan VAL-1): the
+ * framework never signs a document and prints no signature lines. */
+export const APPROVAL_STATEMENT = 'Approval of this document is recorded in the eTMF as a governance decision on the '
+  + 'filing of this package (TMF-FILING.md). This file carries no signature.';
+
 export function approvalBlock(roles: string[]): string {
   const lines: string[] = [
     '## Approval Signatures',
     '',
-    '| Role | Name | Signature | Date |',
-    '|------|------|-----------|------|',
+    APPROVAL_STATEMENT,
+    '',
+    '| Role | Approval |',
+    '|------|----------|',
   ];
 
   for (const role of roles) {
-    lines.push(`| ${role} | _________________ | _________________ | ____/____/____ |`);
+    lines.push(`| ${role} | To approve |`);
   }
 
   lines.push('');

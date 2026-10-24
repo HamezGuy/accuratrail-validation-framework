@@ -983,8 +983,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
         ['Tested By', 'Not recorded in retained evidence'],
         ['Test Date', testDate(rows)],
         ['Test Environment', testEnvironment(rows)],
-        ['Approved By', '_________________'],
-        ['Approval Date', '____/____/____'],
+        ['Approved By', 'Recorded in the eTMF with the package approval (see Approval Signatures)'],
+        ['Approval Date', 'Recorded in the eTMF'],
       ],
     );
     content += '\n';

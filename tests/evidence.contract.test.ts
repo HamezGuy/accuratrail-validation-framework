@@ -275,8 +275,9 @@ test('CSA records without retained evidence state no conclusion and invent no te
   assert.match(tableRow(authentication, 'Tested By'), /Not recorded in retained evidence/);
   assert.match(tableRow(authentication, 'Test Date'), /Not executed/);
   assert.match(tableRow(authentication, 'Test Environment'), /Not recorded/);
-  assert.match(tableRow(authentication, 'Approved By'), /_{10,}/);
-  assert.match(tableRow(authentication, 'Approval Date'), /____\/____\/____/);
+  assert.match(tableRow(authentication, 'Approved By'), /\| Recorded in the eTMF with the package approval/);
+  assert.match(tableRow(authentication, 'Approval Date'), /\| Recorded in the eTMF \|/);
+  assert.doesNotMatch(content, /_{3,}/, 'no blank signature line');
   const undocumented = featureRecord(content, 'FEAT-060');
   assert.match(subsection(undocumented, 'Conclusion'), /No assurance conclusion/);
   assert.match(subsection(undocumented, 'Issues Found'), /Not assessed: no retained evidence/);

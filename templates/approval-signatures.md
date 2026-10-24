@@ -1,19 +1,18 @@
 ## Approval Signatures
 
-This document has been reviewed and approved by the following signatories. Electronic or
-wet-ink signatures below confirm that the signatory has reviewed the document in its entirety
-and attests to its accuracy and completeness.
+Approval of this document is recorded in the eTMF as a governance decision on the filing of this
+package (TMF-FILING.md). This file carries no signature.
 
-| Role | Name | Signature | Date |
-|------|------|-----------|------|
+| Role | Approval |
+|------|----------|
 {{#SIGNATORIES}}
-| {{ROLE}} | _________________ | _________________ | ____/____/____ |
+| {{ROLE}} | To approve |
 {{/SIGNATORIES}}
 
-> **Note:** In accordance with 21 CFR Part 11, electronic signatures applied to this document
-> are considered equivalent to handwritten signatures. Each signature comprises the signer's
-> printed name, the date and time of signing, and the meaning (e.g., review, approval,
-> responsibility) associated with the signature.
+> **Note:** The validation framework never signs a document and prints no signature lines. A QA
+> lead other than the person who files the package accepts the filing in QC review and approves
+> it in the eTMF. That decision is a 21 CFR Part 11 electronic signature only where the eTMF
+> requires signed decisions (IL_TMF_SIGNATURE=required).
 
 ---
 

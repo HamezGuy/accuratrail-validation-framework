@@ -74,6 +74,16 @@ production environment as the environment under test: the API is the target the
 run's release identity observed, and every other environment detail reads
 "Recorded at execution".
 
+### Approval
+
+Generated documents carry no signature lines. Every approval block, the master
+evidence index and the editable templates state "Approval of this document is
+recorded in the eTMF as a governance decision on the filing of this package
+(TMF-FILING.md). This file carries no signature." and list each role as "To
+approve". The framework never signs: a QA lead other than the person who files
+the package approves it in the eTMF, and that decision is a Part 11 signature
+only where the eTMF requires signed decisions (`IL_TMF_SIGNATURE=required`).
+
 ### OQ case registry and training evidence
 
 `config/oq-case-registry.ts` is the one list of OQ cases (OQ-001 to OQ-205 in

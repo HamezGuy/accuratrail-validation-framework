@@ -5,6 +5,7 @@ import { SYSTEM_INFO } from './config/system-info';
 import {
   observeTargetVersion, releaseIdentityFromInputs, setReleaseIdentity, type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
+import { approvalBlock } from './generators/helpers/markdown-writer';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -583,13 +584,7 @@ function generateMasterEvidenceIndex(outputDir: string): void {
 
   lines.push('---');
   lines.push('');
-  lines.push('## Approval Signatures');
-  lines.push('');
-  lines.push('| Role | Name | Signature | Date |');
-  lines.push('|------|------|-----------|------|');
-  lines.push('| QA Lead | _________________ | _________________ | ____/____/____ |');
-  lines.push('| Validation Lead | _________________ | _________________ | ____/____/____ |');
-  lines.push('');
+  lines.push(approvalBlock(['QA Lead', 'Validation Lead']));
   lines.push('---');
   lines.push('*End of Document*');
 
