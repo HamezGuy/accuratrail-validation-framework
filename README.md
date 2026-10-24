@@ -260,6 +260,23 @@ repositories pin the same build with identical archive and receipt bytes; it
 never skips. When the API re-vendors, copy its new archive and receipt here,
 delete the old pair and reinstall.
 
+IQ checks the installations, not a source folder. IQ-008 runs the EDC's own
+`verifyPinnedStudyContract` (libreclinicaapi
+`scripts/verify-study-contract-consumers.cjs`, loaded read-only; it installs
+nothing and connects to nothing) on the API, the frontend (EDCProjectCompliant)
+and this framework, each against the receipt beside its vendored archive, and
+requires the framework's archive to be the API receipt's build. Consumers on
+different builds (today the frontend runs 81eafbc49259f4f1 and the API
+d786631b516b95fc) are recorded, not failed; a missing verifier, archive or
+receipt fails the case naming its path. IQ-005 compares the frontend's
+`@angular/core` major with `config/system-info.ts` (20), IQ-006 reads the
+TypeScript major of the API and the frontend. Sibling checkouts resolve through
+`collectors/workspace-paths.ts` (`resolveFrontendRoot`, `resolveSharedTypesRoot`
+beside the API, interop, tests-live and training resolvers), and the shared
+types collector reads the declaration files of the build the API installs, as
+its `release-manifest.json` lists them. `npm run test:cross-repo` also runs
+IQ-005, IQ-006 and IQ-008 on the real trees.
+
 ## Architecture
 
 - **config/** — Human-editable system metadata, regulatory scope, risk ratings

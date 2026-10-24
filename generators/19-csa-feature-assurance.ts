@@ -499,7 +499,7 @@ FEATURE_DATA.set('FEAT-030', {
     ['libreclinicaapi/src/services/hybrid/form.service.ts', 'Form data CRUD operations with validation rule execution on save'],
     ['libreclinicaapi/src/routes/form.routes.ts', 'eCRF endpoints with Joi validation of submission payloads'],
     ['libreclinicaapi/src/controllers/form.controller.ts', 'HTTP handling for form data submission and retrieval'],
-    ['ElectronicDataCaptureReal/src/app/components/patient-form-modal/', 'eCRF data entry UI component'],
+    ['EDCProjectCompliant/src/app/components/patient-form-modal/', 'eCRF data entry UI component'],
   ],
   activities: [
     covered('Form data submission stores all field values correctly and retrievable via GET', ['PQ-011', 'PQ-012']),
@@ -580,7 +580,7 @@ FEATURE_DATA.set('FEAT-033', {
   testType: 'Robust Scripted Testing (per CSA Guidance Table 1)',
   implFiles: [
     ['libreclinicaapi/src/services/hybrid/form.service.ts', 'Skip logic evaluation during form data retrieval and save validation'],
-    ['ElectronicDataCaptureReal/src/app/services/forms/libreclinica-form.service.ts', 'Client-side skip logic rendering and field visibility'],
+    ['EDCProjectCompliant/src/app/services/forms/libreclinica-form.service.ts', 'Client-side skip logic rendering and field visibility'],
   ],
   activities: [
     gap('Skip logic correctly shows dependent fields when trigger condition is met', 'No skip-logic case exists.'),
@@ -602,7 +602,7 @@ FEATURE_DATA.set('FEAT-034', {
   testType: 'Robust Scripted Testing (per CSA Guidance Table 1)',
   implFiles: [
     ['libreclinicaapi/src/services/hybrid/form.service.ts', 'DDE comparison engine detecting field-level discrepancies'],
-    ['ElectronicDataCaptureReal/src/app/services/forms/libreclinica-form.service.ts', 'DDE mode UI enabling independent second entry'],
+    ['EDCProjectCompliant/src/app/services/forms/libreclinica-form.service.ts', 'DDE mode UI enabling independent second entry'],
   ],
   activities: [
     gap('Matching DDE entries are accepted and finalized without query generation', 'No double-data-entry case exists.'),

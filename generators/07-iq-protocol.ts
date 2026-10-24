@@ -14,7 +14,7 @@ import {
   type SectionEntry,
   type TestCaseOptions,
 } from './helpers/markdown-writer';
-import { getDocumentMeta, stampDocument } from './helpers/version-stamper';
+import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
 
 interface IqTestCase {
   id: string;
@@ -50,7 +50,7 @@ function softwareInstallationCases(): IqTestCase[] {
       requirement: 'The Express/Node.js REST API is operational and returns HTTP 200 on health check',
       cfr: '§11.10(a) — Validation',
       steps: [
-        `Send GET request to ${SYSTEM_INFO.environments.production.apiUrl}/health.`,
+        `Send GET request to /health on the target API: ${recordedTargetUrl()}.`,
         'Verify response status is 200.',
         'Verify response body contains a status field indicating healthy.',
       ],
@@ -63,7 +63,7 @@ function softwareInstallationCases(): IqTestCase[] {
       requirement: 'The Angular SPA is served and loads in a browser',
       cfr: 'N/A',
       steps: [
-        `Navigate to ${SYSTEM_INFO.environments.production.frontendUrl} in a browser.`,
+        `Navigate to the target frontend (${RECORDED_AT_EXECUTION.toLowerCase()}) in a browser.`,
         'Verify the page loads without HTTP errors (status 200).',
         'Verify the Angular application renders (login or dashboard page visible).',
       ],
@@ -85,28 +85,28 @@ function softwareInstallationCases(): IqTestCase[] {
     },
     {
       id: 'IQ-005',
-      title: 'Angular version is 19',
-      requirement: 'Frontend uses Angular 19 as specified in the architecture',
+      title: 'Angular version matches the system description',
+      requirement: `The frontend declares the Angular major the system description states (${SYSTEM_INFO.architecture.frontend.version})`,
       cfr: 'N/A',
       steps: [
-        'Inspect package.json in the ElectronicDataCaptureReal directory.',
+        `Inspect package.json in the ${SYSTEM_INFO.projectPaths.frontend} checkout.`,
         'Locate the @angular/core dependency version.',
-        'Verify major version is 19.',
+        `Verify its major version is ${SYSTEM_INFO.architecture.frontend.version}, the frontend version in config/system-info.ts.`,
       ],
-      expectedResult: 'Angular @angular/core version starts with 19.x.',
+      expectedResult: `Angular @angular/core major version is ${SYSTEM_INFO.architecture.frontend.version}.`,
       evidence: 'See evidence/iq/IQ-005.json',
     },
     {
       id: 'IQ-006',
-      title: 'TypeScript version is 5.x',
-      requirement: 'TypeScript compiler version matches the architecture specification',
+      title: 'TypeScript version matches the system description',
+      requirement: 'The API and the frontend declare the TypeScript compiler major the architecture specification states',
       cfr: 'N/A',
       steps: [
-        'Inspect package.json in the shared-types directory.',
-        'Locate the typescript dependency version.',
-        'Verify major version is 5.',
+        `Inspect package.json in the ${SYSTEM_INFO.projectPaths.backend} and ${SYSTEM_INFO.projectPaths.frontend} checkouts.`,
+        'Locate the typescript dependency version in each.',
+        `Verify both major versions match ${SYSTEM_INFO.architecture.sharedTypes.version}.`,
       ],
-      expectedResult: 'TypeScript version starts with 5.x.',
+      expectedResult: `Both declare TypeScript ${SYSTEM_INFO.architecture.sharedTypes.version.replace(/^TypeScript /, '')}.`,
       evidence: 'See evidence/iq/IQ-006.json',
     },
     {
@@ -115,8 +115,8 @@ function softwareInstallationCases(): IqTestCase[] {
       requirement: 'Dependency tree is complete and free of known critical/high vulnerabilities',
       cfr: '§11.10(a) — Validation',
       steps: [
-        'Run `npm audit` in the libreclinicaapi directory.',
-        'Run `npm audit` in the ElectronicDataCaptureReal directory.',
+        `Run \`npm audit\` in the ${SYSTEM_INFO.projectPaths.backend} directory.`,
+        `Run \`npm audit\` in the ${SYSTEM_INFO.projectPaths.frontend} directory.`,
         'Verify no critical or high severity vulnerabilities are reported.',
         'If vulnerabilities exist, document them with justification or remediation plan.',
       ],
@@ -125,16 +125,24 @@ function softwareInstallationCases(): IqTestCase[] {
     },
     {
       id: 'IQ-008',
-      title: 'Shared-types package built and linked',
-      requirement: '@accura-trial/shared-types is compiled and symlinked to consuming projects',
+      title: 'Shared types installed from the vendored release',
+      requirement: '@accura-trial/shared-types is installed in the API, the frontend and this validation framework from a '
+        + 'vendored archive whose receipt, lockfile integrity and installed release manifest agree, and the framework '
+        + 'runs the API\'s build',
       cfr: 'N/A',
       steps: [
-        'Verify shared-types/dist/ directory exists and contains compiled .js and .d.ts files.',
-        'Verify libreclinicaapi/node_modules/@accura-trial/shared-types resolves to shared-types.',
-        'Verify ElectronicDataCaptureReal/node_modules/@accura-trial/shared-types resolves to shared-types.',
-        'Import a type from the package in a test script and confirm it compiles.',
+        'For each consumer, read the `file:vendor/<archive>.tgz` dependency in package.json and the receipt beside it '
+          + '(`<archive>.tgz.json`, contract edc-study-contract-package/1).',
+        `Run the EDC's own \`verifyPinnedStudyContract\` (${SYSTEM_INFO.projectPaths.backend}/scripts/verify-study-contract-consumers.cjs, `
+          + 'loaded read-only; it installs nothing and connects to nothing) on each consumer root.',
+        'It verifies the package.json and lockfile pins, the lockfile integrity, the archive bytes against the receipt '
+          + '(byte count, SHA-256, SHA-512), the installed package.json and release-manifest.json, every installed runtime '
+          + 'file, and that no retired public contract remains.',
+        'Verify that the validation framework\'s archive SHA-256 equals the API receipt\'s.',
+        'Record each consumer\'s build; consumers on different builds are recorded, not failed.',
       ],
-      expectedResult: 'Shared-types is built, and both frontend and backend resolve the package correctly.',
+      expectedResult: 'Every consumer verifies against its receipt and the framework runs the API\'s shared types build. '
+        + 'A missing verifier, archive or receipt fails the case with its path named.',
       evidence: 'See evidence/iq/IQ-008.json',
     },
   ];

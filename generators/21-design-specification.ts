@@ -46,7 +46,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += markdownTable(
     ['Component', 'Technology', 'Version', 'Purpose'],
     [
-      ['Frontend', 'Angular 19 SPA', '19', 'Clinical UI - eCRF entry, review, signatures, dashboards'],
+      ['Frontend', `Angular ${SYSTEM_INFO.architecture.frontend.version} SPA`, SYSTEM_INFO.architecture.frontend.version, 'Clinical UI - eCRF entry, review, signatures, dashboards'],
       ['Backend API', 'Express/Node.js', 'Node 20+', 'REST API - auth, authorization, business logic, audit trails'],
       ['Database', SYSTEM_INFO.architecture.database.name, SYSTEM_INFO.architecture.database.version, 'Persistent storage of all regulated electronic records'],
       ['Shared Types', '@accura-trial/shared-types', 'TS 5.x', 'Canonical DTOs for type-safe API contracts'],
@@ -156,7 +156,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     [
       ['Backend API', 'AWS ECS Fargate (us-east-2)', 'Docker image from ECR, service accuratrials-api-v2 behind an application load balancer'],
       ['Core and training services', 'AWS ECS Fargate (us-east-2)', 'accuratrials-core and accuratrials-training services in the same cluster'],
-      ['Frontend', 'Vercel', 'Angular 19 SPA with CDN distribution'],
+      ['Frontend', 'Vercel', `Angular ${SYSTEM_INFO.architecture.frontend.version} SPA with CDN distribution`],
       ['Database', 'AWS RDS PostgreSQL 14', 'Instance accuratrials-hipaa-db'],
       ['CI/CD', 'GitHub Actions', 'Automated build, test, deploy pipelines'],
     ],

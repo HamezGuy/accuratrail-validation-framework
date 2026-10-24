@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveFrontendRoot } from './workspace-paths';
 
 export interface SOPEntry {
   file: string;
@@ -10,9 +11,10 @@ export interface SOPEntry {
   directory: 'operational' | 'compliance';
 }
 
+/** SOP folders of the frontend checkout (resolveFrontendRoot). */
 const SOP_DIRS: { rel: string; label: 'operational' | 'compliance' }[] = [
-  { rel: 'ElectronicDataCaptureReal/SOPs_For_Email', label: 'operational' },
-  { rel: 'ElectronicDataCaptureReal/COMPLIANCE_DOCUMENTATION', label: 'compliance' },
+  { rel: 'SOPs_For_Email', label: 'operational' },
+  { rel: 'COMPLIANCE_DOCUMENTATION', label: 'compliance' },
 ];
 
 /**
@@ -21,9 +23,10 @@ const SOP_DIRS: { rel: string; label: 'operational' | 'compliance' }[] = [
  */
 export function collectSOPs(workspaceRoot: string): SOPEntry[] {
   const entries: SOPEntry[] = [];
+  const frontendRoot = resolveFrontendRoot(workspaceRoot);
 
   for (const dir of SOP_DIRS) {
-    const fullDir = path.join(workspaceRoot, dir.rel);
+    const fullDir = path.join(frontendRoot, dir.rel);
     const pattern = path.join(fullDir, '*.md').replace(/\\/g, '/');
 
     let files: string[];

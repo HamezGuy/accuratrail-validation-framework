@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { globSync } from 'glob';
+import { resolveFrontendRoot } from './workspace-paths';
 
 export interface FrontendServiceEntry {
   file: string;
@@ -30,9 +31,7 @@ export interface FrontendCollectionResult {
  * project and extracts class names, public methods, and injected services.
  */
 export function collectFrontend(workspaceRoot: string): FrontendCollectionResult {
-  const appDir = path.join(
-    workspaceRoot, 'ElectronicDataCaptureReal', 'src', 'app',
-  );
+  const appDir = path.join(resolveFrontendRoot(workspaceRoot), 'src', 'app');
 
   return {
     services: collectServices(appDir),

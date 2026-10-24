@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { globSync } from 'glob';
+import { resolveLibreclinicaApiRoot } from './workspace-paths';
 
 export interface SharedTypeEntry {
   file: string;
@@ -9,32 +9,44 @@ export interface SharedTypeEntry {
   exportLine: string;
 }
 
+/** Where the API installs the shared types build it runs (a vendored archive with its
+ * receipt; IQ-008 verifies the installation against that receipt). */
+export function installedSharedTypesRoot(workspaceRoot: string): string {
+  return path.join(resolveLibreclinicaApiRoot(workspaceRoot), 'node_modules', '@accura-trial', 'shared-types');
+}
+
 /**
- * Reads all .ts files in shared-types/src/ and extracts exported
- * interfaces, types, and enums with their full export line.
+ * Reads the declaration files of the shared types build the API installs, the
+ * top-level dist/*.d.ts files its release-manifest.json lists, and extracts
+ * exported interfaces, types, and enums with their full export line. So the
+ * design specification describes the build under test, not a source checkout.
  */
 export function collectSharedTypes(workspaceRoot: string): SharedTypeEntry[] {
-  const srcDir = path.join(workspaceRoot, 'shared-types', 'src');
-  const pattern = path.join(srcDir, '*.ts').replace(/\\/g, '/');
+  const installed = installedSharedTypesRoot(workspaceRoot);
 
   let files: string[];
   try {
-    files = globSync(pattern);
+    const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'release-manifest.json'), 'utf-8')) as {
+      runtimeFiles?: Array<{ path?: unknown }>;
+    };
+    files = (manifest.runtimeFiles ?? [])
+      .map(file => file.path)
+      .filter((file): file is string => typeof file === 'string' && /^dist\/[^/]+\.d\.ts$/.test(file))
+      .sort();
   } catch {
     return [];
   }
 
   const entries: SharedTypeEntry[] = [];
 
-  for (const filePath of files) {
+  for (const relFile of files) {
     let content: string;
     try {
-      content = fs.readFileSync(filePath, 'utf-8');
+      content = fs.readFileSync(path.join(installed, ...relFile.split('/')), 'utf-8');
     } catch {
       continue;
     }
 
-    const relFile = path.relative(srcDir, filePath).replace(/\\/g, '/');
     extractKind(content, relFile, 'interface', entries);
     extractKind(content, relFile, 'type', entries);
     extractKind(content, relFile, 'enum', entries);
@@ -58,7 +70,8 @@ function extractKind(
       re = /^(export\s+type\s+(\w+)[^\n]*)/gm;
       break;
     case 'enum':
-      re = /^(export\s+(?:const\s+)?enum\s+(\w+)[^\n]*)/gm;
+      // Declaration files emit enums as `export declare enum` or `export declare const enum`.
+      re = /^(export\s+(?:declare\s+)?(?:const\s+)?enum\s+(\w+)[^\n]*)/gm;
       break;
   }
 

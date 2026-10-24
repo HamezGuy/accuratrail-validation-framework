@@ -134,7 +134,7 @@ function generateDataFlowDiagram(): string {
   c += '│       │                                                         │\n';
   c += '│       ▼  HTTPS/TLS 1.2+                                        │\n';
   c += '│  ┌──────────────────┐                                           │\n';
-  c += '│  │  Angular 19 SPA  │  Frontend (Vercel CDN)                    │\n';
+  c += `│  │  Angular ${SYSTEM_INFO.architecture.frontend.version.padEnd(2)} SPA  │  Frontend (Vercel CDN)                    │\n`;
   c += '│  │  - eCRF Entry    │                                           │\n';
   c += '│  │  - Review/Sign   │                                           │\n';
   c += '│  │  - Query Mgmt    │                                           │\n';

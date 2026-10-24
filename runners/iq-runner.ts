@@ -1,18 +1,34 @@
 /**
  * IQ Runner — Installation Qualification test execution.
- * Covers all 32 IQ test cases from the IQ protocol.
+ * Covers every IQ test case of the IQ protocol (IQ_CASE_COUNT).
  * Groups: Software Installation, Database Schema, Configuration, Security & Backup.
+ * Sibling checkouts resolve through collectors/workspace-paths.ts; shared types are
+ * checked where consumers install them (vendored archives), never in a source folder.
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
 import {
   EvidenceResult,
   captureApiCall,
   captureWithExpectedStatus,
   captureWithValidator,
+  isRecord,
   saveEvidence,
 } from './evidence-capture';
-import { defaultWorkspaceRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
+import { defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
+import { SYSTEM_INFO } from '../config/system-info';
+
+/** The IQ protocol's cases, IQ-001 to IQ-032; the runner records a result for each. */
+export const IQ_CASE_COUNT = 32;
+
+/** The validation framework checkout, itself a shared types consumer IQ-008 verifies. */
+const FRAMEWORK_ROOT = path.resolve(__dirname, '..');
+const SHARED_TYPES = '@accura-trial/shared-types';
+/** The EDC's own check of a consumer installation against its receipt (libreclinicaapi). */
+export const SHARED_TYPES_VERIFIER = path.join('scripts', 'verify-study-contract-consumers.cjs');
+/** A package.json value that installs a vendored archive; no path separator may follow vendor/. */
+const VENDORED_SELECTOR = /^file:vendor\/[A-Za-z0-9._-]+\.tgz$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,6 +37,12 @@ import { defaultWorkspaceRoot, resolveLibreclinicaApiRoot } from '../collectors/
 function ts(): string {
   return new Date().toISOString();
 }
+
+const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+const sha512Integrity = (bytes: Buffer) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** JSON text without a leading byte order mark, which JSON.parse refuses. */
+const withoutBom = (text: string) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
 
 function fileResult(
   id: string,
@@ -68,12 +90,178 @@ function countMatches(content: string, pattern: RegExp): number {
   return matches ? matches.length : 0;
 }
 
+function readPackageJson(filePath: string): Record<string, unknown> | null {
+  const content = safeReadFile(filePath);
+  return content ? safeParseJson(content) : null;
+}
+
+/** A dependency's declared version in dependencies, then devDependencies. */
+function declaredDependency(pkg: Record<string, unknown> | null, name: string): string {
+  for (const group of ['dependencies', 'devDependencies']) {
+    const deps = pkg?.[group];
+    if (isRecord(deps) && typeof deps[name] === 'string') return deps[name] as string;
+  }
+  return '';
+}
+
+/** The major version a package.json range names: ^20.3.27, ~5.9.3, 20.1.0, 20.x or >=20. */
+export function declaredMajor(range: string): number | undefined {
+  const match = /^\s*(?:[\^~]|[<>]=?|=)?\s*v?(\d+)(?:[.\s]|$)/.exec(range);
+  return match ? Number(match[1]) : undefined;
+}
+
+/** A vendored archive a package.json installs, read with its receipt (`<archive>.json`).
+ * IQ-008 hands the receipt to the EDC's verifier; IQ-035 checks every vendored
+ * dependency of the API with it. */
+export interface VendoredArchive {
+  packageName: string;
+  selector: string;
+  archive: string;
+  receiptPath: string;
+  receipt: Record<string, unknown> | null;
+  bytes: number | null;
+  sha256: string | null;
+  /** Empty when the receipt exists and its filename, byte count, SHA-256, integrity
+   * and package name describe the archive's bytes. */
+  problems: string[];
+}
+
+export function readVendoredArchive(root: string, packageName: string, selector: string): VendoredArchive {
+  const archive = path.resolve(root, selector.replace(/^file:/, ''));
+  const receiptPath = `${archive}.json`;
+  const result: VendoredArchive = { packageName, selector, archive, receiptPath, receipt: null, bytes: null, sha256: null, problems: [] };
+  if (!VENDORED_SELECTOR.test(selector)) {
+    result.problems.push(`${packageName} is not installed from a vendored archive (${JSON.stringify(selector)})`);
+    return result;
+  }
+  let bytes: Buffer | undefined;
+  try {
+    bytes = fs.readFileSync(archive);
+    result.bytes = bytes.length;
+    result.sha256 = sha256(bytes);
+  } catch (error) {
+    result.problems.push(`archive ${archive} cannot be read (${(error as NodeJS.ErrnoException).code ?? errorText(error)})`);
+  }
+  const receiptText = safeReadFile(receiptPath);
+  if (receiptText === null) {
+    result.problems.push(`no receipt ${receiptPath}`);
+    return result;
+  }
+  result.receipt = safeParseJson(withoutBom(receiptText));
+  if (!result.receipt) {
+    result.problems.push(`receipt ${receiptPath} is not a JSON object`);
+    return result;
+  }
+  if (!bytes) return result;
+  const receipt = result.receipt;
+  if (receipt.packageName !== packageName) result.problems.push(`receipt ${receiptPath} names package ${JSON.stringify(receipt.packageName)}`);
+  if (receipt.filename !== path.basename(archive)) result.problems.push(`receipt ${receiptPath} names file ${JSON.stringify(receipt.filename)}`);
+  if (receipt.byteLength !== bytes.length) result.problems.push(`archive ${archive} has ${bytes.length} bytes, its receipt ${JSON.stringify(receipt.byteLength)}`);
+  if (receipt.sha256 !== result.sha256) result.problems.push(`archive ${archive} does not match its receipt's SHA-256`);
+  if (receipt.integrity !== undefined && receipt.integrity !== sha512Integrity(bytes)) {
+    result.problems.push(`archive ${archive} does not match its receipt's integrity`);
+  }
+  return result;
+}
+
+/** The files a refusal of the EDC's verifier concerns, by its message, relative to
+ * the consumer root, so a failed IQ-008 names the file and not only the consumer. */
+const VERIFIER_REFUSAL_FILES: ReadonlyArray<[string, (archive: string) => string[]]> = [
+  ['Unsupported shared contract receipt', archive => [`${archive}.json`]],
+  ['Shared contract installation is not a real directory', () => ['node_modules/@accura-trial/shared-types']],
+  ['Package/lock release mismatch', () => ['package.json', 'package-lock.json']],
+  ['Invalid local release artifact', archive => [archive]],
+  ['Vendored package bytes mismatch', archive => [archive]],
+  ['Installed package identity mismatch', () => ['node_modules/@accura-trial/shared-types/package.json']],
+  ['Installed release manifest mismatch', () => ['node_modules/@accura-trial/shared-types/release-manifest.json']],
+];
+
+export interface SharedTypesConsumer {
+  /** Name the record and the verifier's messages use (api, ui, validation-framework). */
+  name: string;
+  root: string;
+}
+
+type PinnedContractVerifier = (root: string, lockedArtifact: string, receipt: Record<string, unknown>, name?: string) => {
+  manifest?: { runtimeFiles?: unknown[] };
+};
+
+/** Loads verifyPinnedStudyContract from the EDC's script, read-only: requiring it
+ * defines the function and runs nothing (the CLI body runs only as the main module). */
+function loadPinnedContractVerifier(verifierFile: string): PinnedContractVerifier | string {
+  if (!fs.existsSync(verifierFile)) return `the EDC verifier ${verifierFile} is missing`;
+  let loaded: unknown;
+  try { loaded = require(verifierFile); }
+  catch (error) { return `the EDC verifier ${verifierFile} cannot be loaded (${errorText(error)})`; }
+  const verifier = isRecord(loaded) ? loaded.verifyPinnedStudyContract : undefined;
+  return typeof verifier === 'function' ? verifier as PinnedContractVerifier
+    : `the EDC verifier ${verifierFile} does not export verifyPinnedStudyContract`;
+}
+
+/** IQ-008: each consumer installed @accura-trial/shared-types from its vendored
+ * release, as the EDC's own verifyPinnedStudyContract checks it (the package.json
+ * and lockfile pins, the lock integrity, the archive bytes against the receipt,
+ * the installed package.json and release-manifest.json, every runtime file, and no
+ * retired public contract), and `sameBuild.consumer`'s archive is the build of
+ * `sameBuild.reference`'s receipt. Consumers on different builds are recorded,
+ * not failed. A missing verifier fails the case naming its path. */
+export function checkSharedTypesInstallation(
+  verifierFile: string,
+  consumers: readonly SharedTypesConsumer[],
+  sameBuild: { consumer: string; reference: string },
+): EvidenceResult {
+  const label = 'Shared types installed from the vendored release';
+  const problems: string[] = [];
+  const verifier = loadPinnedContractVerifier(verifierFile);
+  if (typeof verifier === 'string') problems.push(verifier);
+  const installs = consumers.map(consumer => {
+    const packageFile = path.join(consumer.root, 'package.json');
+    const pkg = readPackageJson(packageFile);
+    const selector = declaredDependency(pkg, SHARED_TYPES);
+    const vendored = readVendoredArchive(consumer.root, SHARED_TYPES, selector);
+    const receiptSha256 = typeof vendored.receipt?.sha256 === 'string' ? vendored.receipt.sha256 : null;
+    const install = {
+      name: consumer.name, root: consumer.root, selector, archive: vendored.archive, archiveSha256: vendored.sha256,
+      receiptSha256, build: receiptSha256 ? receiptSha256.slice(0, 16) : null, verified: false, runtimeFilesVerified: 0,
+    };
+    if (!pkg) problems.push(`${consumer.name}: ${packageFile} not found or not JSON`);
+    else if (!vendored.receipt) problems.push(`${consumer.name}: ${vendored.problems.join('; ')}`);
+    else if (typeof verifier !== 'string') {
+      const lockedArtifact = selector.replace(/^file:/, '');
+      try {
+        const verified = verifier(consumer.root, lockedArtifact, vendored.receipt, consumer.name);
+        install.verified = true;
+        install.runtimeFilesVerified = Array.isArray(verified?.manifest?.runtimeFiles) ? verified.manifest.runtimeFiles.length : 0;
+      } catch (error) {
+        const message = errorText(error);
+        const files = VERIFIER_REFUSAL_FILES.find(([prefix]) => message.startsWith(prefix))?.[1](lockedArtifact) ?? [];
+        problems.push(`${consumer.name}: ${message}${files.length ? ` (${files.map(file => path.join(consumer.root, file)).join(', ')})` : ''}`);
+      }
+    }
+    return install;
+  });
+  // The framework checks EDC exports with the API's own build (the first version's IQ-036).
+  const consumerSha = installs.find(install => install.name === sameBuild.consumer)?.archiveSha256 ?? null;
+  const referenceSha = installs.find(install => install.name === sameBuild.reference)?.receiptSha256 ?? null;
+  if (!consumerSha || consumerSha !== referenceSha) {
+    problems.push(`the ${sameBuild.consumer} archive (${consumerSha ?? 'unread'}) is not the build of the ${sameBuild.reference} receipt (${referenceSha ?? 'unread'})`);
+  }
+  const builds = installs.map(install => `${install.name} ${install.build ?? 'unread'}`).join(', ');
+  const passed = problems.length === 0;
+  return fileResult('IQ-008', label, passed,
+    passed
+      ? `${installs.length} consumers verified by the EDC's verifyPinnedStudyContract (builds ${builds}; different builds per consumer `
+        + `are recorded, not failed); the ${sameBuild.consumer} archive is the ${sameBuild.reference} build`
+      : problems.join('; '),
+    verifierFile, { verifier: verifierFile, consumers: installs, sameBuild: { ...sameBuild, consumerSha256: consumerSha, referenceSha256: referenceSha } });
+}
+
 // ---------------------------------------------------------------------------
 // 1. Software Installation (IQ-001 through IQ-008)
 //    IQ-001 and IQ-002 are API-based and run separately in the main runner.
 // ---------------------------------------------------------------------------
 
-function checkSoftwareInstallation(workspaceRoot: string, apiRoot: string): EvidenceResult[] {
+export function checkSoftwareInstallation(workspaceRoot: string, apiRoot: string, frameworkRoot = FRAMEWORK_ROOT): EvidenceResult[] {
   const results: EvidenceResult[] = [];
 
   // IQ-003: Backend package.json exists and has version
@@ -115,51 +303,46 @@ function checkSoftwareInstallation(workspaceRoot: string, apiRoot: string): Evid
     }
   }
 
-  // IQ-005: Angular 19 dependency
+  // IQ-005: the frontend declares the Angular major the system description states
   {
-    const fp = path.join(workspaceRoot, 'ElectronicDataCaptureReal', 'package.json');
-    const content = safeReadFile(fp);
-    if (!content) {
-      results.push(fileResult('IQ-005', 'Angular version is 19', false, 'package.json not found', fp));
+    const label = 'Angular version matches the system description';
+    const expected = SYSTEM_INFO.architecture.frontend.version;
+    const fp = path.join(resolveFrontendRoot(workspaceRoot), 'package.json');
+    const pkg = readPackageJson(fp);
+    if (!pkg) {
+      results.push(fileResult('IQ-005', label, false, 'package.json not found or not JSON', fp));
     } else {
-      const pkg = safeParseJson(content);
-      const deps = pkg?.dependencies as Record<string, string> | undefined;
-      const angularCore = deps?.['@angular/core'] ?? '';
-      const passed = angularCore.includes('19');
-      results.push(fileResult('IQ-005', 'Angular version is 19', passed,
-        passed ? `@angular/core="${angularCore}"` : `@angular/core="${angularCore}" — does not include 19`, fp,
-        { angularCore }));
+      const angularCore = declaredDependency(pkg, '@angular/core');
+      const major = declaredMajor(angularCore);
+      const passed = major !== undefined && String(major) === expected;
+      results.push(fileResult('IQ-005', label, passed,
+        passed
+          ? `@angular/core="${angularCore}", major ${major} as the system description states`
+          : `@angular/core="${angularCore || 'not declared'}"; the system description states Angular ${expected}`,
+        fp, { angularCore, major: major ?? null, expectedMajor: expected }));
     }
   }
 
-  // IQ-006: TypeScript 5.x
+  // IQ-006: the API and the frontend declare the TypeScript major of the system description
   {
-    const fpFrontend = path.join(workspaceRoot, 'ElectronicDataCaptureReal', 'package.json');
-    const fpShared = path.join(workspaceRoot, 'shared-types', 'package.json');
-    const contentFe = safeReadFile(fpFrontend);
-    const contentSt = safeReadFile(fpShared);
-    let tsVersion = '';
-    let sourceFile = '';
-
-    if (contentFe) {
-      const pkg = safeParseJson(contentFe);
-      const devDeps = pkg?.devDependencies as Record<string, string> | undefined;
-      const deps = pkg?.dependencies as Record<string, string> | undefined;
-      tsVersion = devDeps?.typescript ?? deps?.typescript ?? '';
-      sourceFile = fpFrontend;
-    }
-    if (!tsVersion && contentSt) {
-      const pkg = safeParseJson(contentSt);
-      const devDeps = pkg?.devDependencies as Record<string, string> | undefined;
-      const deps = pkg?.dependencies as Record<string, string> | undefined;
-      tsVersion = devDeps?.typescript ?? deps?.typescript ?? '';
-      sourceFile = fpShared;
-    }
-
-    const passed = tsVersion.includes('5.');
-    results.push(fileResult('IQ-006', 'TypeScript 5.x', passed,
-      passed ? `typescript="${tsVersion}" (from ${path.basename(sourceFile)})` : `typescript="${tsVersion || 'not found'}"`,
-      sourceFile || fpFrontend, { typescript: tsVersion }));
+    const label = 'TypeScript version matches the system description';
+    const expected = /TypeScript (\d+)\./.exec(SYSTEM_INFO.architecture.sharedTypes.version)?.[1];
+    const declared = [
+      { project: 'api', file: path.join(apiRoot, 'package.json') },
+      { project: 'frontend', file: path.join(resolveFrontendRoot(workspaceRoot), 'package.json') },
+    ].map(({ project, file }) => {
+      const pkg = readPackageJson(file);
+      const typescript = declaredDependency(pkg, 'typescript');
+      return { project, file, found: pkg !== null, typescript, major: declaredMajor(typescript) ?? null };
+    });
+    const wrong = declared.filter(entry => !entry.found || entry.major === null || String(entry.major) !== expected);
+    const passed = expected !== undefined && wrong.length === 0;
+    results.push(fileResult('IQ-006', label, passed,
+      passed
+        ? declared.map(entry => `${entry.project} typescript="${entry.typescript}"`).join(', ') + `, major ${expected} as the system description states`
+        : wrong.map(entry => `${entry.file}: ${entry.found ? `typescript="${entry.typescript || 'not declared'}"` : 'not found or not JSON'}`).join('; ')
+          + `; the system description states TypeScript ${expected ?? 'with no major'}`,
+      declared[0].file, { declared, expectedMajor: expected ?? null }));
   }
 
   // IQ-007: Backend dependencies installed (node_modules exists)
@@ -170,13 +353,13 @@ function checkSoftwareInstallation(workspaceRoot: string, apiRoot: string): Evid
       exists ? 'node_modules directory present' : 'node_modules directory NOT found', nmDir));
   }
 
-  // IQ-008: shared-types built (dist/index.js exists)
-  {
-    const fp = path.join(workspaceRoot, 'shared-types', 'dist', 'index.js');
-    const exists = fs.existsSync(fp);
-    results.push(fileResult('IQ-008', 'shared-types built', exists,
-      exists ? 'dist/index.js present' : 'dist/index.js NOT found — run npm run build in shared-types', fp));
-  }
+  // IQ-008: shared types installed in the API, the frontend and this framework from
+  // the vendored release, checked by the EDC's own verifier; never a source folder.
+  results.push(checkSharedTypesInstallation(path.join(apiRoot, SHARED_TYPES_VERIFIER), [
+    { name: 'api', root: apiRoot },
+    { name: 'ui', root: resolveFrontendRoot(workspaceRoot) },
+    { name: 'validation-framework', root: frameworkRoot },
+  ], { consumer: 'validation-framework', reference: 'api' }));
 
   return results;
 }
@@ -492,7 +675,7 @@ export async function run(
 ): Promise<EvidenceResult[]> {
   const wsRoot = workspaceRoot || defaultWorkspaceRoot();
   const apiRoot = resolveLibreclinicaApiRoot(wsRoot);
-  console.log(`\n  Running IQ checks (32 test cases) against ${baseUrl}...`);
+  console.log(`\n  Running IQ checks (${IQ_CASE_COUNT} test cases) against ${baseUrl}...`);
 
   const results: EvidenceResult[] = [];
 

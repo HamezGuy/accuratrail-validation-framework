@@ -34,7 +34,9 @@ export const SYSTEM_INFO = {
     'enabled in production only through change control.',
 
   architecture: {
-    frontend: { name: 'Angular SPA', version: '19', runtime: 'Browser' },
+    // The @angular/core major EDCProjectCompliant/package.json declares (^20.3.27);
+    // IQ-005 compares the two and test:cross-repo keeps them equal.
+    frontend: { name: 'Angular SPA', version: '20', runtime: 'Browser' },
     backend: { name: 'Express/Node.js REST API', version: 'Node 20+', runtime: 'Docker/Linux' },
     // The engine version only: the OQ and PQ test environment tables print it
     // for a test stack too, so the AWS RDS hosting stays in the rows below.
