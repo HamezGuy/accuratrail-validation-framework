@@ -5,7 +5,9 @@ import { verifyPackage } from '../runners/evidence-package';
 // Exits 0 only when every file package-manifest.json lists is present with its
 // byte count and SHA-256, no unlisted file exists and the package hash
 // recomputes; it then prints the SHA-256 of package-manifest.json, the
-// contentHash the eTMF must show for the filed manifest (TMF-FILING.md).
+// contentHash the eTMF must show for the filed manifest (TMF-FILING.md). A
+// package whose framework checkout was dirty or changed during the run verifies
+// too, and the output says it is not a run of record.
 
 const [directory, ...rest] = process.argv.slice(2);
 if (!directory || rest.length) {
@@ -18,6 +20,7 @@ if (!directory || rest.length) {
   if (result.ok && result.manifest && result.manifestSha256) {
     const { manifest } = result;
     console.log(`Package verified: ${result.dir}`);
+    if (result.notRunOfRecord) console.log(`  ${result.notRunOfRecord}`);
     console.log(`  Package ID:   ${manifest.packageId} (${manifest.version})`);
     console.log(`  Synthetic:    ${manifest.synthetic ? `yes (${manifest.syntheticBasis.join(', ')})` : 'no'}`);
     console.log(`  Executed:     ${manifest.executed ? 'yes' : 'no, documents only'}`);

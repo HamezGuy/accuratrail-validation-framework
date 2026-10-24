@@ -74,7 +74,16 @@ that is not synthetic is refused inside such a tree and is retained only under
 a retention root QA names: a tree holding `QA-RETENTION-ROOT`, a marker file
 QA places (searched upwards from the retain root; no code creates it, and none
 exists tonight, so such a run stays scratch). A synthetic package is refused in
-such a tree. No package is retained inside a git checkout. In a synthetic package
+such a tree. No package is retained inside a git checkout. A package is the run
+of one framework commit: `--retain-root` is refused before anything is created
+when this checkout has a modified tracked file or an untracked file (an ignored
+one, such as `output/` or `node_modules/`, does not count) or its commit cannot
+be read. `--allow-dirty-framework` retains such a run anyway, for development
+only: its `TMF-FILING.md` opens with "NOT A RUN OF RECORD: framework checkout
+dirty or changed during the run", as does that of any package whose checkout is
+dirty or at another commit when it is sealed, and the run and
+`npm run verify:package` print that line; the manifest gains no member (its
+`framework` records the checkout at the seal). In a synthetic package
 every record carries `synthetic: true`, each category summary carries the
 synthetic notice and every document opens with "SYNTHETIC ENGINEERING EVIDENCE.
 Synthetic data on a test stack. Not a real trial, not an approval."
@@ -228,7 +237,9 @@ categories produced against different releases. Evidence readers accept
 versions 1 and 2 and refuse any other. A version 1 identity names no training
 release, so its training row and column read "not recorded"; a component stated
 as `none` reads "not deployed". Documents generated without a release are marked
-"not recorded".
+"not recorded". An execution report's "Saved At" is when it was written (the
+summary's `executedAt`), and "Cases Executed" gives the first and last record
+time, when the cases ran.
 
 ```powershell
 npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification --no-retain `

@@ -19,7 +19,7 @@ import {
   type PlatformEvidenceEntry, type PlatformEvidencePlan,
 } from './platform-evidence-plan';
 import { PLATFORM_SYSTEMS, type EvidenceAdmission, type PlatformSystemId } from '../config/platform-inventory';
-import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
+import { tmfFilingText, NOT_RUN_OF_RECORD_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 
 // Retained evidence packages (TA3 plan VAL-1, spec P20 VD-3, 3.2). A package is
 // one exclusively created directory holding everything a run writes, sealed at
@@ -128,6 +128,9 @@ export interface EvidencePackage {
   readonly synthetic: boolean;
   readonly syntheticBasis: readonly SyntheticBasis[];
   readonly inputs: PackageInput[];
+  /** The framework checkout read when the package was created, and what it was then. */
+  readonly frameworkCheckout?: string;
+  readonly frameworkAtStart: { commit?: string; dirty?: boolean };
   sealed: boolean;
 }
 
@@ -138,6 +141,11 @@ export interface PackageOptions {
   executed: boolean;
   syntheticBasis: readonly SyntheticBasis[];
   inputs?: readonly PackageInputSource[];
+  /** generate.ts --allow-dirty-framework: retain a run from a framework checkout that is
+   * dirty or unreadable; its TMF-FILING.md then says it is not a run of record. */
+  allowDirtyFramework?: boolean;
+  /** The framework checkout to read; this checkout when absent. For tests only. */
+  frameworkCheckout?: string;
   /** A fixed clock and package ID, for tests only. */
   now?: Date;
   packageId?: string;
@@ -348,6 +356,15 @@ export function createPackage(options: PackageOptions): EvidencePackage {
   const basis = SYNTHETIC_BASES.filter(item => options.syntheticBasis.includes(item));
   const synthetic = basis.length > 0;
   const root = retentionRoot(options.retainRoot, synthetic);
+  // A retained package is executed evidence of one framework commit: an unknown or dirty
+  // checkout is refused before anything is created, unless the operator allows it (IR-056).
+  const frameworkAtStart = frameworkCommit(options.frameworkCheckout);
+  packageCheck(options.allowDirtyFramework || (frameworkAtStart.commit && frameworkAtStart.dirty === false),
+    frameworkAtStart.commit
+      ? `The framework checkout has uncommitted or untracked files at ${frameworkAtStart.commit}; a retained package is the run `
+        + 'of one commit. Commit or remove them, or pass --allow-dirty-framework for a package that is not a run of record.'
+      : 'The framework checkout\'s commit cannot be read; a retained package is the run of one commit. Pass '
+        + '--allow-dirty-framework for a package that is not a run of record.');
   const prepared = (options.inputs ?? []).map(prepareInput);
   packageCheck(new Set(prepared.map(input => input.role)).size === prepared.length, 'Each package input role is retained once.');
   const packageId = options.packageId ?? randomUUID();
@@ -362,7 +379,8 @@ export function createPackage(options: PackageOptions): EvidencePackage {
     throw error;
   }
   const evidencePackage: EvidencePackage = {
-    dir, packageId, version: options.version, createdAt, executed: options.executed, synthetic, syntheticBasis: basis, inputs: [], sealed: false,
+    dir, packageId, version: options.version, createdAt, executed: options.executed, synthetic, syntheticBasis: basis, inputs: [],
+    ...(options.frameworkCheckout ? { frameworkCheckout: options.frameworkCheckout } : {}), frameworkAtStart, sealed: false,
   };
   for (const input of prepared) writeInput(evidencePackage, input);
   setEvidenceMarking({ synthetic, retained: true });
@@ -419,6 +437,15 @@ export interface SealedPackage {
   manifestSha256: string;
   packageHash: string;
   files: number;
+  /** Set when the package is not a run of record (its TMF-FILING.md opens with the line). */
+  notRunOfRecord?: typeof NOT_RUN_OF_RECORD_LINE;
+}
+
+/** A package is not a run of record when the framework checkout was dirty or unreadable
+ * when it was created (allowed by --allow-dirty-framework), or when it is dirty,
+ * unreadable or at another commit when it is sealed. */
+function notRunOfRecord(start: { commit?: string; dirty?: boolean }, end: { commit?: string; dirty?: boolean }): boolean {
+  return !start.commit || start.dirty !== false || !end.commit || end.dirty !== false || end.commit !== start.commit;
 }
 
 /** Writes TMF-FILING.md, hashes every file, writes package-manifest.json last,
@@ -431,8 +458,10 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
   const manifestPath = path.join(dir, MANIFEST_FILE);
   try {
     packageCheck(!fs.existsSync(manifestPath), `Package ${dir} already holds ${MANIFEST_FILE}.`);
+    const framework = frameworkCommit(evidencePackage.frameworkCheckout);
     fs.writeFileSync(path.join(dir, TMF_FILING_FILE), tmfFilingText({
       packageId: evidencePackage.packageId, version: evidencePackage.version, synthetic: evidencePackage.synthetic,
+      ...(notRunOfRecord(evidencePackage.frameworkAtStart, framework) ? { notRunOfRecord: true } : {}),
     }), { flag: 'wx' });
     const categories = EVIDENCE_CATEGORIES.filter(category => fs.existsSync(path.join(dir, ...resultsFile(category).split('/'))))
       .map(category => categoryCounts(category, loadEvidence(dir, category)));
@@ -445,7 +474,6 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
       return { path: relative, bytes: bytes.length, sha256: sha256(bytes) };
     });
     const identity = currentReleaseIdentity();
-    const framework = frameworkCommit();
     const declaration = evidencePackage.inputs.find(input => input.role === 'target-configuration');
     const body: Omit<PackageManifest, 'packageHash'> = {
       contract: PACKAGE_CONTRACT,
@@ -479,7 +507,10 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
     fs.chmodSync(manifestPath, 0o444);
     const verified = verifyPackage(dir);
     packageCheck(verified.ok, `Package ${dir} was sealed but does not verify: ${verified.problems.join('; ')}.`);
-    return { dir, manifestPath, manifestSha256: sha256(manifestBytes), packageHash, files: files.length };
+    return {
+      dir, manifestPath, manifestSha256: sha256(manifestBytes), packageHash, files: files.length,
+      ...(verified.notRunOfRecord ? { notRunOfRecord: verified.notRunOfRecord } : {}),
+    };
   } finally {
     // Nothing more is written as this package's evidence.
     setEvidenceMarking(undefined);
@@ -599,6 +630,9 @@ export interface PackageVerification {
   /** The SHA-256 of package-manifest.json's bytes, the contentHash filed in the eTMF. */
   manifestSha256?: string;
   manifest?: PackageManifest;
+  /** NOT_RUN_OF_RECORD_LINE when the verified TMF-FILING.md opens with it, or the manifest
+   * records a framework checkout that was dirty or unreadable at the seal. */
+  notRunOfRecord?: typeof NOT_RUN_OF_RECORD_LINE;
 }
 
 /** Verifies a sealed package: every listed file is present with its byte count
@@ -709,7 +743,10 @@ export function verifyPackage(directory: string): PackageVerification {
     if (manifest.synthetic && !text.includes(SYNTHETIC_NOTICE)) problems.push(`${file} lacks the synthetic notice`);
     if (text.includes(DEVELOPMENT_RUN_NOTICE)) problems.push(`${file} is marked as a development run`);
   }
-  return { ok: problems.length === 0, dir, problems, manifestSha256, manifest };
+  const filing = contents.get(TMF_FILING_FILE)?.toString('utf8');
+  const notRecord = filing?.split(/\r?\n/, 1)[0] === NOT_RUN_OF_RECORD_LINE
+    || manifest.framework.commit === null || manifest.framework.dirty !== false;
+  return { ok: problems.length === 0, dir, problems, manifestSha256, manifest, ...(notRecord ? { notRunOfRecord: NOT_RUN_OF_RECORD_LINE } : {}) };
 }
 
 // ---------------------------------------------------------------------------

@@ -280,6 +280,16 @@ export function manualResult(
   };
 }
 
+/** When the cases ran, from the records' own timestamps, never the time a report was saved or generated. */
+export function executionPeriod(records: readonly EvidenceResult[]): string {
+  const instants = records.map(record => Date.parse(record.timestamp)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!instants.length) return 'Not executed: no evidence record in this package';
+  const [first, last] = [new Date(instants[0]).toISOString(), new Date(instants[instants.length - 1]).toISOString()];
+  const unstamped = records.length - instants.length;
+  return `${first === last ? first : `${first} to ${last}`} (UTC, from the record timestamps)`
+    + (unstamped ? `; ${unstamped} record(s) carry no valid timestamp` : '');
+}
+
 export function saveEvidence(
   outputDir: string,
   category: EvidenceCategory,
@@ -367,7 +377,9 @@ export function saveEvidence(
     `| Field | Value |`,
     `|-------|-------|`,
     `| Category | ${category.toUpperCase()} |`,
-    `| Executed At | ${summary.executedAt} |`,
+    // The summary's executedAt is when this report was saved; the cases ran at their own record times (IR-585).
+    `| Saved At | ${summary.executedAt} |`,
+    `| Cases Executed | ${executionPeriod(results)} |`,
     `| Node.js | ${process.version} |`,
     `| Platform | ${process.platform} ${process.arch} |`,
     `| Total Tests | ${results.length} |`,

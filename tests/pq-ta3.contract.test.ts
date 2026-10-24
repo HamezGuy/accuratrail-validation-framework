@@ -15,7 +15,10 @@ import {
   BENCHMARK_RECONSTRUCTION_ENTRY, DEVIATION_DETECTION_CONTRACT, DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY,
   RELEASE_PQ_CASE, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY,
 } from '../config/ta3-pq-cases';
-import { temporaryDirectory } from './generated-documents';
+import { temporaryCheckout, temporaryDirectory } from './generated-documents';
+
+/** A clean framework checkout the packages here are created from, so no test depends on this checkout's state. */
+const FRAMEWORK = temporaryCheckout({ after: callback => { process.once('exit', callback); } }, 'accura-pqt-framework-');
 
 /** PQ tied to the O-7 run (TA3 plan VAL-1, spec P20 3.5 and 4.7): PQT-001 to PQT-006 from a synthetic deviation
  * detection summary. Until O-7/cc lands the CommandCenter entry is a test stub in a temporary root; it re-scores
@@ -286,7 +289,7 @@ test('a retained package keeps the O-7 import, its eight rows and its inputs, an
   fs.writeFileSync(path.join(dir, SYNTHETIC_ROOT_MARKER), 'Synthetic-trial data root for a contract test.\n');
   t.after(() => setEvidenceMarking(undefined));
   const evidencePackage = createPackage({ retainRoot: path.join(dir, 'runs', 'validation-packages'), version: 'pqt-v1',
-    executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir) });
+    executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir), frameworkCheckout: FRAMEWORK });
   const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir, commandCenterRoot: cc });
   sealPackage(evidencePackage);
   const verified = verifyPackage(evidencePackage.dir);

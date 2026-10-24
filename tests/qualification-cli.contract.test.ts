@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { verifyPackage, DEVELOPMENT_RUN_NOTICE, MANIFEST_FILE, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
-import { SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
-import { temporaryDirectory } from './generated-documents';
+import { NOT_RUN_OF_RECORD_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
+import { temporaryCheckout, temporaryDirectory } from './generated-documents';
 import { ta3PlanJson } from './ta3-plan-fixture';
 
 const root = path.resolve(__dirname, '..');
@@ -16,16 +16,21 @@ const LIVE_RUNNER_FLAGS = ['--all', '--iq', '--oq', '--pq', '--security', '--dr'
 /** Live-runner scenarios run as development runs unless a test states the retention itself. */
 const defaultRetention = (flags: string[]) => !flags.includes('--docs-only') && flags.some(flag => LIVE_RUNNER_FLAGS.includes(flag))
   && !flags.includes('--retain-root') && !flags.includes('--no-retain') ? ['--no-retain'] : [];
+/** framework: the flags about the framework checkout; by default --allow-dirty-framework, so a scenario
+ * does not depend on this checkout's state. frameworkCheckout: the checkout a package reads instead of this one. */
 function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid', release = RELEASE,
-  retention = defaultRetention(flags)) {
+  retention = defaultRetention(flags), { framework = ['--allow-dirty-framework'], frameworkCheckout }: { framework?: string[]; frameworkCheckout?: string } = {}) {
   const result = spawnSync(process.execPath, [
     '-r', require.resolve('ts-node/register'),
     '-r', path.join(__dirname, 'fixtures', 'qualification-cli-offline.cjs'),
     path.join(root, 'generate.ts'),
-    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]), ...release, ...retention,
+    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]), ...release, ...retention, ...framework,
   ], {
     cwd: root,
-    env: { ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '' },
+    env: {
+      ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '',
+      ...(frameworkCheckout ? { QUALIFICATION_CLI_TEST_FRAMEWORK_CHECKOUT: frameworkCheckout } : {}),
+    },
     encoding: 'utf8',
     timeout: 20_000,
   });
@@ -63,6 +68,8 @@ test('all six selected runner results and document refreshes can succeed', () =>
   assert.equal((result.output.match(/OFFLINE_RUNNER /g) || []).length, 6);
   assert.equal(result.status, 0, result.output);
   assert.doesNotMatch(result.output, /\[FAIL\]/);
+  // Only the collectors a generator reads are loaded, and the line says loaded, not collected (IR-585).
+  assert.match(result.output, /--- Collectors ---\r?\n {2}\[OK\] routes loaded\r?\n {2}\[OK\] sops loaded\r?\n\r?\n/);
   // The regulatory map's verification tables read the retained cases, so it is generated again after the runners.
   assert.match(result.output, /regulatory-requirements-map \(refreshed\)/);
   // The protocols name the target the release identity observed, set only once the runners start (RF-009).
@@ -266,8 +273,9 @@ test('a synthetic package is refused outside a marked data root, and a package t
 
 test('--retain-root under a marked data root creates, seals and verifies a package and prints its manifest hash', t => {
   const home = markedRoot(t);
+  // A clean framework checkout, so the filing opens with the synthetic line alone.
   const result = runCli('pass', ['--iq', '--synthetic-qualification', '--version', 'cli-package'], undefined, undefined,
-    ['--retain-root', home]);
+    ['--retain-root', home], { frameworkCheckout: temporaryCheckout(t, 'accura-cli-framework-') });
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /OFFLINE_RUNNER \.\/runners\/iq-runner/);
   assert.match(result.output, /Retention: sealed evidence package \(synthetic engineering evidence\)/);
@@ -288,6 +296,31 @@ test('--retain-root under a marked data root creates, seals and verifies a packa
   assert.deepEqual({ ...manifest.target, observedAt: typeof manifest.target?.observedAt },
     { baseUrl: 'https://qualification.invalid', observedAt: 'string', reportedVersion: null });
   assert.ok(fs.readFileSync(path.join(dir, TMF_FILING_FILE), 'utf8').startsWith(SYNTHETIC_FILING_LINE));
+});
+
+test('a dirty framework checkout refuses --retain-root before any runner starts, and --allow-dirty-framework marks the package', t => {
+  const dirty = temporaryCheckout(t, 'accura-cli-dirty-');
+  fs.writeFileSync(path.join(dirty, 'scratch-runner.mjs'), 'an untracked scratch runner\n');
+  const home = markedRoot(t);
+  const flags = ['--iq', '--synthetic-qualification', '--version', 'cli-dirty'];
+  const refused = runCli('pass', flags, undefined, undefined, ['--retain-root', home], { framework: [], frameworkCheckout: dirty });
+  assert.equal(refused.status, 1, refused.output);
+  assert.match(refused.output, /The framework checkout has uncommitted or untracked files at [0-9a-f]{40}/);
+  assert.doesNotMatch(refused.output, /OFFLINE_RUNNER /);
+  assert.equal(fs.existsSync(home), false, 'nothing is created');
+  // --no-retain keeps its scratch run: only a retained package is refused.
+  assert.equal(runCli('pass', ['--iq'], undefined, undefined, ['--no-retain'], { framework: [], frameworkCheckout: dirty }).status, 0);
+
+  const allowed = runCli('pass', flags, undefined, undefined, ['--retain-root', home], { frameworkCheckout: dirty });
+  assert.equal(allowed.status, 0, allowed.output);
+  assert.ok(allowed.output.includes(`=== Retained Evidence Package ===\n  ${NOT_RUN_OF_RECORD_LINE}\n`), allowed.output);
+  const [created] = fs.readdirSync(home);
+  const dir = path.join(home, created);
+  assert.ok(fs.readFileSync(path.join(dir, TMF_FILING_FILE), 'utf8').startsWith(`${NOT_RUN_OF_RECORD_LINE}\n\n${SYNTHETIC_FILING_LINE}\n`));
+  const verify = spawnSync(process.execPath, ['-r', require.resolve('ts-node/register'), path.join(root, 'scripts', 'verify-package.ts'), dir],
+    { cwd: root, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(verify.status, 0, verify.stdout + verify.stderr);
+  assert.ok(verify.stdout.startsWith(`Package verified: ${dir}\n  ${NOT_RUN_OF_RECORD_LINE}\n`), verify.stdout);
 });
 
 /** A synthetic validation-target-configuration/1 declaration of the offline target, with its source file. */

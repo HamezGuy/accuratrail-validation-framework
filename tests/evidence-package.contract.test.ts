@@ -14,8 +14,10 @@ import {
 } from '../runners/evidence-package';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
-import { tmfFilingText, SYNTHETIC_FILING_LINE, TMF_FILING_FILE, VALIDATION_PACKAGE_REQUIREMENT } from '../generators/helpers/tmf-filing';
-import { generateAllDocuments, temporaryDirectory } from './generated-documents';
+import {
+  tmfFilingText, NOT_RUN_OF_RECORD_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE, VALIDATION_PACKAGE_REQUIREMENT,
+} from '../generators/helpers/tmf-filing';
+import { generateAllDocuments, temporaryCheckout, temporaryDirectory } from './generated-documents';
 
 type Context = { after(callback: () => void): void };
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
@@ -29,8 +31,11 @@ function markedRoot(t: Context): { dataRoot: string; home: string } {
   return { dataRoot, home: path.join(dataRoot, 'runs', 'validation-packages') };
 }
 
+/** A clean framework checkout every package here is created from, so no test depends on this checkout's state. */
+const FRAMEWORK = temporaryCheckout({ after: callback => { process.once('exit', callback); } }, 'accura-package-framework-');
+
 const syntheticPackage = (home: string, extra: Partial<PackageOptions> = {}): PackageOptions => ({
-  retainRoot: home, version: 'test-v1', executed: true, syntheticBasis: ['synthetic-qualification'], ...extra,
+  retainRoot: home, version: 'test-v1', executed: true, syntheticBasis: ['synthetic-qualification'], frameworkCheckout: FRAMEWORK, ...extra,
 });
 
 const record = (testCaseId: string, overrides: Partial<EvidenceResult> = {}): EvidenceResult => ({
@@ -67,6 +72,50 @@ test('a package directory is created exclusively under its UTC time, version and
   assert.deepEqual(fs.readdirSync(home), [path.basename(first.dir)]);
   assert.throws(() => createPackage(syntheticPackage(home, { version: '../escape' })), /needs a --version of 1 to 64 letters/);
   assert.throws(() => createPackage(syntheticPackage(home, { packageId: 'not-a-uuid' })), /is not a UUID v4/);
+});
+
+test('a dirty or unreadable framework checkout is refused before anything is created (IR-056)', t => {
+  const { home } = markedRoot(t);
+  const dirty = temporaryCheckout(t, 'accura-package-dirty-');
+  fs.writeFileSync(path.join(dirty, 'scratch-runner.mjs'), 'an untracked scratch runner\n');
+  assert.throws(() => createPackage(syntheticPackage(home, { frameworkCheckout: dirty })),
+    /The framework checkout has uncommitted or untracked files at [0-9a-f]{40}; .*pass --allow-dirty-framework/);
+  assert.throws(() => createPackage(syntheticPackage(home, { frameworkCheckout: temporaryDirectory(t, 'accura-package-no-git-') })),
+    /The framework checkout's commit cannot be read; .*Pass --allow-dirty-framework/);
+  assert.equal(fs.existsSync(home), false, 'a refusal creates nothing');
+  assert.equal(currentEvidenceMarking(), undefined, 'and marks nothing');
+});
+
+test('an allowed dirty run, or a checkout that changes during the run, is sealed and marked not a run of record', t => {
+  const { home } = markedRoot(t);
+  const manifestKeys = (sealed: { manifestPath: string }) => Object.keys(JSON.parse(fs.readFileSync(sealed.manifestPath, 'utf8')));
+  const dirty = temporaryCheckout(t, 'accura-package-dirty-');
+  fs.writeFileSync(path.join(dirty, 'scratch-runner.mjs'), 'an untracked scratch runner\n');
+  const allowed = createPackage(syntheticPackage(home, { frameworkCheckout: dirty, allowDirtyFramework: true, version: 'dirty-v1' }));
+  saveEvidence(allowed.dir, 'iq', [record('IQ-001')]);
+  const sealed = sealPackage(allowed);
+  assert.equal(sealed.notRunOfRecord, NOT_RUN_OF_RECORD_LINE);
+  assert.ok(read(allowed.dir, TMF_FILING_FILE).startsWith(`${NOT_RUN_OF_RECORD_LINE}\n\n${SYNTHETIC_FILING_LINE}\n`));
+  const verified = verifyPackage(allowed.dir);
+  assert.deepEqual([verified.ok, verified.notRunOfRecord, verified.manifest?.framework.dirty], [true, NOT_RUN_OF_RECORD_LINE, true]);
+  assert.deepEqual(manifestKeys(sealed), [...MANIFEST_REQUIRED.slice(0, 8), 'syntheticNotice', ...MANIFEST_REQUIRED.slice(8)], 'no manifest member is added');
+
+  // Clean when created, dirty when sealed: the manifest records the seal, the filing says it changed.
+  const changing = temporaryCheckout(t, 'accura-package-changing-');
+  const changed = createPackage(syntheticPackage(home, { frameworkCheckout: changing, version: 'changed-v1' }));
+  fs.appendFileSync(path.join(changing, 'tracked.txt'), 'edited during the run\n');
+  assert.equal(sealPackage(changed).notRunOfRecord, NOT_RUN_OF_RECORD_LINE);
+  assert.ok(read(changed.dir, TMF_FILING_FILE).startsWith(`${NOT_RUN_OF_RECORD_LINE}\n`));
+  assert.equal(verifyPackage(changed.dir).notRunOfRecord, NOT_RUN_OF_RECORD_LINE);
+
+  // A clean run, the flag given or not, is a run of record.
+  for (const allowDirtyFramework of [false, true]) {
+    const clean = createPackage(syntheticPackage(home, { allowDirtyFramework, version: `clean-${allowDirtyFramework}` }));
+    const result = sealPackage(clean);
+    assert.equal(result.notRunOfRecord, undefined);
+    assert.ok(read(clean.dir, TMF_FILING_FILE).startsWith(`${SYNTHETIC_FILING_LINE}\n`));
+    assert.deepEqual([verifyPackage(clean.dir).ok, verifyPackage(clean.dir).notRunOfRecord], [true, undefined]);
+  }
 });
 
 test('a sealed package verifies, lists every other file with its byte count and SHA-256, and is read-only', t => {
@@ -178,12 +227,12 @@ test('a synthetic package needs the marked data root\'s package home, and a pack
   assert.equal(fs.existsSync(home), false, 'a refusal creates nothing');
 
   // A package that is not synthetic needs a root QA marked (RF-070); a documents package here.
-  assert.throws(() => createPackage({ retainRoot: plain, version: 'docs-v1', executed: false, syntheticBasis: [] }),
+  assert.throws(() => createPackage({ retainRoot: plain, version: 'docs-v1', executed: false, syntheticBasis: [], frameworkCheckout: FRAMEWORK }),
     new RegExp(`retained only under a retention root QA names: a directory tree holding ${QA_RETENTION_ROOT_MARKER}`));
   assert.deepEqual(fs.readdirSync(plain), []);
   fs.writeFileSync(path.join(plain, QA_RETENTION_ROOT_MARKER), 'Retention root for a contract test.\n');
   assert.throws(() => createPackage(syntheticPackage(plain)), /retained only under a synthetic data root/);
-  const documents = createPackage({ retainRoot: plain, version: 'docs-v1', executed: false, syntheticBasis: [] });
+  const documents = createPackage({ retainRoot: plain, version: 'docs-v1', executed: false, syntheticBasis: [], frameworkCheckout: FRAMEWORK });
   assert.equal(currentEvidenceMarking()?.synthetic, false);
   fs.writeFileSync(path.join(documents.dir, '12-validation-summary.md'), header('Validation Summary'));
   const manifest = JSON.parse(fs.readFileSync(sealPackage(documents).manifestPath, 'utf8'));
@@ -204,12 +253,12 @@ test('whether a package is synthetic is computed from the run, documents package
   const citing = syntheticBasis({ ...none, platformEvidencePlan: true });
   assert.deepEqual(citing, ['platform-evidence-plan']);
   const { home } = markedRoot(t);
-  const documents = createPackage({ retainRoot: home, version: 'platform-v1', executed: false, syntheticBasis: citing });
+  const documents = createPackage({ retainRoot: home, version: 'platform-v1', executed: false, syntheticBasis: citing, frameworkCheckout: FRAMEWORK });
   assert.equal(documents.synthetic, true);
   const manifest = JSON.parse(fs.readFileSync(sealPackage(documents).manifestPath, 'utf8'));
   assert.deepEqual([manifest.synthetic, manifest.syntheticBasis, manifest.executed], [true, ['platform-evidence-plan'], false]);
   assert.equal(verifyPackage(documents.dir).ok, true);
-  assert.throws(() => createPackage({ retainRoot: home, version: 'platform-v1', executed: false, syntheticBasis: syntheticBasis(none) }),
+  assert.throws(() => createPackage({ retainRoot: home, version: 'platform-v1', executed: false, syntheticBasis: syntheticBasis(none), frameworkCheckout: FRAMEWORK }),
     /never retained inside the synthetic data root/);
 });
 
@@ -497,7 +546,7 @@ test('verification recomputes the configuration mismatches and binds the benchma
   fs.writeFileSync(path.join(run, 'run-summary.json'), summary);
   fs.writeFileSync(path.join(run, 'metrics.json'), metrics);
   const bench = (version: string, summarySha256: string) => {
-    const imported = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['benchmark-import'],
+    const imported = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['benchmark-import'], frameworkCheckout: FRAMEWORK,
       inputs: [{ role: 'benchmark-run-summary', file: path.join(run, 'run-summary.json') }, { role: 'benchmark-metrics', file: path.join(run, 'metrics.json') }] });
     saveEvidence(imported.dir, 'benchmark', [record('BENCHMARK-RECONSTRUCTION', {
       method: 'OFFLINE', responseStatus: 0, responseBody: { summarySha256, metricsSha256: sha256(metrics) } })]);

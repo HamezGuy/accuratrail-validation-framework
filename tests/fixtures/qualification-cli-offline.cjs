@@ -48,7 +48,13 @@ Module._load = function (request, parent, isMain) {
     // The evidence package module owns every filesystem call packaging needs
     // (generate.ts makes none of its own), so a scenario that names a
     // temporary --retain-root creates, seals and verifies a real package there.
-    if (request === './runners/evidence-package') return originalLoad.call(this, request, parent, isMain);
+    // A scenario may name the framework checkout the package reads (a temporary git checkout),
+    // so the dirty-framework refusal does not depend on this checkout's state.
+    if (request === './runners/evidence-package') {
+      const real = originalLoad.call(this, request, parent, isMain);
+      const frameworkCheckout = process.env.QUALIFICATION_CLI_TEST_FRAMEWORK_CHECKOUT;
+      return frameworkCheckout ? { ...real, createPackage: options => real.createPackage({ ...options, frameworkCheckout }) } : real;
+    }
     if (request.startsWith('./runners/')) {
       if (request === './runners/benchmark-evidence') return {
         async importP13BenchmarkEvidence(_outputDir, options) {

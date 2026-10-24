@@ -38,6 +38,8 @@ interface CliArgs {
   retainRoot?: string;
   /** A development run: output/ scratch, every record and document marked not retained. */
   noRetain: boolean;
+  /** Retain a package from a dirty or unreadable framework checkout, marked not a run of record. */
+  allowDirtyFramework: boolean;
   /** The validation-target-configuration/1 declaration of the live runners' target (IQ-033). */
   targetConfig?: string;
   /** The ta3-oq-plan/1 the OQ suites 13 to 18 run from. */
@@ -67,6 +69,7 @@ function parseArgs(): CliArgs {
     releaseInputs: {},
     qualificationFlags: [],
     noRetain: false,
+    allowDirtyFramework: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -170,6 +173,9 @@ function parseArgs(): CliArgs {
       }
       case '--no-retain':
         args.noRetain = true;
+        break;
+      case '--allow-dirty-framework':
+        args.allowDirtyFramework = true;
         break;
       default:
         console.warn(`  [WARN] Unknown argument: ${arg}`);
@@ -294,16 +300,11 @@ function failedRunnerCases(results: unknown): string[] {
   return failed;
 }
 
+/** The collectors a generator reads (04 the routes, 13 the SOPs), loaded first so a broken one
+ * fails the run. Loading collects nothing: each generator collects when it runs (IR-585). */
 const COLLECTORS: CollectorEntry[] = [
   { name: 'routes', file: './collectors/route-collector' },
-  { name: 'middleware', file: './collectors/middleware-collector' },
-  { name: 'services', file: './collectors/service-collector' },
-  { name: 'interop', file: './collectors/interop-collector' },
-  { name: 'frontend', file: './collectors/frontend-collector' },
-  { name: 'tests', file: './collectors/test-collector' },
-  { name: 'migrations', file: './collectors/migration-collector' },
   { name: 'sops', file: './collectors/sop-collector' },
-  { name: 'shared-types', file: './collectors/shared-types-collector' },
 ];
 
 function createLatestPointer(outputDir: string): void {
@@ -384,7 +385,10 @@ async function main(): Promise<void> {
   });
   if (args.retainRoot) {
     // Refused before anything runs when the root, a marker or an input is wrong.
-    const evidencePackage = createPackage({ retainRoot: args.retainRoot, version, executed, syntheticBasis: basis, inputs: packageInputs(args) });
+    const evidencePackage = createPackage({
+      retainRoot: args.retainRoot, version, executed, syntheticBasis: basis, inputs: packageInputs(args),
+      ...(args.allowDirtyFramework ? { allowDirtyFramework: true } : {}),
+    });
     try {
       await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage });
     } finally {
@@ -408,6 +412,7 @@ function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): v
   try {
     const sealed = sealPackage(evidencePackage, { baseUrl: !args.docsOnly && liveRunnerSelected(args) ? args.baseUrl : undefined });
     console.log('=== Retained Evidence Package ===');
+    if (sealed.notRunOfRecord) console.log(`  ${sealed.notRunOfRecord}`);
     console.log(`  Package:      ${sealed.dir}`);
     console.log(`  Files:        ${sealed.files}, read-only, listed in ${path.basename(sealed.manifestPath)}`);
     console.log(`  Package hash: ${sealed.packageHash}`);
@@ -427,9 +432,6 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
   fs.mkdirSync(path.join(outputDir, 'evidence', 'iq'), { recursive: true });
   fs.mkdirSync(path.join(outputDir, 'evidence', 'oq'), { recursive: true });
   fs.mkdirSync(path.join(outputDir, 'evidence', 'pq'), { recursive: true });
-  fs.mkdirSync(path.join(outputDir, 'evidence', 'security'), { recursive: true });
-  fs.mkdirSync(path.join(outputDir, 'evidence', 'dr'), { recursive: true });
-  fs.mkdirSync(path.join(outputDir, 'evidence', 'performance'), { recursive: true });
   fs.mkdirSync(path.join(outputDir, 'evidence', 'security'), { recursive: true });
   fs.mkdirSync(path.join(outputDir, 'evidence', 'dr'), { recursive: true });
   fs.mkdirSync(path.join(outputDir, 'evidence', 'performance'), { recursive: true });
@@ -453,13 +455,13 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
   }
   console.log('');
 
-  // Phase 1: Run collectors
+  // Phase 1: Load the collectors the generators read
   console.log('--- Collectors ---');
   let collectorsFailed = 0;
   for (const collector of COLLECTORS) {
     try {
       require(collector.file);
-      console.log(`  [OK] ${collector.name}`);
+      console.log(`  [OK] ${collector.name} loaded`);
     } catch (err) {
       collectorsFailed++;
       const message = err instanceof Error ? err.message : String(err);

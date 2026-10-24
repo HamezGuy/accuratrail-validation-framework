@@ -6,10 +6,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadEvidence, saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import {
-  isReleaseStamp, observeTargetVersion, parseReleaseComponent, releaseIdentityFromInputs, releaseIndexCells, releaseStamp,
+  frameworkCommit, isReleaseStamp, observeTargetVersion, parseReleaseComponent, releaseIdentityFromInputs, releaseIndexCells, releaseStamp,
   releaseSummary, requireTrainingRelease, setReleaseIdentity, RELEASE_CONTRACT_V2, type ReleaseIdentity,
 } from '../runners/release-identity';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
+import { temporaryCheckout, temporaryDirectory } from './generated-documents';
 
 const API = '1'.repeat(40), UI = '2'.repeat(40), CORE = `sha256:${'3'.repeat(64)}`;
 const TRAINING = '4'.repeat(40);
@@ -250,4 +251,21 @@ test('the console line and the master index cells name every recorded component'
   assert.deepEqual(releaseIndexCells(v2), [v2.identityHash, API, 'not deployed', CORE, TRAINING]);
   assert.throws(() => releaseIndexCells({ ...v1, contract: 'validation-release-identity/3' } as unknown as ReleaseIdentity),
     /Unsupported release identity contract "validation-release-identity\/3"/);
+});
+
+test('the framework checkout is dirty with a modified tracked file or an untracked file, never an ignored one (IR-585)', t => {
+  const checkout = temporaryCheckout(t, 'accura-framework-checkout-');
+  const clean = frameworkCommit(checkout);
+  assert.match(clean.commit ?? '', /^[0-9a-f]{40}$/);
+  assert.equal(clean.dirty, false);
+  fs.mkdirSync(path.join(checkout, 'output'));
+  fs.writeFileSync(path.join(checkout, 'output', 'scratch.md'), 'ignored scratch\n');
+  assert.deepEqual(frameworkCommit(checkout), clean, 'an ignored file leaves the checkout clean');
+  fs.writeFileSync(path.join(checkout, 'scratch-runner.mjs'), 'untracked\n');
+  assert.deepEqual(frameworkCommit(checkout), { commit: clean.commit, dirty: true }, 'an untracked file makes it dirty');
+  fs.rmSync(path.join(checkout, 'scratch-runner.mjs'));
+  fs.appendFileSync(path.join(checkout, 'tracked.txt'), 'modified\n');
+  assert.deepEqual(frameworkCommit(checkout), { commit: clean.commit, dirty: true }, 'a modified tracked file makes it dirty');
+  assert.deepEqual(frameworkCommit(temporaryDirectory(t, 'accura-no-checkout-')), {}, 'no checkout, no commit');
+  assert.match(frameworkCommit().commit ?? '', /^[0-9a-f]{40}$/, 'this checkout by default');
 });

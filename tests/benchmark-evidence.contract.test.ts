@@ -8,10 +8,13 @@ import { importBenchmarkEvidence, importP13BenchmarkEvidence, summaryContractOf 
 import { createHash } from 'node:crypto';
 import { loadEvidence, setEvidenceMarking } from '../runners/evidence-capture';
 import { benchmarkRunInputs, createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
+import { temporaryCheckout } from './generated-documents';
 import { loadRunnerEvidence } from '../generators/helpers/evidence-linker';
 import { generate } from '../generators/20-test-execution-records';
 
 const cc = path.resolve(__dirname, '..', '..', '..', 'CommandCenter');
+/** A clean framework checkout the package here is created from, so no test depends on this checkout's state. */
+const FRAMEWORK = temporaryCheckout({ after: callback => { process.once('exit', callback); } }, 'accura-benchmark-framework-');
 function workspace(t: { after(fn: () => void): void }) {
   const base = fs.realpathSync(os.tmpdir());
   const dir = fs.mkdtempSync(path.join(base, 'accura-benchmark-'));
@@ -58,7 +61,7 @@ test('the benchmark category stays exclusive inside a retained package, which ke
   fs.writeFileSync(path.join(dir, SYNTHETIC_ROOT_MARKER), 'Synthetic-trial data root for a contract test.\n');
   t.after(() => setEvidenceMarking(undefined));
   const evidencePackage = createPackage({ retainRoot: path.join(dir, 'runs', 'validation-packages'), version: 'benchmark-v1',
-    executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir) });
+    executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir), frameworkCheckout: FRAMEWORK });
   const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir });
   assert.equal(results[0].passed, true, JSON.stringify(results[0].responseBody));
   await assert.rejects(importBenchmarkEvidence(evidencePackage.dir, { runDir }), /already exists/);

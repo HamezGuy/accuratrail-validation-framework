@@ -86,6 +86,16 @@ test('registry cases are counted apart from bookkeeping rows, and the category t
   assert.match(records, /- \*\*Test Execution Date:\*\* 2026-09-21T00:00:00\.000Z \(UTC, from the record timestamps\)\n/);
 });
 
+test('the execution report states when it was saved and when the cases ran, from the record times (IR-585)', t => {
+  const directory = workspace(t);
+  saveEvidence(directory, 'oq', [result({ timestamp: '2026-09-21T00:05:00Z' }), result({ testCaseId: 'OQ-002' })]);
+  const report = fs.readFileSync(path.join(directory, 'evidence', 'oq', 'oq-execution-report.md'), 'utf8');
+  const summary = JSON.parse(fs.readFileSync(path.join(directory, 'evidence', 'oq', 'oq-summary.json'), 'utf8'));
+  assert.ok(report.includes(`| Saved At | ${summary.executedAt} |`), report.slice(0, 600));
+  assert.ok(report.includes('| Cases Executed | 2026-09-21T00:00:00.000Z to 2026-09-21T00:05:00.000Z (UTC, from the record timestamps) |'));
+  assert.doesNotMatch(report, /Executed At/);
+});
+
 for (const [label, payload] of Object.entries({
   'malformed JSON': '{',
   'wrong envelope': '{}',

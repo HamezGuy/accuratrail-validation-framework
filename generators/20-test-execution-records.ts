@@ -19,6 +19,7 @@ import { e6r3 } from '../config/regulatory-scope';
 import { RECORDED_AT_EXECUTION, recordedTargetUrl, systemVersionText } from './helpers/version-stamper';
 import {
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
+  executionPeriod,
   loadEvidence as loadCategoryResults,
   redactEvidenceSecrets,
   registryCounts,
@@ -195,15 +196,8 @@ interface CategoryStats {
   registry: RegistryCounts;
 }
 
-/** When the cases ran, from the records' own timestamps, never the date this document was generated. */
-export function executionPeriod(records: readonly EvidenceRecord[]): string {
-  const instants = records.map(record => Date.parse(record.timestamp)).filter(Number.isFinite).sort((a, b) => a - b);
-  if (!instants.length) return 'Not executed: no evidence record in this package';
-  const [first, last] = [new Date(instants[0]).toISOString(), new Date(instants[instants.length - 1]).toISOString()];
-  const unstamped = records.length - instants.length;
-  return `${first === last ? first : `${first} to ${last}`} (UTC, from the record timestamps)`
-    + (unstamped ? `; ${unstamped} record(s) carry no valid timestamp` : '');
-}
+// When the cases ran, from the records' own timestamps; the execution reports use it too.
+export { executionPeriod };
 
 export function generate(outputDir: string, _workspaceRoot: string): void {
   const allStats: CategoryStats[] = [];

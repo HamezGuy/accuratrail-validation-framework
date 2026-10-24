@@ -23,7 +23,10 @@ import { saveEvidence, setEvidenceMarking, SYNTHETIC_NOTICE, type EvidenceResult
 import { releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { E6_R3_SECTION_STATUS, ICH_E6_R3 } from '../config/regulatory-scope';
 import { APPROVAL_STATEMENT } from '../generators/helpers/markdown-writer';
-import { temporaryDirectory } from './generated-documents';
+import { temporaryCheckout, temporaryDirectory } from './generated-documents';
+
+/** A clean framework checkout the packages here are created from, so no test depends on this checkout's state. */
+const FRAMEWORK = temporaryCheckout({ after: callback => { process.once('exit', callback); } }, 'accura-platform-framework-');
 
 // Generator 22 against a temporary fake platform root (VAL-1/validation-platform, spec P20 4.4): two systems
 // present, the EDC API as its own git checkout and the semantic layer as a plain folder; every other system absent.
@@ -77,7 +80,7 @@ const record = (testCaseId: string, overrides: Partial<EvidenceResult> = {}): Ev
 /** A sealed synthetic OQ package against EDC API release `api`: the D-04 cases, all but the last two passed. */
 function oqPackage(home: string, api: string, version = 'oq-v1'): { dir: string; manifestSha256: string } {
   setReleaseIdentity(releaseIdentityFromInputs({ api, ui: 'none', core: 'none', training: 'none' }));
-  const evidencePackage = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['synthetic-qualification'] });
+  const evidencePackage = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['synthetic-qualification'], frameworkCheckout: FRAMEWORK });
   saveEvidence(evidencePackage.dir, 'oq', D04_CASES.map((id, index) => record(id, index >= 24 ? { passed: false, outcomeCode: 'FEATURE_ABSENT_AT_RELEASE' } : {})));
   const sealed = sealPackage(evidencePackage, { baseUrl: 'http://127.0.0.1:3000' });
   setReleaseIdentity(undefined);
@@ -86,7 +89,7 @@ function oqPackage(home: string, api: string, version = 'oq-v1'): { dir: string;
 
 /** A sealed O-7 import: benchmark evidence whose PQT-005 states `release` (none when undefined). */
 function o7Package(home: string, release: string | undefined, version = 'o7-v1'): { dir: string; manifestSha256: string } {
-  const evidencePackage = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['benchmark-import'] });
+  const evidencePackage = createPackage({ retainRoot: home, version, executed: true, syntheticBasis: ['benchmark-import'], frameworkCheckout: FRAMEWORK });
   saveEvidence(evidencePackage.dir, 'benchmark', [
     record('BENCHMARK-RECONSTRUCTION', { method: 'OFFLINE', responseStatus: 0 }),
     record('PQT-005', release === undefined

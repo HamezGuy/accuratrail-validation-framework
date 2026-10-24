@@ -7,6 +7,10 @@ export const TMF_FILING_FILE = 'TMF-FILING.md';
 /** The first line of the filing instructions of a synthetic package. */
 export const SYNTHETIC_FILING_LINE = 'SYNTHETIC: file only in an IL project on a test stack to show the mechanics; never in a production TMF.';
 
+/** The first line of the filing instructions of a package whose framework checkout was
+ * dirty, unreadable or changed during the run (--allow-dirty-framework, IR-056). */
+export const NOT_RUN_OF_RECORD_LINE = 'NOT A RUN OF RECORD: framework checkout dirty or changed during the run';
+
 /** The eTMF policy requirement to propose when the platform policy has none. The
  * eTMF has no default catalog, so a person proposes it and another approves it. */
 export const VALIDATION_PACKAGE_REQUIREMENT = {
@@ -22,6 +26,8 @@ export interface TmfFilingFacts {
   packageId: string;
   version: string;
   synthetic: boolean;
+  /** The framework checkout was dirty, unreadable or changed during the run. */
+  notRunOfRecord?: boolean;
 }
 
 /** The filing instructions: static text plus the package ID, version and synthetic
@@ -31,6 +37,7 @@ export interface TmfFilingFacts {
 export function tmfFilingText(facts: TmfFilingFacts): string {
   const requirement = VALIDATION_PACKAGE_REQUIREMENT;
   const lines: string[] = [
+    ...(facts.notRunOfRecord ? [NOT_RUN_OF_RECORD_LINE, ''] : []),
     ...(facts.synthetic ? [SYNTHETIC_FILING_LINE, ''] : []),
     ...evidenceNoticeLines({ synthetic: facts.synthetic, retained: true }),
     `# eTMF Filing of Validation Evidence Package ${facts.packageId}`,

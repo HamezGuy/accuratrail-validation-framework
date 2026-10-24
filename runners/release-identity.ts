@@ -93,15 +93,17 @@ export function parseReleaseComponent(
     : `--release-${name} must be a full 40-character Git commit, a sha256:<64 hex> image ID or none, got ${JSON.stringify(value)}.`);
 }
 
-/** The framework checkout that ran: its commit and whether tracked files differ
- * from it. Recorded in every release identity and every sealed evidence package. */
-export function frameworkCommit(): { commit?: string; dirty?: boolean } {
-  const cwd = path.resolve(__dirname, '..');
-  const git = (...args: string[]) => execFileSync('git', ['-C', cwd, ...args],
+/** The framework checkout that ran (this checkout unless another is named): its
+ * commit and whether it differs from it. A modified tracked file or an untracked
+ * file makes it dirty, since either can change what runs; an ignored file (output/,
+ * node_modules/) does not (IR-585). Recorded in every release identity and every
+ * sealed evidence package; empty when git cannot read the checkout. */
+export function frameworkCommit(checkout = path.resolve(__dirname, '..')): { commit?: string; dirty?: boolean } {
+  const git = (...args: string[]) => execFileSync('git', ['-C', checkout, ...args],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, windowsHide: true }).trim();
   try {
     const commit = git('rev-parse', 'HEAD');
-    return { commit, dirty: git('status', '--porcelain', '--untracked-files=no').length > 0 };
+    return { commit, dirty: git('status', '--porcelain', '--untracked-files=normal').length > 0 };
   } catch {
     return {};
   }
