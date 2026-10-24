@@ -131,9 +131,8 @@ test('the validation plan has QA approve in the eTMF; the records state the vers
   const plan = documents.get('02-validation-plan.md')!;
   assert.doesNotMatch(plan, /signs final validation summary report/);
   assert.match(plan, /approves the final validation summary report in the eTMF, as a governance decision on the filing of its package \(TMF-FILING\.md\)/);
-  // The version label the EDC API reports at /health, never the retired 1.0.0.
-  const apiVersion = fs.readFileSync(path.join(root, '..', 'libreclinicaapi', 'src', 'config', 'version.ts'), 'utf8');
-  assert.ok(apiVersion.includes(`APP_VERSION = '${SYSTEM_INFO.version}'`), apiVersion);
+  // The version label the EDC API reports at /health (test:cross-repo compares it with the EDC), never the retired 1.0.0.
+  assert.equal(SYSTEM_INFO.version, '0.1.0');
   const records = documents.get('20-test-execution-records.md')!;
   assert.match(records, /- \*\*System Version:\*\* 0\.1\.0 \(version label\); release under test not recorded: no release identity was supplied\n/);
   assert.match(records, /- \*\*Test Execution Date:\*\* Not executed: no evidence record in this package\n/);

@@ -125,6 +125,13 @@ test('M-2: edc-ta3-ledger/1 requires the members OQ-237 checks, and the EDC\'s s
   assert.deepEqual(ta3LedgerProblems(fixture, { required: schema.required, blinded: fixture.armGrouping === 'withheld' }), [], fixtureFile);
 });
 
+test('the system version is the label the EDC API reports at /health (IR-041)', () => {
+  const versionFile = path.join(resolveLibreclinicaApiRoot(defaultWorkspaceRoot()), 'src', 'config', 'version.ts');
+  const match = /export const APP_VERSION = '([^']+)'/.exec(sibling(versionFile).toString('utf8'));
+  assert.ok(match, `${versionFile} defines APP_VERSION`);
+  assert.equal(SYSTEM_INFO.version, match[1]);
+});
+
 test('the signature meanings the TA3 cases expect are the EDC\'s own', () => {
   const edc = resolveLibreclinicaApiRoot(defaultWorkspaceRoot());
   const middleware = path.join(edc, 'src', 'middleware', 'part11.middleware.ts');
