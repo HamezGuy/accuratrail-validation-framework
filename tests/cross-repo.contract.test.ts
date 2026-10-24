@@ -9,6 +9,7 @@ import { SYSTEM_INFO } from '../config/system-info';
 import { TA3_INSPECTION_COVERAGE } from '../config/ta3-inspection-coverage';
 import { checkDeadSettings, checkSoftwareInstallation, checkVendoredReceipts, declaredMajor, SHARED_TYPES_VERIFIER } from '../runners/iq-runner';
 import { EDC_SIGNATURE_MEANINGS, ta3LedgerProblems, TA3_LEDGER_REQUIRED } from '../runners/oq-ta3-runner';
+import { DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY } from '../config/ta3-pq-cases';
 
 // Checks against sibling checkouts of the estate (npm run test:cross-repo). A
 // missing sibling file fails the check and names its path; nothing is skipped.
@@ -131,6 +132,28 @@ test('the signature meanings the TA3 cases expect are the EDC\'s own', () => {
     const match = new RegExp(`export const ${name} = '([^']+)'`).exec(text);
     assert.ok(match, `${middleware} defines ${name}`);
     assert.equal(match[1], meaning, name);
+  }
+});
+
+// The PQ tied to the O-7 run (VAL-1/validation-pq, spec P20 3.5 and 4.7). The O-7 block fails by name until
+// O-7/cc lands its scorer and reconstruction entry; then the real-bytes import fixture of spec 4.7 is due.
+
+test('the ten machine classes PQT-003 requires are, in order, the EDC\'s vendored DeviationLogic kinds', () => {
+  const edc = resolveLibreclinicaApiRoot(defaultWorkspaceRoot());
+  const typesFile = path.join(edc, 'src', 'services', 'deviation-engine', 'vendor', 'v2', 'shared-types', 'study-exchange-amendment', 'deviation', 'deviation-types.ts');
+  const text = sibling(typesFile).toString('utf8');
+  const start = text.indexOf('Machine logic'), end = text.indexOf('export type DeviationLogic');
+  assert.ok(start >= 0 && end > start, `${typesFile} has no machine logic block before export type DeviationLogic`);
+  const kinds = [...text.slice(start, end).matchAll(/readonly kind: '([a-z_]+)';/g)].map(match => match[1]);
+  assert.deepEqual(kinds, [...DEVIATION_MACHINE_CLASSES], `${typesFile}: the machine logic kinds differ from config/ta3-pq-cases.ts`);
+});
+
+test('O-7: the CommandCenter checkout holds the deviation detection scorer and its reconstruction entry', () => {
+  const cc = path.join(defaultPlatformRoot(), 'CommandCenter');
+  sibling(path.join(cc, 'package.json'));
+  for (const file of [DEVIATION_RECONSTRUCTION_ENTRY, 'synthetic-trial/surpass/deviations/score-detection.mjs']) {
+    const full = path.join(cc, ...file.split('/'));
+    assert.ok(fs.existsSync(full), `O-7 not landed: ${full} is missing (spec P09 8.3); a deviation detection import fails BENCHMARK-RECONSTRUCTION until it exists`);
   }
 });
 
