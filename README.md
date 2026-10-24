@@ -250,11 +250,21 @@ VAL-1/validation-run step 0. The cases create and own only their own subjects,
 forms, deviations, applicability rows, policy rows, milestones and documents,
 labelled `OQ-TA3-<run id>-<n>` and listed in each suite's `OQ-TA3-SUITE-<n>`
 row; an owned protocol version is withdrawn again, so the study stays usable
-for the next run. The plan names five different synthetic people (operator,
-reviewer, third person, blinded, monitor) by the environment variables that
-hold their credentials; the operator defaults to `OQ_USERNAME` and
-`OQ_PASSWORD`. Two accounts whose variables hold the same username are refused
-before any request, suite 1 included.
+for the next run. Suite 14 writes nothing at an OQ site without applicability
+records of its own (`VERSION_FIXTURE_ABSENT`): such a site takes the platform
+study's records, and any record written there, even withdrawn, would end that.
+The escalation policy OQ-227 puts in force on the platform study cannot be
+retired by the run (O-2 replaces a policy only by another signed one), so
+`OQ-TA3-SUITE-16` lists it under `persisting`, and suite 16 runs only on a
+study the plan declares a duplicate (`study.duplicateOf`; otherwise every case
+records `DUPLICATE_STUDY_NOT_DECLARED` and no request is made). The plan names
+five different synthetic people (operator, reviewer, third person, blinded,
+monitor) by the environment variables that hold their credentials; the
+operator defaults to `OQ_USERNAME` and `OQ_PASSWORD`. Two accounts whose
+variables hold the same username, trimmed as the EDC's login trims it, are
+refused before any request, suite 1 included. Two accounts the EDC answers
+with one user id at login are one person too: the cases of the suite that
+finds it record `ACCOUNTS_NOT_DISTINCT`, and its `OQ-TA3-SUITE-<n>` row fails.
 
 A plan needs `--oq`, `--synthetic-qualification` (the suites write owned
 records, as the owned fixture does) and `--release-training` (the training
@@ -264,7 +274,11 @@ that copy, with the retained `--target-config` declaration, whose flags suite
 18 needs. The OQ runner runs suites 1 to 12, their fixture cleanup and logout,
 then the TA3 suites (each logging its accounts in and out, escalation last),
 then the login quota probe. A session logs in again before its token expires
-or after 25 idle minutes; a write's transport error is never resent. Waits
+or after 25 idle minutes. A 401 of an ended session (`INVALID_TOKEN`,
+`TOKEN_REVOKED`, `SESSION_REVOKED`, `SESSION_NOT_ACTIVE` or `SESSION_TIMEOUT`)
+gets one new login and one retry; any other 401, a refused Part 11 signature
+among them, is the answer and is not resent. A write's transport error is
+never resent. Waits
 poll every 30 seconds within the plan's bounds (`sweep.maxWaitMinutes`, default
 5; `escalation.maxWaitMinutes`, default 0: OQ-228 and OQ-229 need 70 minutes,
 OQ-230 four). `--oq-suites 13-18` runs only the TA3 suites; suites 1 to 12 are
@@ -282,8 +296,18 @@ cannot be made is recorded not executed with its code: `NO_TA3_PLAN`,
 `ACCOUNT_LOGIN_FAILED`, `TRAINING_NOT_CURRENT`, `ESIGNATURE_NOT_ACKNOWLEDGED`,
 `RECIPIENT_UNAVAILABLE`, `ESCALATION_WINDOW_NOT_WAITED`,
 `VERSION_FIXTURE_ABSENT`, `DUE_AT_REFUSED`, `NO_TARGET_CONFIGURATION`,
-`FOLLOW_UP_TASK_NOT_CONFIGURED`, `OPERATOR_NOT_UNBLINDED`, `SWEEP_RACED` or
-`PREREQUISITE_MISSING`. OQ-243 stays not executed (`SEGMENTED_READ_NOT_EXPOSED`)
+`FOLLOW_UP_TASK_NOT_CONFIGURED`, `OPERATOR_NOT_UNBLINDED`, `SWEEP_RACED`,
+`POLICY_DECIDER_UNAVAILABLE`, `DUPLICATE_STUDY_NOT_DECLARED`,
+`ACCOUNTS_NOT_DISTINCT` or `PREREQUISITE_MISSING`. OQ-227 sends no policy
+decision unless the platform study's staff list shows the operator and the
+reviewer as investigator or data manager, as O-2 requires
+(`POLICY_DECIDER_UNAVAILABLE`). OQ-228 checks that the escalation names the
+policy's recipient role and the recipient's staff list user id among its
+`recipientUserIds`. A missing escalation in OQ-228 or OQ-230 records
+`RECIPIENT_UNAVAILABLE` only when O-2 holds the level with that code
+(`escalationAttempts`) or when the staff lists of the OQ site and its parent
+were both read without the recipient in the role; otherwise it is a failure.
+OQ-243 stays not executed (`SEGMENTED_READ_NOT_EXPOSED`)
 until a user route downloads segmented copies. Without a plan no request is
 made and every TA3 case records `NO_TA3_PLAN`. Should the TA3 run itself throw
 (a suite records its own failures), an `OQ-TA3-EXECUTION` row names the
@@ -303,7 +327,10 @@ disabled, absent and contradicted cases; `tests/fixtures/edc-k6b` holds byte
 copies of two documents a real EDC retained, which the ledger checks read.
 `npm run test:cross-repo` checks the TA3 cases against the libreclinicaapi
 checkout: every non-late coverage table has a `CREATE TABLE`, the signature
-meanings are the EDC's, and two blocks fail by name until their items land:
+meanings (`DEVIATION_ESCALATION_POLICY_MEANING` among them) are the EDC's, the
+recipient role names are the ones O-2 resolves holders by (the EDC's auth-core
+`getRoleByName` and `expandRoleAliases`), and two blocks fail by name until
+their items land:
 "W-1 not landed" (the coverage list must equal the `ta3: true` declarations of
 `INSPECTION_STORES`) and "M-2 not landed" (the `edc-ta3-ledger/1` schema's
 required members and the EDC's synthetic ledger fixture, read by the OQ-237
