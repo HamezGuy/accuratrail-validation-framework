@@ -27,10 +27,56 @@ export interface EvidenceResult {
   relatedEvidence?: EvidenceResult[];
   /** The API, UI and core release (version 2: and training) the record was produced against (stamped by saveEvidence). */
   releaseUnderTest?: ReleaseStamp;
+  /** Why a case failed or did not execute, as a fixed code (for example ENGINE_DISABLED); never free text. */
+  outcomeCode?: string;
+  /** Stamped by saveEvidence on every record of a synthetic run (VD-3); absent otherwise. */
+  synthetic?: true;
+  /** Stamped by saveEvidence on every record of a run that is not retained (`--no-retain`). */
+  retention?: typeof DEVELOPMENT_RUN_NOTICE;
 }
 
 export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'] as const;
 export type EvidenceCategory = typeof EVIDENCE_CATEGORIES[number];
+
+/** An outcome code names a refusal or setup condition, for example FEATURE_ABSENT_AT_RELEASE. */
+export const OUTCOME_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+
+/** Opens every record, summary and document of a synthetic run (VD-3, D-22). */
+export const SYNTHETIC_NOTICE = 'SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval.';
+/** Stated on every record and document of a run that is not retained in a sealed package. */
+export const DEVELOPMENT_RUN_NOTICE = 'Development run: not retained, not validation evidence';
+
+/** How the evidence and documents of this run are marked. Set once by the CLI
+ * (through runners/evidence-package.ts) before anything is written; unset, as in
+ * library calls and tests, nothing is stamped. */
+export interface EvidenceMarking {
+  /** Synthetic as computed by the package rule, never chosen. */
+  synthetic: boolean;
+  /** True inside a retained package; false for a development run. */
+  retained: boolean;
+}
+
+let marking: EvidenceMarking | undefined;
+
+export function setEvidenceMarking(value: EvidenceMarking | undefined): void {
+  marking = value;
+}
+
+export function currentEvidenceMarking(): EvidenceMarking | undefined {
+  return marking;
+}
+
+/** The notices a document of this run opens with, in order. */
+export function evidenceNotices(value: EvidenceMarking | undefined = marking): string[] {
+  if (!value) return [];
+  return [...(value.synthetic ? [SYNTHETIC_NOTICE] : []), ...(value.retained ? [] : [DEVELOPMENT_RUN_NOTICE])];
+}
+
+/** The same notices as Markdown lines for the top of a document; empty when there is none. */
+export function evidenceNoticeLines(value: EvidenceMarking | undefined = marking): string[] {
+  const notices = evidenceNotices(value);
+  return notices.length ? [...notices.flatMap((notice, index) => [...(index ? ['>'] : []), `> **${notice}**`]), ''] : [];
+}
 
 export interface CaptureOptions {
   testCaseId: string;
@@ -53,16 +99,54 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A key whose value is a credential (password, token, secret, API key, cookie or authorization). */
+export function isCredentialKey(key: string): boolean {
+  return /^(?:(?:current|new|old|confirm|signature)?password(?:hash)?|passwd|secret|clientsecret|accesstoken|refreshtoken|token|apikey|authorization|cookie|setcookie)$/i
+    .test(key.replace(/[-_]/g, ''));
+}
+
 /** Remove credentials from retained evidence, preserving revision tokens and other identifiers. */
 export function redactEvidenceSecrets(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactEvidenceSecrets);
   if (!isRecord(value) || value instanceof Date) return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
     key,
-    /^(?:(?:current|new|old|confirm|signature)?password(?:hash)?|passwd|secret|clientsecret|accesstoken|refreshtoken|token|apikey|authorization|cookie|setcookie)$/i
-      .test(key.replace(/[-_]/g, ''))
-      ? '[redacted]' : redactEvidenceSecrets(item),
+    isCredentialKey(key) ? '[redacted]' : redactEvidenceSecrets(item),
   ]));
+}
+
+function canonicalCheck(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
+
+/** Canonical JSON for hashing: object keys in the default string order (UTF-16
+ * code units, never localeCompare), arrays in their order, exact JSON values.
+ * Anything JSON cannot carry exactly (an unsafe integer, -0, undefined, a cycle,
+ * a sparse array) is refused, never omitted or truncated. `subject` names the
+ * value in the refusal. The activation-review/1 digest and the evidence package
+ * hash both use it. */
+export function canonicalJson(value: unknown, subject: string, ancestors = new Set<object>(), depth = 0): string {
+  canonicalCheck(depth <= 200, `${subject} JSON exceeds the server canonicalization depth.`);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    canonicalCheck(Number.isFinite(value) && !Object.is(value, -0) && (!Number.isInteger(value) || Number.isSafeInteger(value)),
+      `${subject} contains a number requiring exact source custody.`);
+    return JSON.stringify(value);
+  }
+  canonicalCheck(typeof value === 'object' && value !== null && !ancestors.has(value), `${subject} is not finite JSON data.`);
+  const array = Array.isArray(value), descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors).filter(key => !(array && key === 'length'));
+  canonicalCheck(keys.every(key => typeof key === 'string' && descriptors[key].enumerable && 'value' in descriptors[key]),
+    `${subject} contains non-JSON properties.`);
+  const names = keys as string[];
+  canonicalCheck(!array || (names.length === value.length && names.every((key, index) => key === String(index))),
+    `${subject} contains a sparse or extended array.`);
+  ancestors.add(value);
+  try {
+    const parts = (array ? names : names.sort()).map(key => {
+      const child = canonicalJson(descriptors[key].value, subject, ancestors, depth + 1);
+      return array ? child : `${JSON.stringify(key)}:${child}`;
+    });
+    return array ? `[${parts.join(',')}]` : `{${parts.join(',')}}`;
+  } finally { ancestors.delete(value); }
 }
 
 function requireEvidenceResults(value: unknown, source: string): asserts value is EvidenceResult[] {
@@ -88,6 +172,11 @@ function requireEvidenceResults(value: unknown, source: string): asserts value i
     }
     if (item.releaseUnderTest !== undefined && !isReleaseStamp(item.releaseUnderTest)) {
       throw new Error(`Invalid evidence in ${source}: malformed release identity at index ${index}`);
+    }
+    if ((item.outcomeCode !== undefined && (typeof item.outcomeCode !== 'string' || !OUTCOME_CODE.test(item.outcomeCode)))
+      || (item.synthetic !== undefined && item.synthetic !== true)
+      || (item.retention !== undefined && item.retention !== DEVELOPMENT_RUN_NOTICE)) {
+      throw new Error(`Invalid evidence in ${source}: malformed outcome code or marking at index ${index}`);
     }
     if (seen.has(item.testCaseId)) throw new Error(`Invalid evidence in ${source}: duplicate test case ${item.testCaseId}`);
     seen.add(item.testCaseId);
@@ -161,6 +250,19 @@ export function saveEvidence(
     }
     results = results.map(result => ({ ...result, releaseUnderTest: stamp }));
   }
+  // A marked run stamps what it is on every record; a record cannot claim
+  // otherwise, because whether evidence is synthetic is computed, never chosen.
+  const run = currentEvidenceMarking();
+  if (run) {
+    for (const result of results) {
+      if ((result.synthetic && !run.synthetic) || (result.retention && run.retained)) {
+        throw new Error(`Evidence ${result.testCaseId} is marked ${result.synthetic ? 'synthetic' : 'not retained'}, which this run is not.`);
+      }
+    }
+    results = results.map(result => ({
+      ...result, ...(run.synthetic ? { synthetic: true as const } : {}), ...(run.retained ? {} : { retention: DEVELOPMENT_RUN_NOTICE }),
+    }));
+  }
   const evidenceDir = path.join(outputDir, 'evidence', category);
   fs.mkdirSync(evidenceDir, { recursive: true });
   if (identity) {
@@ -199,7 +301,11 @@ export function saveEvidence(
       durationMs: r.durationMs,
       notes: r.notes,
       regulatoryRef: r.regulatoryRef,
+      ...(r.outcomeCode ? { outcomeCode: r.outcomeCode } : {}),
     })),
+    // Appended last, so an unmarked summary keeps its bytes.
+    ...(run?.synthetic ? { synthetic: true, syntheticNotice: SYNTHETIC_NOTICE } : {}),
+    ...(run && !run.retained ? { retention: DEVELOPMENT_RUN_NOTICE } : {}),
   };
   fs.writeFileSync(
     path.join(evidenceDir, `${category}-summary.json`),
@@ -208,6 +314,7 @@ export function saveEvidence(
   );
 
   const reportLines: string[] = [
+    ...evidenceNoticeLines(run),
     `# ${category.toUpperCase()} Test Execution Report`,
     '',
     `| Field | Value |`,
@@ -245,6 +352,7 @@ export function saveEvidence(
     if (r.acceptanceCriteria) reportLines.push(`**Acceptance Criteria:** ${r.acceptanceCriteria}`);
     reportLines.push(`**Endpoint:** ${r.method} ${r.endpoint}`);
     reportLines.push(`**Status:** HTTP ${r.responseStatus}${r.durationMs ? ` (${r.durationMs}ms)` : ''}`);
+    if (r.outcomeCode) reportLines.push(`**Outcome Code:** ${r.outcomeCode}`);
     reportLines.push(`**Result:** ${r.notes}`);
     if (r.requestBody) {
       reportLines.push(`**Request Body:**`);

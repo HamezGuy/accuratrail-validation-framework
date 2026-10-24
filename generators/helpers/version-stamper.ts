@@ -5,6 +5,10 @@ import {
   currentReleaseIdentity, releaseComponent, releaseComponentText, RELEASE_COMPONENTS, type ReleaseIdentity,
 } from '../../runners/release-identity';
 import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
+import { currentEvidenceMarking, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../../runners/evidence-capture';
+
+/** The metadata row of a document written into a retained evidence package. */
+export const RETAINED_PACKAGE_TEXT = 'Retained evidence package, sealed by its package-manifest.json';
 
 export interface DocumentMeta {
   generatedAt: string;
@@ -118,6 +122,10 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
     lines.push('| Release Identity | not recorded: no release under test was supplied |');
   }
   lines.push(`| ${ICH_E6_R3.citation} Section References | ${E6_R3_SECTION_STATUS} |`);
+  // The synthetic and not-retained banners, also stated at the top of the document.
+  const run = currentEvidenceMarking();
+  if (run?.synthetic) lines.push(`| Evidence Classification | ${SYNTHETIC_NOTICE} |`);
+  if (run) lines.push(`| Retention | ${run.retained ? RETAINED_PACKAGE_TEXT : DEVELOPMENT_RUN_NOTICE} |`);
 
   lines.push('');
   return lines.join('\n');

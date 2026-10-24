@@ -93,7 +93,9 @@ export function parseReleaseComponent(
     : `--release-${name} must be a full 40-character Git commit, a sha256:<64 hex> image ID or none, got ${JSON.stringify(value)}.`);
 }
 
-function frameworkCommit(): { commit?: string; dirty?: boolean } {
+/** The framework checkout that ran: its commit and whether tracked files differ
+ * from it. Recorded in every release identity and every sealed evidence package. */
+export function frameworkCommit(): { commit?: string; dirty?: boolean } {
   const cwd = path.resolve(__dirname, '..');
   const git = (...args: string[]) => execFileSync('git', ['-C', cwd, ...args],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, windowsHide: true }).trim();

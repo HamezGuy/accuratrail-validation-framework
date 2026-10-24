@@ -1,4 +1,5 @@
 import { ICH_E6_R3, E6_R3_SECTION_STATUS } from '../../config/regulatory-scope';
+import { evidenceNoticeLines } from '../../runners/evidence-capture';
 
 export interface DocumentHeaderOptions {
   title: string;
@@ -28,6 +29,8 @@ export interface SectionEntry {
 
 export function documentHeader(opts: DocumentHeaderOptions): string {
   const lines: string[] = [
+    // A synthetic or development run says so before anything else (VD-3).
+    ...evidenceNoticeLines(),
     `# ${opts.title}`,
     '',
     '| Field | Value |',

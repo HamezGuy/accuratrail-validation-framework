@@ -7,3 +7,6 @@ fixtures/synthetic-usdm4-core/** -text
 # Vendored archives and their receipts are byte copies of the EDC API's; keep them identical
 # on every checkout, so the receipt bytes and SHA-256 still match (tests/cross-repo.contract.test.ts).
 vendor/** -text
+
+# Contract schemas keep the same bytes, and so the same SHA-256, on every checkout.
+contracts/** -text

@@ -1,0 +1,194 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.accuratrials.com/validation-framework/validation-evidence-package/1",
+  "title": "validation-evidence-package/1",
+  "description": "package-manifest.json of a retained validation evidence package, written last when the package is sealed (TA3 plan VAL-1, spec P20 3.2). Producer and owner: accuratrail-validation-framework runners/evidence-package.ts. It lists every other file of the package with its byte count and SHA-256. packageHash is the SHA-256 hex of the canonical JSON of this object without packageHash: object keys in the default string order (UTF-16 code units), arrays in order, no whitespace. The SHA-256 of the file's own bytes is the contentHash the eTMF records when the manifest is filed. The package carries no signature; approval is a governance decision in the eTMF.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "packageId",
+    "version",
+    "createdAt",
+    "sealedAt",
+    "executed",
+    "synthetic",
+    "syntheticBasis",
+    "framework",
+    "releaseUnderTest",
+    "target",
+    "configurationUnderTest",
+    "inputs",
+    "categories",
+    "files",
+    "approval",
+    "packageHash"
+  ],
+  "properties": {
+    "contract": { "const": "validation-evidence-package/1" },
+    "packageId": {
+      "description": "UUID v4. The package directory is <yyyymmddTHHMMSSZ of createdAt>-<version>-<first 8 hex of packageId>.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "version": {
+      "description": "The --version label of the run.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "createdAt": { "$ref": "#/definitions/instant" },
+    "sealedAt": { "$ref": "#/definitions/instant" },
+    "executed": {
+      "description": "True when the run selected a live runner or an evidence import; false for a documents package, which lists no category.",
+      "type": "boolean"
+    },
+    "synthetic": {
+      "description": "Computed, never chosen: true exactly when syntheticBasis names a basis. A synthetic package is retained only under <synthetic data root>/runs/validation-packages; a package that is not synthetic never inside a synthetic data root.",
+      "type": "boolean"
+    },
+    "syntheticBasis": {
+      "description": "Why the package is synthetic: --synthetic-qualification was given, a benchmark or P13 import (synthetic engineering evidence) ran, or an entry of the platform evidence plan is synthetic.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["synthetic-qualification", "benchmark-import", "p13-import", "platform-evidence-plan"] }
+    },
+    "syntheticNotice": {
+      "description": "Present exactly when the package is synthetic. Every record of a synthetic package carries synthetic: true and every document opens with this notice.",
+      "const": "SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval."
+    },
+    "framework": { "$ref": "#/definitions/framework" },
+    "releaseUnderTest": {
+      "description": "The release identity the run recorded (validation-release-identity/1 or /2), or null.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/releaseIdentity" }]
+    },
+    "target": {
+      "description": "The target live runners used, with what its /health reported, or null when no live runner was selected.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/target" }]
+    },
+    "configurationUnderTest": {
+      "description": "Null in this version. IQ-033 (VAL-1/validation-iq) records the declared configuration here and adds its object form.",
+      "type": "null"
+    },
+    "inputs": {
+      "description": "Byte copies of the plan files, declarations and captures the run read, retained as inputs/<role>.json; an input holding a credential is refused.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/input" }
+    },
+    "categories": {
+      "description": "Counts of each evidence category, read from evidence/<category>/<category>-results.json.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/category" }
+    },
+    "files": {
+      "description": "Every file of the package except package-manifest.json, in code-unit order of path.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/file" }
+    },
+    "approval": { "$ref": "#/definitions/approval" },
+    "packageHash": { "$ref": "#/definitions/sha256" }
+  },
+  "if": { "properties": { "synthetic": { "const": true } }, "required": ["synthetic"] },
+  "then": { "required": ["syntheticNotice"] },
+  "else": { "not": { "required": ["syntheticNotice"] } },
+  "definitions": {
+    "instant": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "framework": {
+      "description": "The validation framework checkout that ran (frameworkCommit in runners/release-identity.ts).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "dirty"],
+      "properties": {
+        "commit": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }] },
+        "dirty": { "description": "Whether tracked files differed from the commit.", "type": ["boolean", "null"] }
+      }
+    },
+    "releaseIdentity": {
+      "description": "runners/release-identity.ts ReleaseIdentity, version 1 or 2.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "components", "identityHash", "framework"],
+      "properties": {
+        "contract": { "enum": ["validation-release-identity/1", "validation-release-identity/2"] },
+        "components": { "type": "object" },
+        "identityHash": { "$ref": "#/definitions/sha256" },
+        "framework": { "type": "object" },
+        "target": { "type": "object" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseUrl", "observedAt", "reportedVersion"],
+      "properties": {
+        "baseUrl": { "type": "string", "pattern": "^https?://" },
+        "observedAt": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+        "reportedVersion": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }] }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "originalPath"],
+      "properties": {
+        "role": {
+          "enum": [
+            "ta3-oq-plan",
+            "platform-evidence-plan",
+            "p13-plan",
+            "training-evidence",
+            "benchmark-run-summary",
+            "benchmark-metrics",
+            "target-configuration"
+          ]
+        },
+        "path": { "description": "inputs/<role>.json", "type": "string", "pattern": "^inputs/[a-z0-9-]+\\.json$" },
+        "sha256": { "description": "Of the copy's bytes, which equal the original's.", "$ref": "#/definitions/sha256" },
+        "originalPath": { "description": "The absolute path the run read.", "type": "string", "minLength": 1 }
+      }
+    },
+    "category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "total", "passed", "failed", "manual", "notExecuted"],
+      "properties": {
+        "category": { "enum": ["iq", "oq", "pq", "security", "dr", "performance", "benchmark", "p13"] },
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "description": "Every result that did not pass, as the category summary counts it; manual and notExecuted are parts of it.", "type": "integer", "minimum": 0 },
+        "manual": { "description": "Manual verification rows, which never pass automatically.", "type": "integer", "minimum": 0 },
+        "notExecuted": { "description": "Failed CONTRACT rows: cases recorded as not executed.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {
+          "description": "Posix path relative to the package directory.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}(/[A-Za-z0-9][A-Za-z0-9._-]{0,254})*$",
+          "not": { "const": "package-manifest.json" }
+        },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "recordedIn"],
+      "properties": {
+        "state": { "const": "unapproved" },
+        "recordedIn": { "const": "eTMF governance decision on the filing of package-manifest.json; this package carries no signature" }
+      }
+    }
+  }
+}

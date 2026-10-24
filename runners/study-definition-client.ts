@@ -10,7 +10,7 @@ import type {
 import { validateStudyDefinitionContent } from '@accura-trial/shared-types/usdm/validation';
 import { validateStudyExchange } from '@accura-trial/shared-types/study-exchange/validation';
 import { ENTITY_STATUS } from '@accura-trial/shared-types';
-import { isRecord } from './evidence-capture';
+import { canonicalJson, isRecord } from './evidence-capture';
 
 /** The installed immutable package owns the wire graph and command types.
  * These aliases preserve the qualification clients' import names. This module
@@ -63,31 +63,7 @@ const sha256 = (value: unknown): value is string => typeof value === 'string' &&
 
 /** The activation-review/1 transport digest uses sorted object keys, exact array
  * order and exact JSON values. Refuse unsupported values; never omit/truncate. */
-function canonicalReviewJson(value: unknown, ancestors = new Set<object>(), depth = 0): string {
-  check(depth <= 200, 'Activation review JSON exceeds the server canonicalization depth.');
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
-  if (typeof value === 'number') {
-    check(Number.isFinite(value) && !Object.is(value, -0) && (!Number.isInteger(value) || Number.isSafeInteger(value)),
-      'Activation review contains a number requiring exact source custody.');
-    return JSON.stringify(value);
-  }
-  check(typeof value === 'object' && value !== null && !ancestors.has(value), 'Activation review is not finite JSON data.');
-  const array = Array.isArray(value), descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors).filter(key => !(array && key === 'length'));
-  check(keys.every(key => typeof key === 'string' && descriptors[key].enumerable && 'value' in descriptors[key]),
-    'Activation review contains non-JSON properties.');
-  const names = keys as string[];
-  check(!array || (names.length === value.length && names.every((key, index) => key === String(index))),
-    'Activation review contains a sparse or extended array.');
-  ancestors.add(value);
-  try {
-    const parts = (array ? names : names.sort()).map(key => {
-      const child = canonicalReviewJson(descriptors[key].value, ancestors, depth + 1);
-      return array ? child : `${JSON.stringify(key)}:${child}`;
-    });
-    return array ? `[${parts.join(',')}]` : `{${parts.join(',')}}`;
-  } finally { ancestors.delete(value); }
-}
+const canonicalReviewJson = (value: unknown): string => canonicalJson(value, 'Activation review');
 
 /** Matches the server's activation-review/1 binding, including form mappings and
  * every nested execution value. Generated export clocks and the archival source

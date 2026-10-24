@@ -12,6 +12,9 @@ export interface BenchmarkEvidenceOptions {
   evaluatorRoot?: string;
 }
 
+/** The two files of a scored run the import reads and links; a retained package copies them as inputs. */
+export const BENCHMARK_RUN_FILES = { summary: 'run-summary.json', metrics: 'metrics.json' } as const;
+
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const SCOPE = 'Synthetic engineering evidence only. Reconstruction verifies retained results; it does not establish independent clinical validation, SURPASS attainment, or IL extraction performance.';
 
@@ -34,8 +37,8 @@ export async function importBenchmarkEvidence(outputDir: string, options: Benchm
   });
   let results: EvidenceResult[];
   try {
-    const summaryPath = path.join(runDir, 'run-summary.json');
-    const metricsPath = path.join(runDir, 'metrics.json');
+    const summaryPath = path.join(runDir, BENCHMARK_RUN_FILES.summary);
+    const metricsPath = path.join(runDir, BENCHMARK_RUN_FILES.metrics);
     const beforeSummary = fs.readFileSync(summaryPath);
     const beforeMetrics = fs.readFileSync(metricsPath);
     const args = [script, '--dir', runDir];

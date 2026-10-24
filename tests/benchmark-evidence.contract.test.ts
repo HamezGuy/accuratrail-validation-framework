@@ -6,7 +6,8 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { importBenchmarkEvidence, importP13BenchmarkEvidence } from '../runners/benchmark-evidence';
 import { createHash } from 'node:crypto';
-import { loadEvidence } from '../runners/evidence-capture';
+import { loadEvidence, setEvidenceMarking } from '../runners/evidence-capture';
+import { benchmarkRunInputs, createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
 import { loadRunnerEvidence } from '../generators/helpers/evidence-linker';
 import { generate } from '../generators/20-test-execution-records';
 
@@ -45,6 +46,25 @@ test('real retained scoring evidence reconstructs and preserves blocked engineer
   assert.doesNotMatch(document, /Send OFFLINE request/);
   assert.deepEqual(fs.readFileSync(path.join(runDir, 'run-summary.json')), original);
   await assert.rejects(importBenchmarkEvidence(output, { runDir }), /already exists/);
+});
+
+test('the benchmark category stays exclusive inside a retained package, which keeps the run summary and metrics as inputs', async t => {
+  const dir = workspace(t), runDir = fixture(dir);
+  fs.writeFileSync(path.join(dir, SYNTHETIC_ROOT_MARKER), 'Synthetic-trial data root for a contract test.\n');
+  t.after(() => setEvidenceMarking(undefined));
+  const evidencePackage = createPackage({ retainRoot: path.join(dir, 'runs', 'validation-packages'), version: 'benchmark-v1',
+    executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir) });
+  const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir });
+  assert.equal(results[0].passed, true, JSON.stringify(results[0].responseBody));
+  await assert.rejects(importBenchmarkEvidence(evidencePackage.dir, { runDir }), /already exists/);
+  sealPackage(evidencePackage);
+  const verified = verifyPackage(evidencePackage.dir);
+  assert.deepEqual(verified.problems, []);
+  const attachment = results[0].responseBody as { summarySha256: string; metricsSha256: string };
+  assert.deepEqual(verified.manifest!.inputs.map(input => [input.role, input.sha256]),
+    [['benchmark-run-summary', attachment.summarySha256], ['benchmark-metrics', attachment.metricsSha256]]);
+  assert.deepEqual(verified.manifest!.categories, [{ category: 'benchmark', total: 2, passed: 1, failed: 1, manual: 0, notExecuted: 0 }]);
+  for (const result of loadEvidence(evidencePackage.dir, 'benchmark')) assert.equal(result.synthetic, true, result.testCaseId);
 });
 
 for (const tamper of ['metrics', 'summary', 'missing', 'wrong-evaluator']) {
