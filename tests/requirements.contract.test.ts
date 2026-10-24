@@ -8,11 +8,14 @@ import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirement
 import { TA3_OQ_CASES } from '../config/ta3-oq-cases';
 import { saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import { runnerCaseCheck } from '../generators/helpers/evidence-linker';
+import { E6_R3_MAPPINGS, TA3_USE_MAPPINGS } from '../generators/helpers/compliance-mapping';
 import { generate as generateApplicability } from '../generators/01-applicability-assessment';
 import { generate as generateUrs } from '../generators/03-user-requirements-spec';
 import { generate as generateFrs } from '../generators/04-functional-requirements-spec';
 import { generate as generateRiskAssessment } from '../generators/05-risk-assessment';
 import { generate as generateTraceability } from '../generators/06-traceability-matrix';
+import { generate as generateSummary } from '../generators/12-validation-summary';
+import { generate as generateRegulatoryMap } from '../generators/18-regulatory-requirements-map';
 import { generate as generateCsa } from '../generators/19-csa-feature-assurance';
 import { temporaryDirectory } from './generated-documents';
 
@@ -239,4 +242,72 @@ test('the TA3 traceability rows and CSA records read each case\'s retained state
   assert.match(sectionOf(csa, 'FEAT-162'), /All 4 mapped checks passed in the retained run/);
   assert.match(sectionOf(csa, 'FEAT-165'), /Did not execute in the retained run/);
   assert.match(sectionOf(csa, 'FEAT-165'), /5 cases did not execute in the retained run \(OQ-227, OQ-228, OQ-229, OQ-230, OQ-231\)/);
+});
+
+test('the ICH E6(R3) mapping covers every topic once, and the TA3 cases of each topic are exactly those whose catalog entry cites it', () => {
+  assert.deepEqual(E6_R3_MAPPINGS.map(mapping => mapping.key), Object.keys(E6_R3_REFERENCES));
+  const ta3Ids = new Set(TA3_OQ_CASES.map(entry => entry.id));
+  for (const mapping of E6_R3_MAPPINGS) {
+    assert.equal(mapping.section, e6r3(mapping.key));
+    assert.equal(mapping.title, E6_R3_REFERENCES[mapping.key].topic);
+    assert.ok(mapping.evidenceRef.trim(), mapping.key);
+    assert.equal(new Set(mapping.testCaseIds).size, mapping.testCaseIds.length, `${mapping.key} cites each case once`);
+    for (const id of mapping.testCaseIds) assert.ok(runnerCaseCheck(id).check, `${mapping.key}: ${id}`);
+    assert.deepEqual(mapping.testCaseIds.filter(id => ta3Ids.has(id)),
+      TA3_OQ_CASES.filter(entry => entry.e6r3.includes(mapping.key)).map(entry => entry.id), mapping.key);
+  }
+  // Topics no executed case verifies stay explicit.
+  assert.deepEqual(E6_R3_MAPPINGS.filter(mapping => !mapping.testCaseIds.length).map(mapping => mapping.key),
+    ['gcp', 'reviewOfData', 'validation', 'training']);
+  assert.doesNotMatch(JSON.stringify(E6_R3_MAPPINGS), DASH);
+});
+
+test('the TA3 uses are verified by suites 13 to 18, every TA3 case under exactly one use', () => {
+  assert.deepEqual(TA3_USE_MAPPINGS.map(mapping => mapping.suite), [13, 14, 15, 16, 17, 18]);
+  assert.deepEqual(TA3_USE_MAPPINGS.flatMap(mapping => mapping.testCaseIds), TA3_OQ_CASES.map(entry => entry.id));
+  for (const mapping of TA3_USE_MAPPINGS) {
+    assert.deepEqual(mapping.testCaseIds, TA3_OQ_CASES.filter(entry => entry.suite === mapping.suite).map(entry => entry.id));
+    for (const id of mapping.testCaseIds) assert.ok(runnerCaseCheck(id).check, id);
+    assert.match(mapping.section, /^(o\. Protocol deviations|3\. The metrics ledger|w\. Inspection-ready documentation)$/);
+  }
+  assert.doesNotMatch(JSON.stringify(TA3_USE_MAPPINGS), DASH);
+});
+
+test('the validation summary and the regulatory map report the E6(R3) topics and TA3 uses from the retained cases only', t => {
+  const directory = temporaryDirectory(t, 'accura-mappings-');
+  saveEvidence(directory, 'oq', TA3_OQ_CASES.map(entry => {
+    if (entry.suite === 14) return record(entry.id);
+    if (entry.id === 'OQ-207') return record(entry.id, { passed: false, outcomeCode: 'ENGINE_DISABLED', notes: 'Synthetic engine refusal' });
+    return notExecuted(entry.id);
+  }));
+  generateSummary(directory, directory);
+  generateRegulatoryMap(directory, directory);
+  for (const [file, statusColumn] of [['12-validation-summary.md', 'Status'], ['18-regulatory-requirements-map.md', 'Verification']]) {
+    const content = generated(directory, file);
+    assert.match(content, /ICH E6\(R3\) Verification/, file);
+    assert.match(content, /TA3 Use Verification/, file);
+    assert.ok(content.includes(`| ICH E6(R3) Reference | Topic | ${statusColumn} | Mapped cases and what they verify |`), file);
+    assert.ok(content.includes(`| TA3 Plan Section | TA3 Use | ${statusColumn} | Mapped cases and what they verify |`), file);
+    const e6 = (key: keyof typeof E6_R3_REFERENCES) => rows(content, `${e6r3(key)} |`)[0];
+    const use = (title: string) => rows(content, '').find(cells => cells[1] === title)!;
+    // Suite 14 passed in full; OQ-207 failed; everything else recorded NO_TA3_PLAN.
+    assert.match(e6('protocolAndRecords')[2], /^PASS . every mapped case passed$/, file);
+    assert.match(e6('dataCapture')[2], /^FAIL \(OQ-207\)$/, file);
+    assert.match(e6('gcp')[2], /^Pending . no executed case verifies this section$/, file);
+    assert.match(e6('blinding')[2], /^Pending . mapped cases not executed$/, file);
+    // auditTrails: its base-suite cases have no evidence here, OQ-212 recorded not executed.
+    assert.match(e6('auditTrails')[2], /^Pending . mapped cases not executed$/, file);
+    assert.match(use('The governing protocol version per site and planned visit')[2], /^PASS/, file);
+    assert.match(use('Deviation detection on save and in the sweep')[2], /^FAIL \(OQ-207\)$/, file);
+    assert.match(use('Timed escalation under a signed, reviewed policy')[2], /^Pending . mapped cases not executed$/, file);
+    assert.match(use('Inspection copies of the TA3 records')[3], /^OQ-239, OQ-240, OQ-241, OQ-242, OQ-243, OQ-244 /, file);
+  }
+  // The summary lists every document of the package, the platform summary included.
+  const summary = generated(directory, '12-validation-summary.md');
+  for (const name of ['17a-esignature-certification-letter.md', '18-regulatory-requirements-map.md', '22-platform-validation-summary.md']) {
+    assert.ok(summary.includes(`| ${name} |`), name);
+  }
+  assert.match(summary, /- TA3 platform operations \(suites 13 to 18\)/);
+  // The regulatory map names the FDA draft guidance the deviation suites rest on.
+  assert.match(generated(directory, '18-regulatory-requirements-map.md'), /\| Protocol Deviations for Clinical Investigations of Drugs, Biological Products, and Devices \(draft\) \| December 2024 \|/);
 });

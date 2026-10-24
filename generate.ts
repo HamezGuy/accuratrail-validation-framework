@@ -622,9 +622,10 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
 
     // Re-run summary and gate checklist to incorporate evidence
     console.log('--- Re-generating evidence-dependent documents ---');
+    // The regulatory map reads the retained cases too (its Part 11, HIPAA, ICH E6(R3) and TA3 use verification).
     const evidenceDependentGens = GENERATORS.filter(
       (g) => g.name === 'traceability-matrix' || g.name === 'validation-summary' || g.name === 'release-gate-checklist' || g.name === 'csa-feature-assurance' || g.name === 'test-execution-records'
-        || g.name === 'platform-validation-summary'
+        || g.name === 'platform-validation-summary' || g.name === 'regulatory-requirements-map'
     );
     for (const gen of evidenceDependentGens) {
       try {

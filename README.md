@@ -413,6 +413,31 @@ mapping. `tests/e6-r3-references.contract.test.ts` fails when a tracked file
 outside `vendor/` or a generated document cites the superseded revision, or a
 generator cites a key the mapping lacks.
 
+### TA3 records, requirements and risk ratings
+
+The regulated records REC-016 to REC-028 (`config/regulatory-scope.ts`) are the
+TA3 records: deviations, their rule specifications, receipts, applicability,
+decisions and escalations, milestones, retained measurement documents,
+inspection copies, data cuts, TA2 decisions, safety cases and this framework's
+packages, each retained 15 years. `config/ta3-requirements.ts` holds the user
+requirements URS-081 to URS-101 with their planned verification and their
+functional requirements FRS-087 to FRS-107, one each: the URS prints them in its
+"TA3 Platform Operations" category, the FRS in its section of that name, and
+the traceability matrix one row per requirement. A requirement cites an OQ case
+only where the case's implemented check matches it, and every case of suites 13
+to 18 is cited by the requirement its catalog entry names; URS-099 (documents
+on container disk, N-STORE), URS-100 and URS-101 are stated gaps, since no
+runner case verifies them. The risk ratings FEAT-160 to FEAT-169
+(`config/risk-ratings.ts`) have CSA records (19) that map each TA3 feature to
+its verifying cases. `generators/helpers/compliance-mapping.ts` adds
+`E6_R3_MAPPINGS` (every ICH E6(R3) topic with the cases that verify it) and
+`TA3_USE_MAPPINGS` (each TA3 use with its suite), which the validation summary
+(12) and the regulatory map (18) report from the retained cases; in those
+tables, the CSA records and the TA3 traceability rows a case recorded not
+executed (for example NO_TA3_PLAN) reads as not executed, never as passed or
+failed. The regulatory map is generated again after the runners, as the summary
+is. `tests/requirements.contract.test.ts` checks all of it.
+
 ## Output
 
 A run with `--retain-root` writes a retained package (see "Retained evidence

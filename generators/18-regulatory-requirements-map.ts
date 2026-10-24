@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
-import { e6r3 } from '../config/regulatory-scope';
+import { E6_R3_SECTION_STATUS, ICH_E6_R3, e6r3 } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -12,7 +12,9 @@ import {
   riskBadge,
 } from './helpers/markdown-writer';
 import { loadRunnerEvidence, type RunnerResult } from './helpers/evidence-linker';
-import { complianceMappingFor, deriveComplianceStatus } from './helpers/compliance-mapping';
+import {
+  complianceMappingFor, complianceRow, deriveComplianceStatus, E6_R3_MAPPINGS, TA3_USE_MAPPINGS,
+} from './helpers/compliance-mapping';
 
 const DOC_DATE = SYSTEM_INFO.buildDate;
 
@@ -781,6 +783,8 @@ function buildTocEntries(): Array<{ level: number; title: string }> {
     { level: 2, title: 'Technical Safeguards (§164.312)' },
     { level: 2, title: 'Breach Notification Rule (§164.404)' },
     { level: 1, title: 'Summary Compliance Matrix' },
+    { level: 1, title: `${ICH_E6_R3.citation} Verification` },
+    { level: 1, title: 'TA3 Use Verification' },
     { level: 1, title: 'Gap Analysis and Remediation Plan' },
     { level: 1, title: 'Risk Assessment Summary' },
     { level: 1, title: 'Test Case Cross-Reference' },
@@ -1125,6 +1129,26 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   c += 'and approval of the complete evidence.\n\n';
   c += hr();
 
+  c += section(1, `${ICH_E6_R3.citation} Verification`);
+  c += `\nEvery topic of the ${ICH_E6_R3.citation} mapping (config/regulatory-scope.ts) with the retained runner cases that `;
+  c += 'verify it, on the same basis as the matrix above: the base-suite cases whose check verifies the topic, then the TA3 ';
+  c += 'cases whose catalog entry cites it. A topic no executed case verifies is not verified by this record. The section ';
+  c += `references stay "${E6_R3_SECTION_STATUS}".\n\n`;
+  c += markdownTable([`${ICH_E6_R3.citation} Reference`, 'Topic', 'Verification', 'Mapped cases and what they verify'],
+    E6_R3_MAPPINGS.map((mapping) => complianceRow(mapping, evidence)));
+  c += '\n';
+  c += hr();
+
+  c += section(1, 'TA3 Use Verification');
+  c += '\nThe TA3 uses this validation qualifies (TA3 plan item VAL-1), each with the OQ suite that verifies it against the ';
+  c += 'designated armed synthetic study a ta3-oq-plan/1 names. A case that met a feature switched off or absent at the release ';
+  c += 'fails with its outcome code; a case recorded not executed (a setup gap such as NO_TA3_PLAN, or a suite not selected) ';
+  c += 'leaves the use pending or incomplete. Neither is a compliance determination.\n\n';
+  c += markdownTable(['TA3 Plan Section', 'TA3 Use', 'Verification', 'Mapped cases and what they verify'],
+    TA3_USE_MAPPINGS.map((mapping) => complianceRow(mapping, evidence)));
+  c += '\n';
+  c += hr();
+
   c += section(1, 'Gap Analysis and Remediation Plan');
   c += '\nBased on the compliance assessment above, the following gaps have been identified ';
   c += 'and remediation actions planned:\n\n';
@@ -1360,6 +1384,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['Data Integrity and Compliance with Drug CGMP', 'December 2018', 'Data integrity expectations applicable to EDC systems'],
     ['Use of Electronic Records and Electronic Signatures in Clinical Investigations', 'June 2017', 'Specific guidance for electronic records in clinical investigations'],
     ['Electronic Source Data in Clinical Investigations', 'September 2013', 'Source data capture requirements for electronic systems'],
+    ['Protocol Deviations for Clinical Investigations of Drugs, Biological Products, and Devices (draft)', 'December 2024', 'Classification and importance of the protocol deviations the TA3 OQ suites 13 to 16 verify'],
     ['Part 11 Electronic Records; Electronic Signatures — Maintenance', 'February 2003', 'FDA enforcement discretion and risk-based compliance guidance'],
   ]);
   c += '\n';

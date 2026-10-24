@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
-import { REGULATORY_SCOPE } from '../config/regulatory-scope';
+import { E6_R3_SECTION_STATUS, ICH_E6_R3, REGULATORY_SCOPE } from '../config/regulatory-scope';
 import {
   documentHeader,
   markdownTable,
@@ -11,7 +11,7 @@ import {
   hr,
 } from './helpers/markdown-writer';
 import { EvidenceStats, loadRunnerEvidence, tryLoadEvidence } from './helpers/evidence-linker';
-import { complianceRow, HIPAA_MAPPINGS, PART11_MAPPINGS } from './helpers/compliance-mapping';
+import { complianceRow, E6_R3_MAPPINGS, HIPAA_MAPPINGS, PART11_MAPPINGS, TA3_USE_MAPPINGS } from './helpers/compliance-mapping';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -40,6 +40,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     { level: 1, title: 'Validation Results Summary' },
     { level: 1, title: 'Part 11 Compliance Verification' },
     { level: 1, title: 'HIPAA Compliance Verification' },
+    { level: 1, title: `${ICH_E6_R3.citation} Verification` },
+    { level: 1, title: 'TA3 Use Verification' },
     { level: 1, title: 'Deviations Summary' },
     { level: 1, title: 'CAPA Summary' },
     { level: 1, title: 'Traceability Verification' },
@@ -153,7 +155,10 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Data lock and freeze operations\n';
   content += '- Data export functionality (PDF, CSV, XML)\n';
   content += '- Backup and encryption verification\n';
-  content += '- Role-based access control enforcement\n\n';
+  content += '- Role-based access control enforcement\n';
+  content += '- TA3 platform operations (suites 13 to 18): deviation detection, protocol version applicability, signed assessment ' +
+    'and independent closure, timed escalation, the metrics ledger records and the inspection copy, against the designated ' +
+    'armed synthetic study a ta3-oq-plan/1 names\n\n';
   content += 'Reference: **08-oq-protocol.md**\n\n';
 
   content += section(3, 'Performance Qualification (PQ)');
@@ -227,6 +232,31 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '\n';
   content += hr();
 
+  // ICH E6(R3) Verification
+  content += section(2, `${ICH_E6_R3.citation} Verification`);
+  content += `Each topic of the ${ICH_E6_R3.citation} mapping, on the same basis as the Part 11 table: the base-suite cases whose `
+    + 'check verifies the topic, then the TA3 cases whose catalog entry cites it. A topic no executed case verifies stays Pending. '
+    + `The section references themselves stay "${E6_R3_SECTION_STATUS}".\n\n`;
+  content += markdownTable(
+    [`${ICH_E6_R3.citation} Reference`, 'Topic', 'Status', 'Mapped cases and what they verify'],
+    E6_R3_MAPPINGS.map((m) => complianceRow(m, evidenceMap)),
+  );
+  content += '\n';
+  content += hr();
+
+  // TA3 Use Verification
+  content += section(2, 'TA3 Use Verification');
+  content += 'Each TA3 use this validation qualifies (TA3 plan item VAL-1), with the OQ suite that verifies it against the designated '
+    + 'armed synthetic study a ta3-oq-plan/1 names. A case that met a feature switched off or absent at the release fails with its '
+    + 'outcome code; a case recorded not executed (a setup gap such as NO_TA3_PLAN, or a suite not selected) leaves the use Pending '
+    + 'or Incomplete, never passed.\n\n';
+  content += markdownTable(
+    ['TA3 Plan Section', 'TA3 Use', 'Status', 'Mapped cases and what they verify'],
+    TA3_USE_MAPPINGS.map((m) => complianceRow(m, evidenceMap)),
+  );
+  content += '\n';
+  content += hr();
+
   // Section 8: Deviations Summary
   content += section(2, 'Deviations Summary');
   content += 'All deviations identified during validation are recorded in the Deviation Log (**10-deviation-log.md**).\n\n';
@@ -296,6 +326,14 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['14', 'HIPAA Security Risk Analysis', '14-hipaa-assessment.md', 'Pending'],
     ['15', 'Training Requirements Matrix', '15-training-matrix.md', 'Pending'],
     ['16', 'Release Gate Checklist', '16-release-gate-checklist.md', 'Pending'],
+    ['17a', 'Electronic Signature Certification to FDA', '17a-esignature-certification-letter.md', 'Pending'],
+    ['17b', 'System Architecture and Data Flow Diagram', '17b-data-flow-diagram.md', 'Pending'],
+    ['17c', 'Authorized User List and Access Privileges', '17c-authorized-user-list.md', 'Pending'],
+    ['18', 'Regulatory Requirements Traceability Map', '18-regulatory-requirements-map.md', 'Pending'],
+    ['19', 'CSA Feature Assurance Records', '19-csa-feature-assurance.md', 'Pending'],
+    ['20', 'Detailed Test Execution Records', '20-test-execution-records.md', 'Pending'],
+    ['21', 'Design Specification (DS)', '21-design-specification.md', 'Pending'],
+    ['22', 'Platform Validation Summary', '22-platform-validation-summary.md', 'Pending'],
   ];
 
   for (const doc of documents) {

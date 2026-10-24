@@ -63,6 +63,8 @@ test('all six selected runner results and document refreshes can succeed', () =>
   assert.equal((result.output.match(/OFFLINE_RUNNER /g) || []).length, 6);
   assert.equal(result.status, 0, result.output);
   assert.doesNotMatch(result.output, /\[FAIL\]/);
+  // The regulatory map's verification tables read the retained cases, so it is generated again after the runners.
+  assert.match(result.output, /regulatory-requirements-map \(refreshed\)/);
 });
 
 test('docs-only does not import or execute a live runner even with --all', () => {
