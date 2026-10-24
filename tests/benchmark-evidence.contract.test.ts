@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { importBenchmarkEvidence, importP13BenchmarkEvidence } from '../runners/benchmark-evidence';
+import { importBenchmarkEvidence, importP13BenchmarkEvidence, summaryContractOf } from '../runners/benchmark-evidence';
 import { createHash } from 'node:crypto';
 import { loadEvidence, setEvidenceMarking } from '../runners/evidence-capture';
 import { benchmarkRunInputs, createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
@@ -34,6 +34,11 @@ test('real retained scoring evidence reconstructs and preserves blocked engineer
   const dir = workspace(t), runDir = fixture(dir), output = path.join(dir, 'qualification');
   const original = fs.readFileSync(path.join(runDir, 'run-summary.json'));
   const results = await importBenchmarkEvidence(output, { runDir });
+  // Regression of the O-7 dispatch (spec P20 4.7): a run of the benchmark evaluator still reconstructs through
+  // reconstruct.mjs and yields exactly its two rows, with no summary contract and no PQT row.
+  assert.deepEqual(summaryContractOf(original), {});
+  assert.deepEqual(results.map(result => result.testCaseId), ['BENCHMARK-RECONSTRUCTION', 'BENCHMARK-ENGINEERING-GATES']);
+  assert.equal((results[0].responseBody as any).summaryContract, undefined);
   assert.equal(results[0].passed, true, JSON.stringify(results[0].responseBody));
   assert.equal(results[1].passed, false, 'a scorer-only fixture cannot establish product qualification');
   assert.equal((results[0].responseBody as any).independentlyValidated, false);

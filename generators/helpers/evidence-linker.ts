@@ -5,7 +5,7 @@ import { EVIDENCE_CATEGORIES, loadEvidence, type EvidenceCategory, type Evidence
  * generators must leave those unknown. `method === 'MANUAL'` marks a manual
  * verification row, which the evidence contract never lets pass. */
 export type RunnerResult = Pick<EvidenceResult,
-  'testCaseId' | 'passed' | 'notes' | 'timestamp' | 'method' | 'endpoint' | 'testDescription' | 'captureError'>;
+  'testCaseId' | 'passed' | 'notes' | 'timestamp' | 'method' | 'endpoint' | 'testDescription' | 'captureError' | 'outcomeCode'>;
 
 /** Every runner result keyed by test case ID, read from each category's
  * `${category}-results.json` as written by `saveEvidence`. */
@@ -60,8 +60,8 @@ const ownedAuditRow = (table: string, entity: string) => `Synthetic fixture: the
   + `row whose entityId is the owned ${entity} (the action type is not checked).`;
 const TA3_PLAN = 'TA3 plan study (the designated armed duplicate a ta3-oq-plan/1 names)';
 
-/** Actual checks of the runner cases that generators cite, verified against
- * runners/oq-runner.ts, oq-ta3-runner.ts, pq-runner.ts and security-runner.ts. A generator may cite a
+/** Actual checks of the runner cases that generators cite, verified against runners/oq-runner.ts,
+ * oq-ta3-runner.ts, pq-runner.ts, security-runner.ts and benchmark-evidence.ts. A generator may cite a
  * case only for a control this text shows it verifies; update both with the runner. */
 export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-001': { check: 'Operator login (POST /api/auth/login with the configured OQ operator) must succeed with a usable access token.' },
@@ -248,6 +248,22 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-243': { check: 'Recorded not executed, SEGMENTED_READ_NOT_EXPOSED, with no request: segmented roots and parts reach only an M2M service '
     + 'credential until a user download route exists.' },
   'OQ-244': { check: 'As the monitor, POST /api/regulatory-export/inspection-package/:studyId and GET its history must each answer 403.' },
+  // The TA3 PQ cases tied to the O-7 run (runners/benchmark-evidence.ts derivePqtResults), recorded only by a
+  // --benchmark-run import whose summary contract is synthetic-trial.deviation-detection-summary/1; nothing is re-scored.
+  'PQT-001': { check: 'O-7 import: passes only when BENCHMARK-RECONSTRUCTION passed through CommandCenter synthetic-trial/surpass/deviations/'
+    + 'reconstruct-detection.mjs (exit 0, ok true, rescored compared, run-summary.json and metrics.json unchanged, the summary recording '
+    + 'the metrics SHA-256 under artifacts); otherwise RECONSTRUCTION_FAILED, and PQT-002 to PQT-005 are not executed.' },
+  'PQT-002': { check: 'O-7 import: the reconstructed gateGroups must hold the gate DEV-CRITICAL-EXPLAINED exactly once with status passed; '
+    + 'another status records UNEXPLAINED_CRITICAL_MISS, and an absent, repeated or malformed gate UNSUPPORTED_DEVIATION_SUMMARY.' },
+  'PQT-003': { check: 'O-7 import: ruleClasses must hold each of the ten machine classes once, either reported (seeded at least 1, detected, '
+    + 'recall with a Wilson interval and precision with matched and governed counts, consistent with each other) or not-seedable '
+    + 'with a reason, else CLASS_NOT_REPORTED; an unknown class, member or value records UNSUPPORTED_DEVIATION_SUMMARY.' },
+  'PQT-004': { check: 'O-7 import: manualRules must hold only the counts specRules and manualReviewRequired; a scoring member there or a '
+    + 'manual rule class records MANUAL_RULE_SCORED.' },
+  'PQT-005': { check: 'O-7 import: release.api must state the run\'s EDC API release as a 40-character Git commit or a sha256 image ID, '
+    + 'recorded as responseBody.release.api (absent: RELEASE_NOT_RECORDED); the OQ release is compared only by the platform summary.' },
+  'PQT-006': { manual: true, check: 'Manual case: an adjudication record of the O-7 answer key by a qualified person; the import '
+    + 'records it manual and never passes it automatically (D-10).' },
   'OQ-AUTH-FIXTURE': { check: 'Synthetic fixture only (auxiliary row): as the operator, POST /api/users creates a viewer account '
     + '(HTTP 201) and GET /api/users/:id must read back its username, email, viewer role and enabled state.' },
   'SEC-004': { check: 'GET /api/studies with a JWT whose payload claims userId 1 and role admin but whose signature is invalid '

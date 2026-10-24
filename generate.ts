@@ -531,9 +531,11 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
         const results = await importBenchmarkEvidence(outputDir, {
           runDir: args.benchmarkRun, evaluatorRoot: args.benchmarkEvaluatorRoot,
         });
-        if (failedRunnerCases(results).length) {
+        const notPassed = failedRunnerCases(results);
+        if (notPassed.length) {
           runnersFailed++;
-          console.error('  [FAIL] Benchmark reconstruction or local engineering gates; see retained benchmark evidence.');
+          // An O-7 import always lists PQT-006: the answer key's adjudication is a person's act, never passed here.
+          console.error(`  [FAIL] Benchmark reconstruction, engineering gates or PQ cases not passed (${notPassed.join(', ')}); see retained benchmark evidence.`);
         } else {
           runnersPassed++;
           console.log('  [OK] Benchmark reconstructed; synthetic engineering scope only.');

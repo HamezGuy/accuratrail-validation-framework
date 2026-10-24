@@ -471,8 +471,9 @@ export function ta3OqCase(id: string): Ta3OqCase {
   return found;
 }
 
-/** The Part 11 sections and the ICH E6(R3) references of a case, as its evidence records them. */
-export function ta3RegulatoryRef(entry: Ta3OqCase): string {
+/** The Part 11 sections and the ICH E6(R3) references of a case, as its evidence records them (also the TA3 PQ
+ * cases of config/ta3-pq-cases.ts, which carry the same two members). */
+export function ta3RegulatoryRef(entry: Pick<Ta3OqCase, 'cfr' | 'e6r3'>): string {
   const sections = entry.cfr.split(',').map(section => `§${section.trim()}`).join(', ');
   return [sections, ...entry.e6r3.map(e6r3)].join('; ');
 }

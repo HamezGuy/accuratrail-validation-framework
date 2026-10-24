@@ -1,0 +1,117 @@
+{
+  "contract": "synthetic-trial.deviation-detection-summary/1",
+  "label": "SYNTHETIC ENGINEERING EVIDENCE. A fixture of the validation framework's PQ import test (tests/pq-ta3.contract.test.ts), shaped per spec P09 8.2; not a real run and not an O-7 result. The test adds artifacts with the SHA-256 of the metrics it writes.",
+  "audience": "engineering",
+  "evidence": {
+    "level": "self-review, not blind",
+    "answerKey": "draft, unadjudicated: no qualified person has adjudicated it",
+    "notEvidenceOf": "clinical accuracy, independent validation or SURPASS attainment"
+  },
+  "runId": "synthetic-deviation-detection-fixture",
+  "evaluator": {
+    "version": "0.0.0-synthetic-fixture",
+    "files": {
+      "synthetic-trial/surpass/deviations/score-detection.mjs": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+  },
+  "localEngineering": "passed",
+  "gateGroups": [
+    {
+      "id": "local-engineering",
+      "required": true,
+      "title": "Deviation detection on a public protocol (synthetic fixture)",
+      "status": "passed",
+      "gates": [
+        {
+          "id": "DEV-CRITICAL-EXPLAINED",
+          "rule": "no-unexplained-critical-miss",
+          "metric": null,
+          "hard": true,
+          "threshold": "no critical miss without an explanation code",
+          "status": "passed",
+          "reason": "1 critical miss, explained by OUTCOME_SKIPPED_MISSING_DATA (synthetic fixture)",
+          "nextUnblockCondition": null
+        }
+      ]
+    },
+    {
+      "id": "clinical-scenario-adjudication",
+      "required": false,
+      "title": "Answer key adjudication (synthetic fixture)",
+      "status": "not_run",
+      "gates": [
+        {
+          "id": "ANSWER-KEY-ADJUDICATED",
+          "rule": "qualified-person",
+          "metric": null,
+          "hard": false,
+          "threshold": null,
+          "status": "not_run",
+          "reason": "no qualified person has adjudicated the synthetic answer key",
+          "nextUnblockCondition": "A qualified person adjudicates the answer key outside the evaluator."
+        }
+      ]
+    }
+  ],
+  "ruleClasses": [
+    {
+      "class": "visit_window", "status": "reported", "seeded": 4, "detected": 3,
+      "recall": { "value": 0.75, "lower": 0.3006, "upper": 0.9544, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 3, "governed": 3, "value": 1 }, "unmatched": 0, "critical": true,
+      "criticalMisses": [{ "code": "OUTCOME_SKIPPED_MISSING_DATA", "count": 1 }]
+    },
+    {
+      "class": "visit_order", "status": "reported", "seeded": 2, "detected": 2,
+      "recall": { "value": 1, "lower": 0.3424, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 2, "governed": 2, "value": 1 }, "unmatched": 0, "critical": false
+    },
+    {
+      "class": "missed_visit", "status": "reported", "seeded": 3, "detected": 3,
+      "recall": { "value": 1, "lower": 0.4385, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 3, "governed": 4, "value": 0.75 }, "unmatched": 1, "critical": true
+    },
+    {
+      "class": "required_assessment", "status": "reported", "seeded": 2, "detected": 2,
+      "recall": { "value": 1, "lower": 0.3424, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 2, "governed": 2, "value": 1 }, "unmatched": 0, "critical": false
+    },
+    {
+      "class": "numeric_threshold", "status": "reported", "seeded": 2, "detected": 1,
+      "recall": { "value": 0.5, "lower": 0.0945, "upper": 0.9055, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 1, "governed": 1, "value": 1 }, "unmatched": 0, "critical": false,
+      "criticalMisses": []
+    },
+    {
+      "class": "prohibited_medication", "status": "reported", "seeded": 1, "detected": 1,
+      "recall": { "value": 1, "lower": 0.2065, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 1, "governed": 1, "value": 1 }, "unmatched": 0, "critical": true
+    },
+    {
+      "class": "dosing_bound", "status": "reported", "seeded": 2, "detected": 2,
+      "recall": { "value": 1, "lower": 0.3424, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 2, "governed": 2, "value": 1 }, "unmatched": 0, "critical": true
+    },
+    {
+      "class": "visit_after_disposition", "status": "reported", "seeded": 1, "detected": 1,
+      "recall": { "value": 1, "lower": 0.2065, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 1, "governed": 1, "value": 1 }, "unmatched": 0, "critical": false
+    },
+    {
+      "class": "consent_before_procedure", "status": "not-seedable",
+      "reason": "The synthetic protocol of this fixture states no consent requirement before a captured procedure."
+    },
+    {
+      "class": "field_range", "status": "reported", "seeded": 3, "detected": 3,
+      "recall": { "value": 1, "lower": 0.4385, "upper": 1, "method": "wilson", "confidence": 0.95 },
+      "precision": { "matched": 3, "governed": 3, "value": 1 }, "unmatched": 0, "critical": false
+    }
+  ],
+  "manualRules": { "specRules": 1, "manualReviewRequired": 1 },
+  "release": {
+    "api": "0123456789abcdef0123456789abcdef01234567",
+    "training": "89abcdef0123456789abcdef0123456789abcdef",
+    "il": "fedcba9876543210fedcba9876543210fedcba98",
+    "csl": "csl-release-synthetic-0001"
+  }
+}

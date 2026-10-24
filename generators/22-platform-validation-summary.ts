@@ -12,6 +12,7 @@ import {
 } from '../config/platform-inventory';
 import { OQ_SUITES, oqSuiteCaseIds } from '../config/oq-case-registry';
 import { ICH_E6_R3, E6_R3_SECTION_STATUS, e6r3 } from '../config/regulatory-scope';
+import { RELEASE_PQ_CASE } from '../config/ta3-pq-cases';
 import { checkPlatformEvidencePlan, PLATFORM_EVIDENCE_STATUSES, type CheckedPlatformEvidence, type PlatformEvidenceStatus } from '../runners/evidence-package';
 import { currentEvidenceMarking, isRecord, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../runners/evidence-capture';
 import { frameworkCommit, parseReleaseComponent, type ReleaseComponent } from '../runners/release-identity';
@@ -69,10 +70,9 @@ export const PROBE_STATUSES = ['open', 'probe-not-matched', 'file-missing'] as c
 export type ProbeStatus = typeof PROBE_STATUSES[number];
 export const RELEASE_CONSISTENCY_STATUSES = ['same', 'RELEASE_MISMATCH', 'not-comparable'] as const;
 export type ReleaseConsistencyStatus = typeof RELEASE_CONSISTENCY_STATUSES[number];
-/** The contract of the deviation detection runs the O-7 benchmark imports (spec P09 8.2). */
-export const DEVIATION_DETECTION_CONTRACT = 'synthetic-trial.deviation-detection-summary/1';
-/** The PQ case of an O-7 import that states the run's own EDC API release (spec P20 3.5). */
-export const RELEASE_PQ_CASE = 'PQT-005';
+/** The contract of the deviation detection runs the O-7 benchmark imports (spec P09 8.2) and the PQ case of an O-7
+ * import that states the run's own EDC API release (spec P20 3.5), defined once with the PQ cases. */
+export { DEVIATION_DETECTION_CONTRACT, RELEASE_PQ_CASE } from '../config/ta3-pq-cases';
 
 export interface QuotedLine { file: string; line: number; text: string; fileSha256: string }
 export type StatementResult = QuotedLine | { status: 'not-found'; detail: string } | { status: 'not-stated' };
@@ -332,7 +332,8 @@ export function releaseConsistency(entries: readonly CheckedPlatformEvidence[]):
     const api = recordedPqRelease(record);
     return [{
       path: cited.dir, manifestSha256: cited.manifestSha256, api,
-      detail: api ? `${RELEASE_PQ_CASE} states the run's EDC API release` : `${RELEASE_PQ_CASE} records no EDC API release (RELEASE_NOT_RECORDED)`,
+      detail: api ? `${RELEASE_PQ_CASE} states the run's EDC API release`
+        : `${RELEASE_PQ_CASE} records no EDC API release (${typeof record.outcomeCode === 'string' ? record.outcomeCode : 'RELEASE_NOT_RECORDED'})`,
     }];
   });
   if (!oq.length || !o7.length) {
