@@ -1,7 +1,7 @@
 import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ALL_OQ_SUITES, OQ_CASE_IDS, OQ_NOT_AUTOMATED, type OqSuiteSelection } from '../config/oq-case-registry';
-import { loadTa3OqPlan, runTa3Suites } from './oq-ta3-runner';
+import { loadTa3OqPlan, runTa3Suites, ta3AccountUsernames, ta3StoppedRecords } from './oq-ta3-runner';
 import { readTargetConfiguration } from './target-configuration';
 /**
  * OQ Runner — Operational Qualification test execution.
@@ -2427,14 +2427,25 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   // Read before any request, so a refused plan or declaration leaves nothing executed.
   const ta3Plan = options.ta3PlanFile ? loadTa3OqPlan(options.ta3PlanFile).plan : null;
   const declaredFlags = options.targetConfigFile ? readTargetConfiguration(options.targetConfigFile).configuration.flags : undefined;
-  // The TA3 suites write owned synthetic records: the same explicit synthetic qualification as the owned fixture.
-  if (ta3Plan && selection.ta3.length) qualificationOptions(qualificationFlags, baseUrl);
+  if (ta3Plan && selection.ta3.length) {
+    // The TA3 suites write owned synthetic records: the same explicit synthetic qualification as the owned fixture.
+    qualificationOptions(qualificationFlags, baseUrl);
+    ta3AccountUsernames(ta3Plan);
+  }
   console.log(`\n  Running OQ tests (${OQ_CASE_IDS.length} cases) against ${baseUrl}...`);
 
   const allResults: EvidenceResult[] = [];
   if (selection.base) await runBaseSuites(allResults, baseUrl, qualificationFlags);
 
-  const ta3Results = await runTa3Suites(baseUrl, ta3Plan, selection.ta3, { declaredFlags });
+  let ta3Results: EvidenceResult[] = [];
+  try { ta3Results = await runTa3Suites(baseUrl, ta3Plan, selection.ta3, { declaredFlags }); }
+  catch (error) {
+    // A last resort (each suite records its own failures): the base suites' evidence is still saved,
+    // and every TA3 case is recorded not executed, naming the exception.
+    const reason = error instanceof Error ? error.message : String(error);
+    ta3Results = [...ta3StoppedRecords(selection.ta3, reason),
+      { ...manualResult('OQ-TA3-EXECUTION', `Unexpected TA3 suite exception: ${reason}`), method: 'CONTRACT' }];
+  }
   allResults.push(...ta3Results);
   const ta3Cases = ta3Results.filter(row => /^OQ-\d{3}$/.test(row.testCaseId));
   console.log(`  Suites 13 to 18 (TA3): ${ta3Cases.filter(r => r.passed).length}/${ta3Cases.length} passed${ta3Plan ? '' : ' (no ta3-oq-plan/1)'}`);

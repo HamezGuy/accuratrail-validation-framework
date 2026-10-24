@@ -446,6 +446,8 @@ interface Ta3Facts {
 
 class Ta3Context {
   readonly runId = randomUUID();
+  /** When the run began, on the run's clock; owned records are newer. */
+  readonly startedAt: number;
   readonly clock: Ta3Clock;
   readonly pollMs: number;
   readonly results = new Map<string, EvidenceResult>();
@@ -463,6 +465,7 @@ class Ta3Context {
   constructor(readonly baseUrl: string, readonly plan: Ta3OqPlan, readonly options: Ta3RunOptions) {
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.pollMs = options.pollIntervalMs ?? DEFAULT_POLL_MS;
+    this.startedAt = this.clock.now();
   }
 
   get site(): number { return this.plan.study.siteStudyId; }
@@ -539,6 +542,25 @@ function contractRecord(entry: Ta3OqCase, code: string, notes: string, clock: Ta
   };
 }
 
+/** A case without a result of its own: `code` and `notes` when its suite was selected, otherwise OQ_SUITE_NOT_SELECTED. */
+function unrecorded(entry: Ta3OqCase, selected: ReadonlySet<number>, code: string, notes: string, clock: Ta3Clock): EvidenceResult {
+  return selected.has(entry.suite)
+    ? contractRecord(entry, code, notes, clock)
+    : contractRecord(entry, OUTCOME.OQ_SUITE_NOT_SELECTED, `Suite ${entry.suite} was not selected (--oq-suites); no request was made.`, clock);
+}
+
+function selectedTa3Suites(selection: readonly number[]): Set<number> {
+  return new Set(selection.filter(suite => TA3_OQ_SUITES.includes(suite)));
+}
+
+/** Every TA3 case recorded not executed after runTa3Suites itself threw: the OQ runner's last resort, so the
+ * census stays whole and no TA3 case reads as an unselected base case. Suite failures never get here. */
+export function ta3StoppedRecords(selection: readonly number[], reason: string, clock: Ta3Clock = SYSTEM_CLOCK): EvidenceResult[] {
+  const selected = selectedTa3Suites(selection);
+  return TA3_OQ_CASES.map(entry => unrecorded(entry, selected, OUTCOME.PREREQUISITE_MISSING,
+    `The TA3 suites stopped on an unexpected exception before this case recorded a result (${reason}); see OQ-TA3-EXECUTION.`, clock));
+}
+
 // ---------------------------------------------------------------------------
 // The entry point
 // ---------------------------------------------------------------------------
@@ -546,29 +568,35 @@ function contractRecord(entry: Ta3OqCase, code: string, notes: string, clock: Ta
 /** The order the suites run in: escalation (16), the longest wait, last. */
 export const TA3_SUITE_ORDER: readonly number[] = [13, 14, 15, 17, 18, 16];
 
-/** Runs the selected TA3 suites against the study `plan` names and returns one record for every
- * case OQ-206 to OQ-244, plus one session row per suite that ran. Without a plan no request is
- * made: every selected case records NO_TA3_PLAN, every other OQ_SUITE_NOT_SELECTED. */
-export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, selection: readonly number[], options: Ta3RunOptions = {}): Promise<EvidenceResult[]> {
-  const clock = options.clock ?? SYSTEM_CLOCK;
-  const selected = new Set(selection.filter(suite => TA3_OQ_SUITES.includes(suite)));
-  if (!plan) {
-    return TA3_OQ_CASES.map(entry => selected.has(entry.suite)
-      ? contractRecord(entry, OUTCOME.NO_TA3_PLAN, 'No ta3-oq-plan/1 was given (--ta3-oq-plan), so no designated armed study is named; no request was made.', clock)
-      : contractRecord(entry, OUTCOME.OQ_SUITE_NOT_SELECTED, `Suite ${entry.suite} was not selected (--oq-suites); no request was made.`, clock));
-  }
-  const ctx = new Ta3Context(baseUrl, plan, options);
-  const variables = ta3AccountVariables(plan);
-  const env = options.env ?? process.env;
+/** The usernames the plan's account variables hold, refused before any request when two accounts
+ * are one person: the independence cases mean nothing then. An unset variable is left to the
+ * account's login, which records ACCOUNT_LOGIN_FAILED. */
+export function ta3AccountUsernames(plan: Ta3OqPlan, env: Readonly<Record<string, string | undefined>> = process.env): Map<string, Ta3Account> {
   const usernames = new Map<string, Ta3Account>();
-  for (const [account, names] of Object.entries(variables) as Array<[Ta3Account, { username: string; password: string }]>) {
+  for (const [account, names] of Object.entries(ta3AccountVariables(plan)) as Array<[Ta3Account, { username: string; password: string }]>) {
     const username = env[names.username] ?? '';
-    // Five different people: the independence cases mean nothing when two accounts are one person.
     if (username && usernames.has(username)) {
       throw new Error(`The TA3 plan's ${usernames.get(username)} and ${account} accounts are the same user; the TA3 cases need five different people.`);
     }
     if (username) usernames.set(username, account);
   }
+  return usernames;
+}
+
+/** Runs the selected TA3 suites against the study `plan` names and returns one record for every
+ * case OQ-206 to OQ-244, plus one session row per suite that ran. Without a plan no request is
+ * made: every selected case records NO_TA3_PLAN, every other OQ_SUITE_NOT_SELECTED. */
+export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, selection: readonly number[], options: Ta3RunOptions = {}): Promise<EvidenceResult[]> {
+  const clock = options.clock ?? SYSTEM_CLOCK;
+  const selected = selectedTa3Suites(selection);
+  if (!plan) {
+    return TA3_OQ_CASES.map(entry => unrecorded(entry, selected, OUTCOME.NO_TA3_PLAN,
+      'No ta3-oq-plan/1 was given (--ta3-oq-plan), so no designated armed study is named; no request was made.', clock));
+  }
+  const ctx = new Ta3Context(baseUrl, plan, options);
+  const variables = ta3AccountVariables(plan);
+  const env = options.env ?? process.env;
+  ta3AccountUsernames(plan, env);
   const rows: EvidenceResult[] = [];
   for (const suite of TA3_SUITE_ORDER) {
     if (!selected.has(suite)) continue;
@@ -607,9 +635,8 @@ export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, sele
       relatedEvidence: sessions.flatMap(session => session.exchanges),
     });
   }
-  const records = TA3_OQ_CASES.map(entry => ctx.results.get(entry.id) ?? (selected.has(entry.suite)
-    ? contractRecord(entry, OUTCOME.PREREQUISITE_MISSING, `Suite ${entry.suite} stopped before this case recorded a result; see OQ-TA3-SUITE-${entry.suite}.`, clock)
-    : contractRecord(entry, OUTCOME.OQ_SUITE_NOT_SELECTED, `Suite ${entry.suite} was not selected (--oq-suites); no request was made.`, clock)));
+  const records = TA3_OQ_CASES.map(entry => ctx.results.get(entry.id) ?? unrecorded(entry, selected, OUTCOME.PREREQUISITE_MISSING,
+    `Suite ${entry.suite} stopped before this case recorded a result; see OQ-TA3-SUITE-${entry.suite}.`, clock));
   return [...records, ...rows];
 }
 
@@ -736,6 +763,9 @@ async function deviationRows(run: CaseRun, session: Ta3Session, query: string, m
     demand(Array.isArray(batch), 'The deviation log read holds no deviations list.');
     rows.push(...batch.filter(isRecord));
     if (batch.length < PAGE_SIZE) break;
+    // Newest first: once a whole page predates this run (with a margin for clock skew), no owned row follows.
+    const cutoff = run.ctx.startedAt - 10 * 60_000;
+    if (batch.every((row: unknown) => isRecord(row) && Date.parse(String(row.dateCreated)) < cutoff)) break;
   }
   return rows;
 }

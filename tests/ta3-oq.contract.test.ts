@@ -215,9 +215,21 @@ test('an unselected suite records OQ_SUITE_NOT_SELECTED and opens no session', a
   assert.equal(edc.logins.get('ta3-monitor'), undefined, 'suite 17 does not act as the monitor');
 });
 
-test('the same person behind two plan accounts is refused before any request', async () => {
+test('the same person behind two plan accounts is refused before any request, also before the OQ runner\'s suite 1', async t => {
   await assert.rejects(runTa3Suites('http://127.0.0.1:9', plan(), ALL, { env: { ...ENV, TA3_TEST_THIRD_USERNAME: 'ta3-reviewer' } }),
     /reviewer and thirdPerson accounts are the same user/);
+  const oq = require('../runners/oq-runner');
+  const saved = { ...process.env };
+  t.after(() => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); });
+  Object.assign(process.env, ENV, { TA3_TEST_THIRD_USERNAME: 'ta3-reviewer', OQ_USERNAME: 'synthetic-oq-operator', OQ_PASSWORD: 'synthetic-oq-secret' });
+  const calls: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (url: string) => { calls.push(String(url)); throw new Error('No request may be made'); });
+  const directory = temporaryDirectory(t, 'accura-ta3-same-person-');
+  const planFile = path.join(directory, 'plan.json');
+  fs.writeFileSync(planFile, JSON.stringify(planJson()));
+  await assert.rejects(oq.run(directory, 'http://127.0.0.1:9', undefined, ['--synthetic-qualification'], { ta3PlanFile: planFile }),
+    /reviewer and thirdPerson accounts are the same user/);
+  assert.deepEqual(calls, []);
 });
 
 test('a ta3-oq-plan/1 is read strictly, holds no secret and its schema requires what the validator requires', t => {
@@ -317,4 +329,36 @@ test('the TA3 suites run after the base fixture cleanup and logout and before th
   assert.ok(calls.lastIndexOf('POST /api/auth/logout') < calls.length - 1 && calls.lastIndexOf('POST /api/auth/logout') > firstTa3Login,
     'every TA3 session is logged out before the quota probe');
   assert.ok(results.some((result: any) => result.testCaseId === 'OQ-TA3-SUITE-16'));
+});
+
+test('an unexpected TA3 exception records every TA3 case not executed, naming it, and keeps the census whole', async t => {
+  const ta3 = require('../runners/oq-ta3-runner'), oq = require('../runners/oq-runner');
+  const saved = { ...process.env };
+  t.after(() => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); });
+  Object.assign(process.env, ENV, { OQ_USERNAME: 'synthetic-oq-operator', OQ_PASSWORD: 'synthetic-oq-secret' });
+  const calls: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (url: string) => { calls.push(String(url)); throw new Error('No request may be made'); });
+  t.mock.method(ta3, 'runTa3Suites', async () => { throw new Error('Offline unexpected TA3 failure'); });
+  const directory = temporaryDirectory(t, 'accura-ta3-exception-');
+  const planFile = path.join(directory, 'plan.json');
+  fs.writeFileSync(planFile, JSON.stringify(planJson()));
+  const results: EvidenceResult[] = await oq.run(directory, 'http://127.0.0.1:9', undefined, ['--synthetic-qualification'],
+    { ta3PlanFile: planFile, suites: { base: false, ta3: [13, 18] } });
+  assert.deepEqual(calls, [], 'suites 1 to 12 were not selected and the TA3 run was mocked');
+  assert.equal(results.filter(result => /^OQ-\d{3}$/.test(result.testCaseId)).length, OQ_CASE_IDS.length);
+  const execution = results.find(result => result.testCaseId === 'OQ-TA3-EXECUTION');
+  assert.ok(execution && execution.method === 'CONTRACT' && !execution.passed && /Offline unexpected TA3 failure/.test(execution.notes), JSON.stringify(execution));
+  for (const entry of TA3_OQ_CASES) {
+    const record = results.find(result => result.testCaseId === entry.id)!;
+    assert.equal(record.method, 'CONTRACT', entry.id);
+    assert.equal(record.passed, false, entry.id);
+    if (entry.suite === 13 || entry.suite === 18) {
+      assert.equal(record.outcomeCode, TA3_OUTCOME.PREREQUISITE_MISSING, entry.id);
+      assert.match(record.notes, /unexpected exception .*Offline unexpected TA3 failure.*OQ-TA3-EXECUTION/, entry.id);
+    } else {
+      assert.equal(record.outcomeCode, TA3_OUTCOME.OQ_SUITE_NOT_SELECTED, entry.id);
+      assert.match(record.notes, new RegExp(`^Suite ${entry.suite} was not selected`), entry.id);
+    }
+  }
+  assert.equal(results.find(result => result.testCaseId === 'OQ-001')!.outcomeCode, 'OQ_SUITE_NOT_SELECTED');
 });
