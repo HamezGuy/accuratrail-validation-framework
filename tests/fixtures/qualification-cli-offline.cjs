@@ -1,5 +1,7 @@
 // Preload only for the CLI contract tests. No collector, generator, live runner,
-// configured endpoint, credentials, or output filesystem is used.
+// configured endpoint, credentials, or output filesystem is used; only the
+// evidence package module touches the real filesystem, under a test's own
+// temporary --retain-root.
 const Module = require('node:module');
 const path = require('node:path');
 const originalLoad = Module._load;
@@ -41,6 +43,10 @@ Module._load = function (request, parent, isMain) {
     // The release identity module is pure apart from /health, which the
     // offline fetch below refuses; use the real implementation.
     if (request === './runners/release-identity') return originalLoad.call(this, request, parent, isMain);
+    // The evidence package module owns every filesystem call packaging needs
+    // (generate.ts makes none of its own), so a scenario that names a
+    // temporary --retain-root creates, seals and verifies a real package there.
+    if (request === './runners/evidence-package') return originalLoad.call(this, request, parent, isMain);
     if (request.startsWith('./runners/')) {
       if (request === './runners/benchmark-evidence') return {
         async importP13BenchmarkEvidence(_outputDir, options) {

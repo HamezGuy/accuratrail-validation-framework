@@ -7,6 +7,10 @@ import {
   type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
 import { approvalBlock } from './generators/helpers/markdown-writer';
+import {
+  benchmarkRunInputs, createPackage, evidenceNoticeLines, markDevelopmentRun, sealPackage, syntheticBasis,
+  DEVELOPMENT_RUN_NOTICE, type EvidencePackage, type PackageInputSource,
+} from './runners/evidence-package';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -29,6 +33,10 @@ interface CliArgs {
   p13Plan?: string;
   trainingEvidence?: string;
   qualificationFlags: string[];
+  /** Create and seal a retained evidence package under this directory. */
+  retainRoot?: string;
+  /** A development run: output/ scratch, every record and document marked not retained. */
+  noRetain: boolean;
 }
 
 function parseArgs(): CliArgs {
@@ -47,6 +55,7 @@ function parseArgs(): CliArgs {
     allowProductionTarget: false,
     releaseInputs: {},
     qualificationFlags: [],
+    noRetain: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -128,13 +137,29 @@ function parseArgs(): CliArgs {
       case '--acknowledge-incomplete':
         args.qualificationFlags.push(arg);
         break;
+      case '--retain-root': {
+        const value = argv[++i];
+        if (!value || value.startsWith('--')) throw new Error('--retain-root requires a directory');
+        args.retainRoot = value;
+        break;
+      }
+      case '--no-retain':
+        args.noRetain = true;
+        break;
       default:
         console.warn(`  [WARN] Unknown argument: ${arg}`);
     }
   }
 
   if (args.benchmarkEvaluatorRoot && !args.benchmarkRun) throw new Error('--benchmark-evaluator-root requires --benchmark-run');
+  if (args.retainRoot && args.noRetain) throw new Error('Pass --retain-root or --no-retain, not both.');
   if (!args.docsOnly && liveRunnerSelected(args)) {
+    // Executed live-runner evidence goes to a retained, sealed package, or is
+    // stated not to be validation evidence; never to unmarked scratch.
+    if (!args.retainRoot && !args.noRetain) {
+      throw new Error('Live runners require --retain-root <directory> (a retained, sealed evidence package) or --no-retain '
+        + `(${DEVELOPMENT_RUN_NOTICE}).`);
+    }
     checkRunnerTarget(args);
     args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
   } else if (Object.keys(args.releaseInputs).length) {
@@ -262,11 +287,72 @@ function createLatestPointer(outputDir: string): void {
   }
 }
 
+/** Where a run's output goes (spec P20 VD-3): a retained package sealed at the
+ * end; output/ scratch marked as a development run (--no-retain, or an evidence
+ * import given neither flag); or plain output/ scratch for documents. */
+type Retention =
+  | { kind: 'package'; evidencePackage: EvidencePackage }
+  | { kind: 'not-retained' }
+  | { kind: 'scratch' };
+
+/** The plan files and captures a package copies into inputs/, with their hashes. */
+function packageInputs(args: CliArgs): PackageInputSource[] {
+  const inputs: PackageInputSource[] = [];
+  if (args.trainingEvidence) inputs.push({ role: 'training-evidence', file: args.trainingEvidence });
+  if (!args.docsOnly && args.p13Plan) inputs.push({ role: 'p13-plan', file: args.p13Plan });
+  if (!args.docsOnly && args.benchmarkRun) inputs.push(...benchmarkRunInputs(args.benchmarkRun));
+  return inputs;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
-  const date = new Date().toISOString().split('T')[0];
   const version = args.version || 'v1.0';
+  const imports = !args.docsOnly && Boolean(args.benchmarkRun || args.p13Plan);
+  const executed = imports || (!args.docsOnly && liveRunnerSelected(args));
+  // Synthetic is computed from the run, never chosen; every import is synthetic engineering evidence.
+  const basis = syntheticBasis({
+    syntheticQualification: args.qualificationFlags.includes('--synthetic-qualification'),
+    benchmarkImport: !args.docsOnly && Boolean(args.benchmarkRun),
+    p13Import: !args.docsOnly && Boolean(args.p13Plan),
+  });
+  if (args.retainRoot) {
+    // Refused before anything runs when the root, a marker or an input is wrong.
+    const evidencePackage = createPackage({ retainRoot: args.retainRoot, version, executed, syntheticBasis: basis, inputs: packageInputs(args) });
+    try {
+      await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage });
+    } finally {
+      // Sealed whatever the outcome, so a failed run is retained too.
+      sealRetainedPackage(evidencePackage, args);
+    }
+    return;
+  }
+  const date = new Date().toISOString().split('T')[0];
   const outputDir = path.join(__dirname, 'output', `${date}_${version}`);
+  if (args.noRetain || executed) {
+    markDevelopmentRun(basis.length > 0);
+    await generateInto(args, outputDir, { kind: 'not-retained' });
+  } else {
+    await generateInto(args, outputDir, { kind: 'scratch' });
+  }
+}
+
+function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): void {
+  try {
+    const sealed = sealPackage(evidencePackage, { baseUrl: !args.docsOnly && liveRunnerSelected(args) ? args.baseUrl : undefined });
+    console.log('=== Retained Evidence Package ===');
+    console.log(`  Package:      ${sealed.dir}`);
+    console.log(`  Files:        ${sealed.files}, read-only, listed in ${path.basename(sealed.manifestPath)}`);
+    console.log(`  Package hash: ${sealed.packageHash}`);
+    console.log(`  package-manifest.json SHA-256: ${sealed.manifestSha256}`);
+    console.log('  File it in the eTMF as its TMF-FILING.md describes; npm run verify:package rechecks it.');
+    console.log('');
+  } catch (error) {
+    console.error(`  [FAIL] Evidence package not sealed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
+}
+
+async function generateInto(args: CliArgs, outputDir: string, retention: Retention): Promise<void> {
   // Documents and evidence of this run carry the release under test.
   setReleaseIdentity(args.releaseIdentity);
 
@@ -291,6 +377,11 @@ async function main(): Promise<void> {
   }
   if (args.releaseIdentity) {
     console.log(`Release under test: ${releaseSummary(args.releaseIdentity)} (${args.releaseIdentity.identityHash.slice(0, 12)})`);
+  }
+  if (retention.kind === 'package') {
+    console.log(`Retention: sealed evidence package${retention.evidencePackage.synthetic ? ' (synthetic engineering evidence)' : ''}`);
+  } else if (retention.kind === 'not-retained') {
+    console.log(`Retention: none. ${DEVELOPMENT_RUN_NOTICE}; nothing from this run is retained.`);
   }
   console.log('');
 
@@ -454,8 +545,8 @@ async function main(): Promise<void> {
     generateMasterEvidenceIndex(outputDir);
   }
 
-  // Phase 4: Create latest pointer
-  createLatestPointer(outputDir);
+  // Phase 4: Create latest pointer (scratch only; a package is found by its own path)
+  if (retention.kind !== 'package') createLatestPointer(outputDir);
 
   // Phase 5: Print summary
   console.log('=== Summary ===');
@@ -498,6 +589,7 @@ function generateMasterEvidenceIndex(outputDir: string): void {
 
   const categories = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'];
   const lines: string[] = [
+    ...evidenceNoticeLines(),
     '# Master Test Execution Evidence Index',
     '',
     `| Field | Value |`,

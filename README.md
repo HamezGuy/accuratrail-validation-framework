@@ -11,7 +11,8 @@ it does not require a browser in this runner.
 cd validation-framework
 npm install
 npm run generate:docs   # Generate all documents (no live tests)
-npm run generate:all -- --base-url http://localhost:3000 --release-api <sha> --release-ui <sha> --release-core <sha>
+npm run generate:all -- --base-url http://localhost:3000 --release-api <sha> --release-ui <sha> --release-core <sha> \
+  --synthetic-qualification --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages
 ```
 
 ## CLI Options
@@ -25,7 +26,83 @@ npx ts-node generate.ts --all                # Everything
 npx ts-node generate.ts --only traceability-matrix  # Single document
 npx ts-node generate.ts --version "v2.1"     # Custom version label
 npx ts-node generate.ts --benchmark-run "C:/path/to/retained-run" --version "benchmark-001"
+npx ts-node generate.ts --iq ... --retain-root <dir>  # Live runners: a retained, sealed evidence package
+npx ts-node generate.ts --iq ... --no-retain         # Live runners: a development run, not retained
+npm run verify:package -- <package directory>        # Recheck a sealed package; prints its manifest SHA-256
 ```
+
+### Retained evidence packages
+
+Executed evidence goes to a retained package, never to the git-ignored
+`output/` folder. `--retain-root <dir>` creates
+`<dir>/<yyyymmddTHHMMSSZ>-<version>-<first 8 hex of the package ID>/`
+exclusively (the leaf is never created recursively, so an existing one is
+refused and a retained package is never overwritten), and everything the run
+writes goes there. At the end, whatever the outcome, the package is sealed:
+`TMF-FILING.md` is written, every file is listed with its byte count and
+SHA-256 in `package-manifest.json` (contract `validation-evidence-package/1`,
+`contracts/validation-evidence-package-v1.schema.json`) with a package hash over
+the canonical JSON of the manifest, and every file is set read-only. The run
+then prints the SHA-256 of `package-manifest.json`. A package sets no
+`output/latest` pointer.
+
+```
+<dir>/<yyyymmddTHHMMSSZ>-<version>-<id8>/
+  01-applicability-assessment.md ... 21-design-specification.md
+  TMF-FILING.md                 how people file and approve the package in the eTMF
+  inputs/<role>.json            byte copies of the plans and captures the run read
+  evidence/<category>/...       iq, oq, pq, security, dr, performance, benchmark, p13
+  evidence/MASTER-EVIDENCE-INDEX.md
+  package-manifest.json         written last
+```
+
+Whether a package is synthetic is computed, never chosen: it is synthetic when
+`--synthetic-qualification` is given, when a `--benchmark-run` or `--p13-plan`
+import ran (both are synthetic engineering evidence), or, once the platform
+summary lands, when an entry of its platform evidence plan is synthetic; this
+holds for documents packages too. A synthetic package is retained only under
+the `runs/validation-packages` directory of a synthetic data root (a tree
+holding `SYNTHETIC-TRIAL-DATA-ROOT`, searched upwards from the retain root),
+that is `C:/Projects/.synthetic-trial-data/runs/validation-packages`. A package
+that is not synthetic is refused inside such a tree and needs a retention root
+QA names. No package is retained inside a git checkout. In a synthetic package
+every record carries `synthetic: true`, each category summary carries the
+synthetic notice and every document opens with "SYNTHETIC ENGINEERING EVIDENCE.
+Synthetic data on a test stack. Not a real trial, not an approval."
+
+Inputs are copied byte for byte into `inputs/<role>.json` with their SHA-256
+and original path: `--p13-plan` (`p13-plan`), `--training-evidence`
+(`training-evidence`), and for `--benchmark-run` the run's `run-summary.json`
+and `metrics.json` (`benchmark-run-summary`, `benchmark-metrics`), so the
+package keeps them when the data root's retention later moves the run. Inputs
+are read and checked before the package is created: an input that cannot be
+read, is not JSON, or holds a credential (a password, token, secret or API key
+value rather than the name of the environment variable that holds it, a URL
+with a user and password, or an authorization header value) refuses the run
+and leaves nothing behind.
+
+Live runners refuse to start without `--retain-root` or `--no-retain`.
+`--no-retain` writes `output/<date>_<version>` scratch and stamps every record
+(`retention`), category summary and document "Development run: not retained,
+not validation evidence". An evidence import given neither flag runs as before
+into that stamped scratch and says that nothing was retained; the import is
+offline and repeatable from its retained run directory. A documents-only run
+without either flag is plain scratch; with `--retain-root` it is a documents
+package (`executed: false`).
+
+`npm run verify:package -- <dir>` exits 0 only when every listed file is present
+with its byte count and SHA-256, no unlisted file exists and the package hash
+recomputes; it also checks that the inputs and evidence counts match their
+files, that a synthetic package marks every record and document, and that no
+record or document of a package is stamped as a development run. On success it
+prints the SHA-256 of `package-manifest.json`, the `contentHash` the eTMF must
+show for the filed manifest. `TMF-FILING.md` gives the filing steps: upload
+`package-manifest.json` (and `12-validation-summary.md` for reading) as
+REGULATORY documents, file them at platform scope, a different person accepts
+them in QC review, and a QA lead approves the governance `document` assignment
+to the "Computerised system validation package" requirement with the TMF
+decision signature, without `provenance`. A synthetic package is filed, if at
+all, only in an IL project on a test stack to show the mechanics.
 
 ### Target system
 
@@ -76,10 +153,11 @@ as `none` reads "not deployed". Documents generated without a release are marked
 "not recorded".
 
 ```powershell
-npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification `
+npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification --no-retain `
   --release-api <api commit> --release-ui <ui commit> --release-core <core image id>
 npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification `
-  --release-api <api commit> --release-ui none --release-core none --release-training <training commit>
+  --release-api <api commit> --release-ui none --release-core none --release-training <training commit> `
+  --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages --version val1-oq-<date>
 ```
 
 ### System description and test environment
@@ -99,7 +177,7 @@ Generated documents carry no signature lines. Every approval block, the master
 evidence index and the editable templates state "Approval of this document is
 recorded in the eTMF as a governance decision on the filing of this package
 (TMF-FILING.md). This file carries no signature." and list each role as "To
-approve". The framework never signs: a QA lead other than the person who files
+approve"; every retained package holds its `TMF-FILING.md`. The framework never signs: a QA lead other than the person who files
 the package approves it in the eTMF, and that decision is a Part 11 signature
 only where the eTMF requires signed decisions (`IL_TMF_SIGNATURE=required`).
 
@@ -142,7 +220,9 @@ generator cites a key the mapping lacks.
 
 ## Output
 
-Each run creates a versioned folder under `output/`:
+A run with `--retain-root` writes a retained package (see "Retained evidence
+packages"). Any other run writes git-ignored scratch, a versioned folder under
+`output/` that a same-day rerun with the same version overwrites:
 
 ```
 output/2026-05-02_v1.0/
@@ -187,6 +267,9 @@ delete the old pair and reinstall.
 - **generators/** — Document generators producing formal markdown from collector data
 - **runners/** — Live test executors for IQ/OQ/PQ evidence capture
 - **runners/benchmark-evidence.ts** — Offline reconstructed CommandCenter evidence and scoped read-only native P13 attachment, preserving each authoritative evaluator's metrics
+- **runners/evidence-package.ts**: retained packages: exclusive creation, inputs, sealing and verification
+- **contracts/**: the versioned JSON Schema contracts the framework produces (contracts/README.md)
+- **scripts/verify-package.ts**: `npm run verify:package`
 - **templates/** — Editable document header/footer templates
 
 ## Updating
@@ -204,7 +287,9 @@ to verify retained inputs, metric/gate derivation, and byte-for-byte re-scoring.
 It does not run any product or model. Missing evidence, tampering, a mismatched
 evaluator, and failed/blocked engineering gates produce failed qualification
 evidence and a nonzero CLI exit. Use a new `--version` for every import; existing
-benchmark evidence is never overwritten. `--docs-only` skips the import.
+benchmark evidence is never overwritten. `--docs-only` skips the import. Without
+`--retain-root` the import writes stamped scratch; with it, the synthetic package
+also keeps the run's `run-summary.json` and `metrics.json` as inputs.
 
 For older retained runs, add `--benchmark-evaluator-root C:/path/to/archive`
 pointing to the archived evaluator recorded in the run. The CommandCenter
@@ -247,8 +332,8 @@ The CSV export checks every expected fixture value and native subject label. PDF
 The explicit mode connects OQ-154 and PQ-001 through PQ-040 to the existing signed study-definition workflow and the current native API. Use a local qualification environment with the official CORE validator, an authorized operator, and the immutable shared package already installed. Set `OQ_USERNAME` and `OQ_PASSWORD` through the environment (PQ-specific credentials are also supported). Run:
 
 ```powershell
-npm run generate -- --pq --base-url http://localhost:3000 --synthetic-qualification --release-api <sha> --release-ui <sha> --release-core <sha>
-npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification --release-api <sha> --release-ui <sha> --release-core <sha>
+npm run generate -- --pq --base-url http://localhost:3000 --synthetic-qualification --release-api <sha> --release-ui <sha> --release-core <sha> --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages
+npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification --release-api <sha> --release-ui <sha> --release-core <sha> --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages
 ```
 
 Use the actual authorized API URL/port. This creates owned synthetic studies, native forms and observations, signed release/application/activation, enrollment and planned visits. PQ exercises field preservation, a signed query lifecycle, completion, stale-write refusal, SDV, signature invalidation/re-signing, signed freeze/unfreeze/lock, raw native value readback, and exact correction audit records. It soft-archives only its owned synthetic fixture after retention checks. OQ also soft-archives its owned fixture after all suites, including when a suite fails. Cleanup retains the canonical creation receipt and reconciles the exact identity again if the first independent readback failed. Evidence contains native commands and separate readbacks; credentials are redacted.

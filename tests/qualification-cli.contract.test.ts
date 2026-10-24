@@ -1,17 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { verifyPackage, DEVELOPMENT_RUN_NOTICE, MANIFEST_FILE, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
+import { SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
+import { temporaryDirectory } from './generated-documents';
 
 const root = path.resolve(__dirname, '..');
 const API = 'a'.repeat(40), UI = 'b'.repeat(40), CORE = `sha256:${'c'.repeat(64)}`;
 const RELEASE = ['--release-api', API, '--release-ui', UI, '--release-core', CORE];
-function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid', release = RELEASE) {
+const LIVE_RUNNER_FLAGS = ['--all', '--iq', '--oq', '--pq', '--security', '--dr', '--perf'];
+/** Live-runner scenarios run as development runs unless a test states the retention itself. */
+const defaultRetention = (flags: string[]) => !flags.includes('--docs-only') && flags.some(flag => LIVE_RUNNER_FLAGS.includes(flag))
+  && !flags.includes('--retain-root') && !flags.includes('--no-retain') ? ['--no-retain'] : [];
+function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid', release = RELEASE,
+  retention = defaultRetention(flags)) {
   const result = spawnSync(process.execPath, [
     '-r', require.resolve('ts-node/register'),
     '-r', path.join(__dirname, 'fixtures', 'qualification-cli-offline.cjs'),
     path.join(root, 'generate.ts'),
-    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]), ...release,
+    ...flags, ...(baseUrl === null ? [] : ['--base-url', baseUrl]), ...release, ...retention,
   ], {
     cwd: root,
     env: { ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '' },
@@ -191,4 +201,86 @@ test('none is refused for the API, and a none needs the training release stated 
   assert.equal(missingValue.status, 1, missingValue.output);
   assert.match(missingValue.output, /--release-training requires a Git commit or image ID, or none/);
   assert.doesNotMatch(missingValue.output, /OFFLINE_RUNNER /);
+});
+
+/** A temporary synthetic data root; packages go to its runs/validation-packages. */
+function markedRoot(t: { after(callback: () => void): void }): string {
+  const dataRoot = temporaryDirectory(t, 'accura-cli-package-root-');
+  fs.writeFileSync(path.join(dataRoot, SYNTHETIC_ROOT_MARKER), 'Synthetic-trial data root for a CLI contract test.\n');
+  return path.join(dataRoot, 'runs', 'validation-packages');
+}
+
+test('a live runner with neither --retain-root nor --no-retain is refused before any runner starts', () => {
+  for (const flags of [['--iq'], ['--all', '--synthetic-qualification']]) {
+    const result = runCli('pass', flags, undefined, undefined, []);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /Live runners require --retain-root <directory> \(a retained, sealed evidence package\) or --no-retain/);
+    assert.doesNotMatch(result.output, /OFFLINE_RUNNER /);
+  }
+  const both = runCli('pass', ['--iq'], undefined, undefined, ['--no-retain', '--retain-root', 'C:/unused']);
+  assert.equal(both.status, 1, both.output);
+  assert.match(both.output, /Pass --retain-root or --no-retain, not both/);
+  const missingValue = runCli('pass', ['--iq', '--retain-root'], undefined, undefined, []);
+  assert.equal(missingValue.status, 1, missingValue.output);
+  assert.match(missingValue.output, /--retain-root requires a directory/);
+  assert.doesNotMatch(both.output + missingValue.output, /OFFLINE_RUNNER /);
+});
+
+test('--no-retain runs the live runners and states that nothing is retained', () => {
+  const result = runCli('pass', ['--iq'], undefined, undefined, ['--no-retain']);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /OFFLINE_RUNNER \.\/runners\/iq-runner/);
+  assert.ok(result.output.includes(`Retention: none. ${DEVELOPMENT_RUN_NOTICE}; nothing from this run is retained.`), result.output);
+  assert.doesNotMatch(result.output, /Retained Evidence Package/);
+});
+
+test('an evidence import given neither flag still runs into scratch and states that nothing is retained', () => {
+  const result = runCli('pass', ['--benchmark-run', 'offline-fixture'], null, []);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /OFFLINE_BENCHMARK offline-fixture/);
+  assert.ok(result.output.includes(`Retention: none. ${DEVELOPMENT_RUN_NOTICE}; nothing from this run is retained.`), result.output);
+  const documents = runCli('pass', ['--docs-only'], null, []);
+  assert.equal(documents.status, 0, documents.output);
+  assert.doesNotMatch(documents.output, /Retention:/, 'a documents run without retention flags is plain scratch');
+});
+
+test('a synthetic package is refused outside a marked data root, and a package that is not synthetic inside one', t => {
+  const unmarked = temporaryDirectory(t, 'accura-cli-unmarked-');
+  const refused = runCli('pass', ['--iq', '--synthetic-qualification'], undefined, undefined, ['--retain-root', unmarked]);
+  assert.equal(refused.status, 1, refused.output);
+  assert.match(refused.output, /A synthetic package is retained only under a synthetic data root/);
+  assert.doesNotMatch(refused.output, /OFFLINE_RUNNER /);
+  assert.deepEqual(fs.readdirSync(unmarked), [], 'nothing is created');
+  const home = markedRoot(t);
+  const real = runCli('pass', ['--iq'], undefined, undefined, ['--retain-root', home]);
+  assert.equal(real.status, 1, real.output);
+  assert.match(real.output, /A package that is not synthetic is never retained inside the synthetic data root/);
+  assert.doesNotMatch(real.output, /OFFLINE_RUNNER /);
+  assert.equal(fs.existsSync(home), false);
+});
+
+test('--retain-root under a marked data root creates, seals and verifies a package and prints its manifest hash', t => {
+  const home = markedRoot(t);
+  const result = runCli('pass', ['--iq', '--synthetic-qualification', '--version', 'cli-package'], undefined, undefined,
+    ['--retain-root', home]);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /OFFLINE_RUNNER \.\/runners\/iq-runner/);
+  assert.match(result.output, /Retention: sealed evidence package \(synthetic engineering evidence\)/);
+  const created = fs.readdirSync(home);
+  assert.equal(created.length, 1);
+  assert.match(created[0], /^\d{8}T\d{6}Z-cli-package-[0-9a-f]{8}$/);
+  const dir = path.join(home, created[0]);
+  const printed = /package-manifest\.json SHA-256: ([0-9a-f]{64})/.exec(result.output)?.[1];
+  assert.equal(printed, createHash('sha256').update(fs.readFileSync(path.join(dir, MANIFEST_FILE))).digest('hex'));
+  const verified = verifyPackage(dir);
+  assert.deepEqual(verified.problems, []);
+  assert.equal(verified.manifestSha256, printed);
+  const manifest = verified.manifest!;
+  assert.deepEqual([manifest.executed, manifest.synthetic, manifest.syntheticBasis, manifest.version],
+    [true, true, ['synthetic-qualification'], 'cli-package']);
+  assert.equal(manifest.releaseUnderTest?.components.api.identity, API);
+  // The offline fetch refuses /health, so the observation records the attempt and no reported version.
+  assert.deepEqual({ ...manifest.target, observedAt: typeof manifest.target?.observedAt },
+    { baseUrl: 'https://qualification.invalid', observedAt: 'string', reportedVersion: null });
+  assert.ok(fs.readFileSync(path.join(dir, TMF_FILING_FILE), 'utf8').startsWith(SYNTHETIC_FILING_LINE));
 });
