@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Resolve canonical project roots under the AccuraTrial workspace.
+ * Resolve canonical project roots under the AccuraTrial workspace, and the
+ * repositories of the platform inventory under the estate root.
  * Supports both historical folder names (libreclinicaapi, interop-middleware,
  * ElectronicDataCaptureReal, shared-types) and the names used in this workspace
  * (libreclinica-api, accuratrial-interop-middleware, EDCProjectCompliant,
@@ -29,6 +30,21 @@ function firstExisting(
  * to it when generate.ts does not hand them an explicit workspace root. */
 export function defaultWorkspaceRoot(): string {
   return path.resolve(__dirname, '..', '..');
+}
+
+/** The estate root holding the EDC workspace and the other platform repositories
+ * (C:/Projects for the workspace C:/Projects/EDCProject): the parent of the given
+ * workspace, by default of defaultWorkspaceRoot(). The platform summary's
+ * --platform-root overrides it. */
+export function defaultPlatformRoot(workspaceRoot: string = defaultWorkspaceRoot()): string {
+  return path.dirname(path.resolve(workspaceRoot));
+}
+
+/** A repository of the platform inventory (config/platform-inventory.ts) by its
+ * candidate paths relative to `root` (the platform root, or the EDC workspace
+ * under it), current name first; null when none exists. */
+export function resolvePlatformRepository(root: string, candidates: readonly string[]): string | null {
+  return firstExisting(root, candidates);
 }
 
 /** Root of the main REST API (libreclinica-api). */
