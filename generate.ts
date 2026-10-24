@@ -8,8 +8,8 @@ import {
 } from './runners/release-identity';
 import { approvalBlock } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, checkTa3OqPlan, checkTargetConfiguration, createPackage, evidenceNoticeLines, markDevelopmentRun, sealPackage, syntheticBasis,
-  DEVELOPMENT_RUN_NOTICE, type EvidencePackage, type PackageInputSource,
+  benchmarkRunInputs, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, evidenceNoticeLines, markDevelopmentRun,
+  sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
 import { ALL_OQ_SUITES, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
 
@@ -44,6 +44,10 @@ interface CliArgs {
   ta3OqPlan?: string;
   /** `--oq-suites`: the OQ suites to run; every suite when absent. */
   oqSuites?: OqSuiteSelection;
+  /** The platform-validation-evidence-plan/1 the platform summary (document 22) checks by hash. */
+  platformEvidence?: string;
+  /** `--platform-root`: the parent of the estate repositories the platform summary reads. */
+  platformRoot?: string;
 }
 
 function parseArgs(): CliArgs {
@@ -131,14 +135,18 @@ function parseArgs(): CliArgs {
       case '--training-evidence':
       case '--benchmark-evaluator-root':
       case '--target-config':
-      case '--ta3-oq-plan': {
+      case '--ta3-oq-plan':
+      case '--platform-evidence':
+      case '--platform-root': {
         const value = argv[++i];
-        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a path`);
+        if (!value || value.startsWith('--')) throw new Error(`${arg} requires a ${arg === '--platform-root' ? 'directory' : 'path'}`);
         if (arg === '--benchmark-run') args.benchmarkRun = value;
         else if (arg === '--p13-plan') args.p13Plan = value;
         else if (arg === '--training-evidence') args.trainingEvidence = value;
         else if (arg === '--target-config') args.targetConfig = value;
         else if (arg === '--ta3-oq-plan') args.ta3OqPlan = value;
+        else if (arg === '--platform-evidence') args.platformEvidence = value;
+        else if (arg === '--platform-root') args.platformRoot = value;
         else args.benchmarkEvaluatorRoot = value;
         break;
       }
@@ -262,6 +270,7 @@ const GENERATORS: GeneratorEntry[] = [
   { name: 'csa-feature-assurance', file: './generators/19-csa-feature-assurance' },
   { name: 'test-execution-records', file: './generators/20-test-execution-records' },
   { name: 'design-specification', file: './generators/21-design-specification' },
+  { name: 'platform-validation-summary', file: './generators/22-platform-validation-summary' },
 ];
 
 interface CollectorEntry {
@@ -335,6 +344,8 @@ function packageInputs(args: CliArgs): PackageInputSource[] {
   if (!args.docsOnly && args.benchmarkRun) inputs.push(...benchmarkRunInputs(args.benchmarkRun));
   if (!args.docsOnly && args.targetConfig) inputs.push({ role: 'target-configuration', file: args.targetConfig });
   if (!args.docsOnly && args.ta3OqPlan) inputs.push({ role: 'ta3-oq-plan', file: args.ta3OqPlan });
+  // The platform summary is a document, so its plan is read in every mode, documents runs included.
+  if (args.platformEvidence) inputs.push({ role: 'platform-evidence-plan', file: args.platformEvidence });
   return inputs;
 }
 
@@ -350,14 +361,26 @@ async function main(): Promise<void> {
     const loaded = checkTa3OqPlan(args.ta3OqPlan);
     console.log(`TA3 OQ plan: ${loaded.file} (${loaded.plan.contract}, study ${loaded.plan.study.studyId}, OQ site ${loaded.plan.study.siteStudyId}, SHA-256 ${loaded.sha256.slice(0, 12)})`);
   }
+  let platformEvidenceSynthetic = false;
+  if (args.platformEvidence) {
+    // Refused before anything runs: a plan that breaks its contract, cites what the inventory does not admit,
+    // or declares a cited package's synthetic flag wrongly. Hashes that do not match are shown in document 22.
+    const checked = checkPlatformEvidencePlan(args.platformEvidence);
+    platformEvidenceSynthetic = checked.synthetic;
+    const counts = PLATFORM_EVIDENCE_STATUSES.map(status => `${checked.entries.filter(entry => entry.status === status).length} ${status}`);
+    console.log(`Platform evidence plan: ${checked.file} (${checked.plan.contract}, ${counts.join(', ')}`
+      + `${checked.synthetic ? ', cites synthetic evidence' : ''}, SHA-256 ${checked.sha256.slice(0, 12)})`);
+  }
   const version = args.version || 'v1.0';
   const imports = !args.docsOnly && Boolean(args.benchmarkRun || args.p13Plan);
   const executed = imports || (!args.docsOnly && liveRunnerSelected(args));
-  // Synthetic is computed from the run, never chosen; every import is synthetic engineering evidence.
+  // Synthetic is computed from the run, never chosen; every import is synthetic engineering evidence, and a
+  // documents package whose platform evidence plan cites synthetic evidence is synthetic too (VD-3).
   const basis = syntheticBasis({
     syntheticQualification: args.qualificationFlags.includes('--synthetic-qualification'),
     benchmarkImport: !args.docsOnly && Boolean(args.benchmarkRun),
     p13Import: !args.docsOnly && Boolean(args.p13Plan),
+    platformEvidencePlan: platformEvidenceSynthetic,
   });
   if (args.retainRoot) {
     // Refused before anything runs when the root, a marker or an input is wrong.
@@ -372,7 +395,8 @@ async function main(): Promise<void> {
   }
   const date = new Date().toISOString().split('T')[0];
   const outputDir = path.join(__dirname, 'output', `${date}_${version}`);
-  if (args.noRetain || executed) {
+  // Scratch that summarises synthetic evidence says so, and that it is not retained (D-22).
+  if (args.noRetain || executed || platformEvidenceSynthetic) {
     markDevelopmentRun(basis.length > 0);
     await generateInto(args, outputDir, { kind: 'not-retained' });
   } else {
@@ -450,6 +474,26 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     console.log(`Training evidence retained: ${retainTrainingInspectionEvidence(args.trainingEvidence, outputDir)}`);
   }
 
+  // IQ-033, the TA3 suites and the platform summary read the inputs a package retained, so they check the bytes the manifest lists.
+  const retained = retention.kind === 'package' ? retention.evidencePackage : undefined;
+  const retainedInput = (role: PackageInputSource['role'], given?: string): string | undefined => {
+    const input = retained?.inputs.find(entry => entry.role === role);
+    return retained && input ? path.join(retained.dir, ...input.path.split('/')) : given;
+  };
+  // Generator-specific options go only to the generator that takes them: the platform summary's plan and root.
+  const platformEvidencePlan = retainedInput('platform-evidence-plan', args.platformEvidence);
+  const generatorOptions: Record<string, Record<string, unknown> | undefined> = {
+    'platform-validation-summary': platformEvidencePlan || args.platformRoot
+      ? { ...(platformEvidencePlan ? { platformEvidencePlan } : {}), ...(args.platformRoot ? { platformRoot: args.platformRoot } : {}) }
+      : undefined,
+  };
+  const runGenerator = (gen: GeneratorEntry) => {
+    const mod = require(gen.file) as { generate: (outputDir: string, workspaceRoot: string, options?: Record<string, unknown>) => void };
+    const options = generatorOptions[gen.name];
+    if (options) mod.generate(outputDir, WORKSPACE_ROOT, options);
+    else mod.generate(outputDir, WORKSPACE_ROOT);
+  };
+
   // Phase 2: Run generators
   console.log('--- Generators ---');
   let generated = 0;
@@ -465,8 +509,7 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     }
 
     try {
-      const mod = require(gen.file) as { generate: (outputDir: string, workspaceRoot: string) => void };
-      mod.generate(outputDir, WORKSPACE_ROOT);
+      runGenerator(gen);
       console.log(`  [OK] ${gen.name}`);
       generated++;
     } catch (err) {
@@ -535,12 +578,6 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
       }
     }
 
-    // IQ-033 and the TA3 suites read the inputs a package retained, so they check the bytes the manifest lists.
-    const retained = retention.kind === 'package' ? retention.evidencePackage : undefined;
-    const retainedInput = (role: PackageInputSource['role'], given?: string): string | undefined => {
-      const input = retained?.inputs.find(entry => entry.role === role);
-      return retained && input ? path.join(retained.dir, ...input.path.split('/')) : given;
-    };
     const targetConfigFile = retainedInput('target-configuration', args.targetConfig);
     const ta3PlanFile = retainedInput('ta3-oq-plan', args.ta3OqPlan);
     // The OQ runner's options: the TA3 plan, the suite selection and, for the TA3 suites, the declaration.
@@ -587,12 +624,12 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     console.log('--- Re-generating evidence-dependent documents ---');
     const evidenceDependentGens = GENERATORS.filter(
       (g) => g.name === 'traceability-matrix' || g.name === 'validation-summary' || g.name === 'release-gate-checklist' || g.name === 'csa-feature-assurance' || g.name === 'test-execution-records'
+        || g.name === 'platform-validation-summary'
     );
     for (const gen of evidenceDependentGens) {
       try {
         delete require.cache[require.resolve(gen.file)];
-        const mod = require(gen.file) as { generate: (outputDir: string, workspaceRoot: string) => void };
-        mod.generate(outputDir, WORKSPACE_ROOT);
+        runGenerator(gen);
         console.log(`  [OK] ${gen.name} (refreshed)`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

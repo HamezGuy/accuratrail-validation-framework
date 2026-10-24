@@ -31,6 +31,8 @@ npx ts-node generate.ts --iq ... --no-retain         # Live runners: a developme
 npx ts-node generate.ts --iq ... --target-config <file>  # The configuration under test (IQ-033)
 npx ts-node generate.ts --oq ... --ta3-oq-plan <file>    # OQ suites 13 to 18 against the study a ta3-oq-plan/1 names
 npx ts-node generate.ts --oq ... --oq-suites 13-18       # Run only these OQ suites (1 to 12 go together)
+npx ts-node generate.ts --docs-only --platform-evidence <file>  # Platform summary (document 22) with the evidence a plan cites
+npx ts-node generate.ts --docs-only --platform-root <dir>       # Read the estate repositories under another root
 npm run verify:package -- <package directory>        # Recheck a sealed package; prints its manifest SHA-256
 ```
 
@@ -51,7 +53,8 @@ then prints the SHA-256 of `package-manifest.json`. A package sets no
 
 ```
 <dir>/<yyyymmddTHHMMSSZ>-<version>-<id8>/
-  01-applicability-assessment.md ... 21-design-specification.md
+  01-applicability-assessment.md ... 22-platform-validation-summary.md
+  platform-validation-summary.json  the platform summary's data (platform-validation-summary/1)
   TMF-FILING.md                 how people file and approve the package in the eTMF
   inputs/<role>.json            byte copies of the plans and captures the run read
   evidence/<category>/...       iq, oq, pq, security, dr, performance, benchmark, p13
@@ -61,9 +64,9 @@ then prints the SHA-256 of `package-manifest.json`. A package sets no
 
 Whether a package is synthetic is computed, never chosen: it is synthetic when
 `--synthetic-qualification` is given, when a `--benchmark-run` or `--p13-plan`
-import ran (both are synthetic engineering evidence), or, once the platform
-summary lands, when an entry of its platform evidence plan is synthetic; this
-holds for documents packages too. A synthetic package is retained only under
+import ran (both are synthetic engineering evidence), or when an entry of the
+platform evidence plan (`--platform-evidence`) is synthetic; this holds for
+documents packages too. A synthetic package is retained only under
 the `runs/validation-packages` directory of a synthetic data root (a tree
 holding `SYNTHETIC-TRIAL-DATA-ROOT`, searched upwards from the retain root),
 that is `C:/Projects/.synthetic-trial-data/runs/validation-packages`. A package
@@ -77,7 +80,8 @@ Inputs are copied byte for byte into `inputs/<role>.json` with their SHA-256
 and original path: `--p13-plan` (`p13-plan`), `--training-evidence`
 (`training-evidence`), `--target-config` (`target-configuration`, read strictly
 against its contract first), `--ta3-oq-plan` (`ta3-oq-plan`, read strictly too),
-and for `--benchmark-run` the run's `run-summary.json`
+`--platform-evidence` (`platform-evidence-plan`, read strictly too, in every
+mode, documents runs included), and for `--benchmark-run` the run's `run-summary.json`
 and `metrics.json` (`benchmark-run-summary`, `benchmark-metrics`), so the
 package keeps them when the data root's retention later moves the run. Inputs
 are read and checked before the package is created: an input that cannot be
@@ -104,7 +108,8 @@ marks every record and document, and that no record or document of a package is
 stamped as a development run. On success it
 prints the SHA-256 of `package-manifest.json`, the `contentHash` the eTMF must
 show for the filed manifest. `TMF-FILING.md` gives the filing steps: upload
-`package-manifest.json` (and `12-validation-summary.md` for reading) as
+`package-manifest.json` (and `12-validation-summary.md` and
+`22-platform-validation-summary.md` for reading) as
 REGULATORY documents, file them at platform scope, a different person accepts
 them in QC review, and a QA lead approves the governance `document` assignment
 to the "Computerised system validation package" requirement with the TMF
@@ -336,6 +341,66 @@ exercise each case and marks any mapped script missing from that checkout. The
 live suite retains only failures, so these rows are coverage pointers, not
 execution evidence.
 
+### Platform validation summary (document 22)
+
+`22-platform-validation-summary.md` and `platform-validation-summary.json`
+(contract `platform-validation-summary/1`,
+`contracts/platform-validation-summary-v1.schema.json`) list the fourteen
+systems a TA3 use relies on, from `config/platform-inventory.ts`: the EDC API
+and UI, LibreClinica core, the training service, the interop middleware,
+shared types, auth core, the Intelligence Layer, the Clinical Semantic Layer,
+the Command Center, the Biometrics Workbench, Data Manager Tools,
+OpenStudyBuilder and this framework. Repositories resolve under
+`--platform-root` (by default the parent of the EDC workspace, `C:/Projects`)
+through `collectors/workspace-paths.ts`, and each is only read (`git rev-parse
+HEAD`, `git status --porcelain --untracked-files=no`). For each system the
+summary quotes the line that states its qualification status from the current
+bytes, with the file's SHA-256 and line number ("statement not found:
+inventory stale" when the literal moved), evaluates the gap probes (`contains`
+keeps a gap open while its literal is present, `absent` while it is absent; a
+gap without a probe is stated and re-verified at review), and names each gap's
+plan item. The word "qualified" is never a status: a system shows "evidence
+present, unapproved" when an admitted evidence entry verified or matched by
+hash, else "gap"; approval is QA's act in the eTMF.
+
+`--platform-evidence <file>` names a `platform-validation-evidence-plan/1`
+(`contracts/platform-validation-evidence-plan-v1.schema.json`): per system,
+sealed packages of this framework by the SHA-256 of their
+`package-manifest.json`, verified with `verifyPackage`, and other files by
+their SHA-256 alone. The plan is checked before anything runs: a system the
+inventory lacks, an entry the system does not admit (the inventory names what
+each system admits; the Intelligence Layer takes a package only with P13
+evidence, the Command Center only with benchmark evidence), or a `synthetic`
+declaration that differs from the cited manifest refuses it; a hash that does
+not match is shown as `mismatch`, a file or package that cannot be read as
+`unreadable`. Any synthetic entry makes the run synthetic: a documents package
+is then retained only under `runs/validation-packages` of the synthetic data
+root, and a scratch run is stamped synthetic and not retained. A retained
+package copies the plan to `inputs/platform-evidence-plan.json`, and the
+summary reads that copy. Without a plan every system shows its gap.
+
+The summary also compares the EDC API release of each cited OQ package with
+the release a cited O-7 import recorded in PQT-005 (`same`; `RELEASE_MISMATCH`,
+which becomes a gap of the EDC API; or `not-comparable`), and lists the
+validated change awaiting change control: D-04, turning on
+`ENABLE_DEVIATION_ENGINE`, `ENABLE_DOMAIN_EVENTS` and
+`ENABLE_DEVIATION_DECISIONS` in the live trial, with their lines in the EDC
+production profile, the OQ cases it needs (suites 13 to 16, OQ-206 to OQ-231)
+and how many of them passed in each cited OQ package, the SOP-CC-001 category
+(Critical: the System Owner and QA approve) and the status "no change-control
+record exists". The framework creates no change-control record.
+
+```powershell
+npm run generate -- --docs-only --platform-evidence C:/path/to/platform-evidence-plan.json --version val1-platform-<date>
+# When the plan cites a synthetic package, retain the documents package in the data root:
+npm run generate -- --docs-only --platform-evidence C:/path/to/platform-evidence-plan.json `
+  --retain-root C:/Projects/.synthetic-trial-data/runs/validation-packages --version val1-platform-<date>
+```
+
+`npm run test:cross-repo` builds the summary on the real sibling checkouts and
+fails when a repository is missing, a statement moved or a probe stopped
+matching, which forces an update of the inventory.
+
 ### ICH E6(R3) references
 
 Generated documents cite ICH E6(R3) (ICH Step 4, 6 January 2025) only through
@@ -373,6 +438,13 @@ output/2026-05-02_v1.0/
   14-hipaa-assessment.md
   15-training-matrix.md
   16-release-gate-checklist.md
+  17-fda-supplemental.md
+  18-regulatory-requirements-map.md
+  19-csa-feature-assurance.md
+  20-test-execution-records.md
+  21-design-specification.md
+  22-platform-validation-summary.md
+  platform-validation-summary.json
   evidence/iq/  evidence/oq/  evidence/pq/
 ```
 

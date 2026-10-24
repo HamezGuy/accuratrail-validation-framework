@@ -31,9 +31,11 @@ Module._load = function (request, parent, isMain) {
     if (request === './generators/helpers/markdown-writer') return originalLoad.call(this, request, parent, isMain);
     if (request.startsWith('./generators/')) {
       return {
-        generate() {
+        generate(_outputDir, _workspaceRoot, options) {
           const count = (generated.get(request) || 0) + 1;
           generated.set(request, count);
+          // Generator-specific options (the third argument) reach only the generator they are for.
+          if (arguments.length > 2) console.log(`GENERATOR_OPTIONS ${request} ${JSON.stringify(options)}`);
           if (scenario === 'refresh-failure' && request.endsWith('06-traceability-matrix') && count === 2) {
             throw new Error('Synthetic evidence refresh failure');
           }

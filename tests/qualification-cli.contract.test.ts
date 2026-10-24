@@ -423,3 +423,74 @@ test('a retained package keeps the TA3 plan as an input and hands the OQ runner 
   assert.deepEqual(verified.manifest!.inputs.find(input => input.role === 'ta3-oq-plan'),
     { role: 'ta3-oq-plan', path: 'inputs/ta3-oq-plan.json', sha256: createHash('sha256').update(bytes).digest('hex'), originalPath: file });
 });
+
+/** A synthetic platform-validation-evidence-plan/1 citing one Workbench record by its SHA-256. */
+function platformPlan(t: { after(callback: () => void): void }, synthetic = false, systems?: Record<string, unknown>): { file: string; bytes: Buffer } {
+  const directory = temporaryDirectory(t, 'accura-cli-platform-plan-');
+  const record = path.join(directory, 'formal-qualification.json');
+  fs.writeFileSync(record, '{"synthetic":true,"record":"formal qualification"}');
+  const bytes = Buffer.from(JSON.stringify({
+    contract: 'platform-validation-evidence-plan/1', preparedBy: 'CLI contract test (synthetic)',
+    systems: systems ?? { workbench: { evidence: [{
+      kind: 'bw-formal-qualification/1', path: record, sha256: createHash('sha256').update(fs.readFileSync(record)).digest('hex'), synthetic,
+    }] } },
+  }));
+  const file = path.join(directory, 'platform-evidence-plan.json');
+  fs.writeFileSync(file, bytes);
+  return { file, bytes };
+}
+
+test('--platform-evidence and --platform-root reach the platform summary only, after the plan is checked', t => {
+  const { file, bytes } = platformPlan(t);
+  const result = runCli('pass', ['--docs-only', '--platform-evidence', file, '--platform-root', 'C:/synthetic-estate'], null, []);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(result.output.includes(`GENERATOR_OPTIONS ./generators/22-platform-validation-summary ${JSON.stringify({ platformEvidencePlan: file, platformRoot: 'C:/synthetic-estate' })}`), result.output);
+  assert.equal((result.output.match(/GENERATOR_OPTIONS /g) || []).length, 1, 'no other generator receives options');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  assert.ok(result.output.includes(`Platform evidence plan: ${file} (platform-validation-evidence-plan/1, 0 verified, 1 hash-only, 0 mismatch, 0 unreadable, SHA-256 ${digest.slice(0, 12)})`), result.output);
+  assert.doesNotMatch(result.output, /Retention:/, 'a documents run citing no synthetic evidence stays plain scratch');
+  // With a live runner the summary is generated and refreshed, both times with the plan.
+  const live = runCli('pass', ['--iq', '--platform-evidence', file]);
+  assert.equal(live.status, 0, live.output);
+  assert.equal((live.output.match(/GENERATOR_OPTIONS \.\/generators\/22-platform-validation-summary /g) || []).length, 2, live.output);
+  assert.match(live.output, /platform-validation-summary \(refreshed\)/);
+  assert.doesNotMatch(runCli('pass', ['--docs-only'], null, []).output, /GENERATOR_OPTIONS|Platform evidence plan/, 'no plan and no root, no options');
+});
+
+test('a documents package citing synthetic evidence is synthetic, retains the plan and hands the platform summary the retained copy', t => {
+  const { file, bytes } = platformPlan(t, true);
+  const home = markedRoot(t);
+  const result = runCli('pass', ['--docs-only', '--platform-evidence', file, '--version', 'cli-platform'], null, [], ['--retain-root', home]);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /cites synthetic evidence/);
+  assert.match(result.output, /Retention: sealed evidence package \(synthetic engineering evidence\)/);
+  const dir = path.join(home, fs.readdirSync(home)[0]);
+  const retained = path.join(dir, 'inputs', 'platform-evidence-plan.json');
+  assert.ok(result.output.includes(`GENERATOR_OPTIONS ./generators/22-platform-validation-summary ${JSON.stringify({ platformEvidencePlan: retained })}`), result.output);
+  assert.deepEqual(fs.readFileSync(retained), bytes);
+  const verified = verifyPackage(dir);
+  assert.deepEqual(verified.problems, []);
+  const manifest = verified.manifest!;
+  assert.deepEqual([manifest.executed, manifest.synthetic, manifest.syntheticBasis], [false, true, ['platform-evidence-plan']]);
+  assert.deepEqual(manifest.inputs, [{ role: 'platform-evidence-plan', path: 'inputs/platform-evidence-plan.json',
+    sha256: createHash('sha256').update(bytes).digest('hex'), originalPath: file }]);
+  // Without a retain root the same run is scratch that says it is synthetic and not retained.
+  const scratch = runCli('pass', ['--docs-only', '--platform-evidence', file], null, []);
+  assert.equal(scratch.status, 0, scratch.output);
+  assert.ok(scratch.output.includes(`Retention: none. ${DEVELOPMENT_RUN_NOTICE}; nothing from this run is retained.`), scratch.output);
+  // A plan citing no synthetic evidence makes a package that is not synthetic, refused inside the marked data root.
+  const real = runCli('pass', ['--docs-only', '--platform-evidence', platformPlan(t).file], null, [], ['--retain-root', home]);
+  assert.equal(real.status, 1, real.output);
+  assert.match(real.output, /A package that is not synthetic is never retained inside the synthetic data root/);
+  assert.deepEqual(fs.readdirSync(home), [path.basename(dir)]);
+});
+
+test('a platform evidence plan that breaks its contract is refused before any document is generated', t => {
+  const unknown = platformPlan(t, false, { 'unknown-system': { evidence: [] } });
+  const result = runCli('pass', ['--docs-only', '--platform-evidence', unknown.file], null, []);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /names "unknown-system", which is not a system of the platform inventory/);
+  assert.doesNotMatch(result.output, /--- Generators ---/);
+  assert.match(runCli('pass', ['--docs-only', '--platform-evidence'], null, []).output, /--platform-evidence requires a path/);
+  assert.match(runCli('pass', ['--docs-only', '--platform-root'], null, []).output, /--platform-root requires a directory/);
+});
