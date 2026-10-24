@@ -1432,19 +1432,22 @@ function escalationPolicy(ctx: Ta3Context, rowId: string): Record<string, unknow
   };
 }
 
-/** Whether the plan's recipient holds the recipient role at the OQ site (its staff list); a holder only at the parent is not listed. */
+/** Whether the plan's recipient holds the recipient role at the OQ site or its parent study, where O-2 looks for holders
+ * (spec P20 F-m): the site's staff list, then the parent's (study_user_role rows of that study, active only). */
 async function recipientHoldsRole(run: CaseRun, session: Ta3Session): Promise<boolean> {
   const { recipientRole, recipientUsername } = run.ctx.plan.escalation;
   const names = RECIPIENT_ROLE_NAMES[recipientRole] ?? [recipientRole];
-  const reply = await run.call(session, 'GET', `/api/sites/${run.ctx.site}/staff`);
-  const staff = dataOf(reply);
-  if (reply.status !== 200 || !Array.isArray(staff)) {
-    run.remark(`The OQ site's staff list could not be read (HTTP ${reply.status}), so the recipient's role is unconfirmed.`);
-    return false;
+  const unread: string[] = [];
+  const scopes: Array<[string, number]> = [['OQ site', run.ctx.site], ...(run.ctx.root !== run.ctx.site ? [['parent study', run.ctx.root] as [string, number]] : [])];
+  for (const [scope, studyId] of scopes) {
+    const reply = await run.call(session, 'GET', `/api/sites/${studyId}/staff`);
+    const staff = dataOf(reply);
+    if (reply.status !== 200 || !Array.isArray(staff)) { unread.push(`the ${scope}'s (HTTP ${reply.status})`); continue; }
+    if (staff.some((entry: unknown) => isRecord(entry) && entry.username === recipientUsername && names.includes(String(entry.role ?? '').toLowerCase()))) return true;
   }
-  const holds = staff.some((entry: unknown) => isRecord(entry) && entry.username === recipientUsername && names.includes(String(entry.role ?? '').toLowerCase()));
-  if (!holds) run.remark(`${recipientUsername} holds no ${recipientRole} role in the OQ site's staff list (a holder at the parent study is not listed there).`);
-  return holds;
+  run.remark(`${recipientUsername} holds no ${recipientRole} role in the staff list of the OQ site or its parent study`
+    + `${unread.length ? `; unread staff lists: ${unread.join(', ')}, so the role is unconfirmed there` : ''}.`);
+  return false;
 }
 
 async function escalateEvents(run: CaseRun, session: Ta3Session, deviationId: number): Promise<Record<string, any>[]> {

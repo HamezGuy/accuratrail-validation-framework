@@ -32,7 +32,11 @@ export interface FakeEdcOptions {
   tokenLifetimeMs?: number;
   /** A defect: documents recorded by a blinded reader still carry arm content. */
   blindedLeaksArms?: boolean;
+  /** The recipient holds the escalation role at the OQ site, and the fake escalates only then. */
   recipientHoldsRole?: boolean;
+  /** The recipient holds the role in the parent study's staff list; with recipientHoldsRole false this models an
+   * escalation stage that ignores a parent holder, which O-2 must not (it resolves holders at the site or its parent). */
+  recipientAtParent?: boolean;
 }
 
 export interface FakeClock { now(): number; sleep(ms: number): Promise<void>; onTick(listener: () => void): void }
@@ -437,6 +441,9 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
       // Sites: staff, lifecycle evidence, milestones and retained documents.
       if (method === 'GET' && path === `/api/sites/${site}/staff`) {
         return ok([{ username: plan.escalation.recipientUsername, role: (options.recipientHoldsRole ?? true) ? plan.escalation.recipientRole : 'viewer' }]);
+      }
+      if (method === 'GET' && path === `/api/sites/${root}/staff`) {
+        return ok(options.recipientAtParent ? [{ username: plan.escalation.recipientUsername, role: plan.escalation.recipientRole }] : []);
       }
       if (method === 'POST' && (match = new RegExp(`^/api/sites/study/${site}/lifecycle/evidence/([0-9a-f-]{36})$`).exec(path))) { state.uploads.add(match[1]); return ok({ fileId: match[1] }); }
       if (path === `/api/sites/study/${root}/milestones`) {

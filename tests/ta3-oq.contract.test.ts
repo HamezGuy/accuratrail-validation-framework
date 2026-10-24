@@ -171,7 +171,7 @@ test('a token near its expiry logs in again before use, so no request meets a 40
   assert.ok((edc.logins.get('ta3-operator') ?? 0) >= 2, 'the operator logged in again before its token expired');
 });
 
-test('the escalation window not waited and a recipient without the role are setup codes, never release failures', async t => {
+test('the escalation window not waited and a recipient without the role are setup codes; a holder at the parent study is a recipient', async t => {
   const unwaited = await runAgainst(t, {}, { selection: [16], plan: plan({ escalation: { recipientRole: 'investigator', recipientUsername: 'ta3-recipient' } }) });
   assert.equal(unwaited.row('OQ-227').passed, true, unwaited.row('OQ-227').notes);
   for (const id of ['OQ-228', 'OQ-229', 'OQ-230', 'OQ-231']) {
@@ -180,6 +180,10 @@ test('the escalation window not waited and a recipient without the role are setu
   const unstaffed = await runAgainst(t, { recipientHoldsRole: false }, { selection: [16] });
   for (const id of ['OQ-228', 'OQ-230']) assert.deepEqual(outcome(unstaffed.row(id)), [false, true, TA3_OUTCOME.RECIPIENT_UNAVAILABLE], `${id}: ${unstaffed.row(id).notes}`);
   assert.deepEqual(outcome(unstaffed.row('OQ-229')), [false, true, TA3_OUTCOME.PREREQUISITE_MISSING]);
+  // O-2 resolves holders at the site or its parent (P20 F-m): with the holder listed at the parent, no escalation is a release failure.
+  const parentHolder = await runAgainst(t, { recipientHoldsRole: false, recipientAtParent: true }, { selection: [16] });
+  for (const id of ['OQ-228', 'OQ-230']) assert.deepEqual(outcome(parentHolder.row(id)), [false, false, null], `${id}: ${parentHolder.row(id).notes}`);
+  assert.ok(parentHolder.edc.calls.includes(`GET /api/sites/${plan().study.studyId}/staff`), 'the parent study\'s staff list was read');
 });
 
 test('O-2 and M-2 absent at the release fail their cases with FEATURE_ABSENT_AT_RELEASE', async t => {
