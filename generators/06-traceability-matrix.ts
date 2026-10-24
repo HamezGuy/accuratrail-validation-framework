@@ -245,7 +245,7 @@ function installationRows(): TraceRow[] {
     ['Backup service configured', '§11.10(c)', riskBadge('Critical'), 'backup.service.ts', 'IQ-026', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['AES-256 encryption configured', '§11.10(c), §164.312(a)(2)(iv)', riskBadge('Critical'), 'encryption.service.ts', 'IQ-027', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Backup schedule configured', '§11.10(c)', riskBadge('Critical'), 'backup-scheduler.service.ts', 'IQ-028', 'Pending', 'evidence/iq/', 'None', 'Pending'],
-    ['Environment segregation', '§11.10(a)', riskBadge('High'), 'docker-compose configs', 'IQ-029', 'Pending', 'evidence/iq/', 'None', 'Pending'],
+    ['Environment segregation', '§11.10(a)', riskBadge('High'), 'configuration declaration (--target-config)', 'IQ-029', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['UTC timezone configured', '§11.10(k)(1)', riskBadge('High'), 'Server timezone', 'IQ-030', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Production auth required', '§11.10(d)', riskBadge('Critical'), 'Auth middleware', 'IQ-031', 'Pending', 'evidence/iq/', 'None', 'Pending'],
     ['Admin strong passwords', '§11.300', riskBadge('Critical'), 'Password policy enforcement', 'IQ-032', 'Pending', 'evidence/iq/', 'None', 'Pending'],

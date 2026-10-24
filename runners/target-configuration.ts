@@ -22,14 +22,17 @@ export const CORE_API_SERVICE = 'core-api';
 /** How the EDC reads a boolean setting: on only when exactly 'true'; on unless exactly
  * 'false'; on when unset or exactly 'true'. */
 type BooleanReading = 'true-enables' | 'false-disables' | 'unset-or-true';
-type FlagSpec = { kind: 'boolean'; reading: BooleanReading } | { kind: 'node-env' } | { kind: 'presence' };
+/** `alsoEnabledBy`: other settings that switch the same feature on when exactly 'true', so
+ * the declared flag states what the EDC does, not one setting alone (RF-080). */
+type FlagSpec = { kind: 'boolean'; reading: BooleanReading; alsoEnabledBy?: readonly string[] } | { kind: 'node-env' } | { kind: 'presence' };
 
 /** The allowlist (spec P20 3.3), with the reading the EDC applies to each setting. */
 export const TARGET_CONFIGURATION_FLAGS = {
   // libreclinicaapi src/config/environment.ts: process.env.ENABLE_DEVIATION_ENGINE === 'true'
   ENABLE_DEVIATION_ENGINE: { kind: 'boolean', reading: 'true-enables' },
-  // src/services/database/domain-event.service.ts domainEventsEnabled()
-  ENABLE_DOMAIN_EVENTS: { kind: 'boolean', reading: 'true-enables' },
+  // src/services/database/domain-event.service.ts domainEventsEnabled(): ENABLE_DOMAIN_EVENTS === 'true'
+  // || EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED === 'true'. The declared value is what that function returns.
+  ENABLE_DOMAIN_EVENTS: { kind: 'boolean', reading: 'true-enables', alsoEnabledBy: ['EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED'] },
   // O-1 (spec P09 4.3): 503 DEVIATION_DECISIONS_DISABLED unless 'true'
   ENABLE_DEVIATION_DECISIONS: { kind: 'boolean', reading: 'true-enables' },
   // src/server.ts: process.env.ENABLE_STUDY_TASK_CRON !== 'false'
@@ -279,7 +282,8 @@ export function composeServiceEnvironment(text: string, service: string): Source
   // The service's own keys sit at its first child level; a deeper environment: belongs to something else.
   const childIndent = indentOf(block.find(isContent) ?? '');
   const ownKey = (line: string, key: RegExp) => isContent(line) && indentOf(line) === childIndent && key.test(line);
-  let complete = !block.some(line => ownKey(line, /^\s*env_file:/));
+  // An env_file, a merge key ('<<:') or 'extends:' at the service's own level can set keys this block does not show (RF-079).
+  let complete = !block.some(line => ownKey(line, /^\s*(?:env_file|extends|<<)\s*:/));
   const environment = block.findIndex(line => ownKey(line, /^\s*environment:\s*(?:#.*)?$/));
   if (environment < 0) {
     // No environment, or an inline one this reader does not parse: nothing is known to be unset.
@@ -328,9 +332,19 @@ export function effectiveFlagValue(flag: TargetConfigurationFlag, raw: string | 
 /** A flag's value in a source environment: undefined when its entry is set elsewhere,
  * or when it is absent from an environment that may set it elsewhere. */
 export function sourceFlagValue(environment: SourceEnvironment, flag: TargetConfigurationFlag): FlagValue | undefined {
-  const entry = environment.entries.get(flag);
-  if (entry) return entry.value === undefined ? undefined : effectiveFlagValue(flag, entry.value);
-  return environment.complete ? effectiveFlagValue(flag, undefined) : undefined;
+  const single = (key: string, read: (raw: string | undefined) => FlagValue | undefined): FlagValue | undefined => {
+    const entry = environment.entries.get(key);
+    if (entry) return entry.value === undefined ? undefined : read(entry.value);
+    return environment.complete ? read(undefined) : undefined;
+  };
+  const own = single(flag, raw => effectiveFlagValue(flag, raw));
+  const spec: FlagSpec = TARGET_CONFIGURATION_FLAGS[flag];
+  const others = spec.kind === 'boolean' ? spec.alsoEnabledBy ?? [] : [];
+  if (!others.length) return own;
+  // On when any of the settings is on; off only when every one of them is known to be off.
+  const values = [own, ...others.map(key => single(key, raw => raw === 'true'))];
+  if (values.includes(true)) return true;
+  return values.every(value => value === false) ? false : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,29 +354,34 @@ export function sourceFlagValue(environment: SourceEnvironment, flag: TargetConf
 /** The OQ cases that observe a declared flag at the target (spec P20 3.4 and 3.9: the
  * engine, the O-1 decision routes, and the two W-1 inspection flags), recorded by
  * runners/oq-ta3-runner.ts. OQ-219 and OQ-220
- * read ungated members and OQ-225 and OQ-226 exist without O-1, so they observe none. */
-export const FLAG_OBSERVING_CASES: ReadonlyArray<{ caseId: string; flag: TargetConfigurationFlag }> = [
-  { caseId: 'OQ-206', flag: 'ENABLE_DEVIATION_ENGINE' },
-  { caseId: 'OQ-221', flag: 'ENABLE_DEVIATION_DECISIONS' },
-  { caseId: 'OQ-222', flag: 'ENABLE_DEVIATION_DECISIONS' },
-  { caseId: 'OQ-223', flag: 'ENABLE_DEVIATION_DECISIONS' },
-  { caseId: 'OQ-224', flag: 'ENABLE_DEVIATION_DECISIONS' },
-  { caseId: 'OQ-241', flag: 'INSPECTION_COPY_TA3_INVENTORY' },
-  { caseId: 'OQ-242', flag: 'ENABLE_SEGMENTED_INSPECTION_EXPORT' },
+ * read ungated members and OQ-225 and OQ-226 exist without O-1, so they observe none.
+ * Each case is bound to the one outcome code that means its own flag is off at the target
+ * (RF-078): ENGINE_DISABLED is the engine's 503 and FEATURE_DISABLED_AT_TARGET the 503 of
+ * the O-1 routes and of the W-1 export, so an O-1 case that met a disabled engine says
+ * nothing about ENABLE_DEVIATION_DECISIONS. */
+export const FLAG_OBSERVING_CASES: ReadonlyArray<{ caseId: string; flag: TargetConfigurationFlag; disabledCode: DisabledOutcomeCode }> = [
+  { caseId: 'OQ-206', flag: 'ENABLE_DEVIATION_ENGINE', disabledCode: 'ENGINE_DISABLED' },
+  { caseId: 'OQ-221', flag: 'ENABLE_DEVIATION_DECISIONS', disabledCode: 'FEATURE_DISABLED_AT_TARGET' },
+  { caseId: 'OQ-222', flag: 'ENABLE_DEVIATION_DECISIONS', disabledCode: 'FEATURE_DISABLED_AT_TARGET' },
+  { caseId: 'OQ-223', flag: 'ENABLE_DEVIATION_DECISIONS', disabledCode: 'FEATURE_DISABLED_AT_TARGET' },
+  { caseId: 'OQ-224', flag: 'ENABLE_DEVIATION_DECISIONS', disabledCode: 'FEATURE_DISABLED_AT_TARGET' },
+  { caseId: 'OQ-241', flag: 'INSPECTION_COPY_TA3_INVENTORY', disabledCode: 'FEATURE_DISABLED_AT_TARGET' },
+  { caseId: 'OQ-242', flag: 'ENABLE_SEGMENTED_INSPECTION_EXPORT', disabledCode: 'FEATURE_DISABLED_AT_TARGET' },
 ];
 
 /** Outcome codes that mean the target answered the feature disabled (spec P20 VD-5). */
 export const DISABLED_OUTCOME_CODES = ['ENGINE_DISABLED', 'FEATURE_DISABLED_AT_TARGET'] as const;
+export type DisabledOutcomeCode = typeof DISABLED_OUTCOME_CODES[number];
 export const CONFIGURATION_MISMATCH_CODE = 'CONFIGURATION_MISMATCH';
 
 /** What an observing OQ record saw of its boolean flag: off when the target refused the
- * feature as disabled, on when the case passed, the opposite of the declaration when the
- * case itself recorded CONFIGURATION_MISMATCH, and nothing otherwise (absent at the
- * release, not executed, or failed for another reason). */
-export function observedFlag(record: EvidenceResult, declared: FlagValue): FlagValue | undefined {
+ * feature with the case's own disabled code, on when the case passed, the opposite of the
+ * declaration when the case itself recorded CONFIGURATION_MISMATCH, and nothing otherwise
+ * (another flag's refusal, absent at the release, not executed, or failed for another reason). */
+export function observedFlag(record: EvidenceResult, declared: FlagValue, disabledCode: DisabledOutcomeCode): FlagValue | undefined {
   if (typeof declared !== 'boolean') return undefined;
   if (record.outcomeCode === CONFIGURATION_MISMATCH_CODE) return !declared;
-  if ((DISABLED_OUTCOME_CODES as readonly (string | undefined)[]).includes(record.outcomeCode)) return false;
+  if (record.outcomeCode === disabledCode) return false;
   return record.passed ? true : undefined;
 }
 
@@ -389,11 +408,11 @@ export function configurationMismatches(flags: DeclaredFlags, evidence: { iq: Ev
       mismatches.push(mismatch);
     });
   }
-  for (const { caseId, flag } of FLAG_OBSERVING_CASES) {
+  for (const { caseId, flag, disabledCode } of FLAG_OBSERVING_CASES) {
     const declared = flags[flag];
     const record = evidence.oq.find(entry => entry.testCaseId === caseId);
     if (declared === undefined || !record) continue;
-    const observed = observedFlag(record, declared);
+    const observed = observedFlag(record, declared, disabledCode);
     if (observed !== undefined && observed !== declared) mismatches.push({ flag, declared, observed, observedBy: caseId });
   }
   return mismatches;

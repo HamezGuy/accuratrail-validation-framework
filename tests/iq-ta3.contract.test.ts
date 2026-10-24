@@ -11,12 +11,13 @@ import { collectSharedTypes } from '../collectors/shared-types-collector';
 import { collectFrontend } from '../collectors/frontend-collector';
 import { collectSOPs } from '../collectors/sop-collector';
 import {
-  checkConfigurationUnderTest, checkDeadSettings, checkSharedTypesInstallation, checkSoftwareInstallation, checkVendoredReceipts,
+  checkConfigurationUnderTest, checkDeadSettings, checkEnvironmentSegregation, checkSharedTypesInstallation, checkSoftwareInstallation, checkVendoredReceipts,
   declaredMajor, readVendoredArchive, run as runIq,
   IQ_CASE_COUNT, LIVE_PRODUCTION_STATEMENT, PRODUCTION_EXAMPLE, SHARED_TYPES_VERIFIER, type SharedTypesConsumer,
 } from '../runners/iq-runner';
 import {
-  composeServiceEnvironment, configurationMismatches, dotenvEnvironment, effectiveFlagValue, parseTargetConfiguration, sourceFlagValue,
+  composeServiceEnvironment, configurationMismatches, dotenvEnvironment, effectiveFlagValue, observedFlag, parseTargetConfiguration, sourceFlagValue,
+  FLAG_OBSERVING_CASES,
   NODE_ENVIRONMENTS, TARGET_CONFIGURATION_FLAGS, TARGET_CONFIGURATION_FLAG_NAMES, TARGET_CONFIGURATION_REQUIRED,
   TARGET_CONFIGURATION_SOURCE_REQUIRED, type ConfigurationMismatch,
 } from '../runners/target-configuration';
@@ -527,4 +528,65 @@ test('IQ-035 fails a vendored archive without a matching receipt or not the one 
   assert.match(verified.notes, /2 vendored archives each match their receipt and the lockfile/);
   writeJson(path.join(api, 'package.json'), { name: 'synthetic-api', version: '0.0.1', dependencies: { 'left-pad': '^1.3.0' } });
   assert.match(checkVendoredReceipts(api).notes, /declares no file:vendor dependency, so no receipt is verified/);
+});
+
+test('IQ-029 reads segregation from the declaration: not executed without one, failed for a production target or source', t => {
+  const none = checkEnvironmentSegregation(undefined, TARGET);
+  assert.deepEqual([none.testCaseId, none.method, none.passed, none.outcomeCode], ['IQ-029', 'CONTRACT', false, 'NO_TARGET_CONFIGURATION']);
+  const local = configuration(t, DECLARED);
+  const segregated = checkEnvironmentSegregation(local.file, TARGET);
+  assert.equal(segregated.passed, true, segregated.notes);
+  assert.match(segregated.notes, /the declared target http:\/\/127\.0\.0\.1:3000 is not the production API host api\.accuratrials\.com, and its configuration source compose\.yaml is not a production configuration file \(declared NODE_ENV development\)/);
+  assert.doesNotMatch(segregated.notes, /docker-compose\.test-env/);
+  const production = SYSTEM_INFO.environments.production.apiUrl;
+  const onProduction = checkEnvironmentSegregation(configuration(t, DECLARED, { target: production }).file, production);
+  assert.deepEqual([onProduction.passed, onProduction.outcomeCode], [false, 'TARGET_IS_PRODUCTION']);
+  const productionSource = configuration(t, DECLARED);
+  const declaration = JSON.parse(fs.readFileSync(productionSource.file, 'utf8'));
+  writeJson(productionSource.file, { ...declaration, source: { ...declaration.source, path: path.join(productionSource.workspace, 'docker-compose.production.yml') } });
+  const fromProduction = checkEnvironmentSegregation(productionSource.file, TARGET);
+  assert.equal(fromProduction.passed, false);
+  assert.match(fromProduction.notes, /docker-compose\.production\.yml is a production configuration file/);
+});
+
+test('a compose service with its own merge key or extends is an incomplete environment (RF-079)', () => {
+  for (const own of ['    <<: *defaults', '    extends:', '    extends: { file: base.yaml, service: api }']) {
+    const environment = composeServiceEnvironment(['services:', '  core-api:', own, '    environment:', '      NODE_ENV: test', ''].join('\n'), 'core-api')!;
+    assert.equal(environment.complete, false, own);
+    assert.equal(sourceFlagValue(environment, 'ENABLE_DEVIATION_ENGINE'), undefined, `${own}: absent keys are undetermined`);
+  }
+  const plain = composeServiceEnvironment(['services:', '  core-api:', '    image: api', '    environment:', '      NODE_ENV: test', ''].join('\n'), 'core-api')!;
+  assert.equal(plain.complete, true);
+});
+
+test('ENABLE_DOMAIN_EVENTS reads as the EDC does: on when EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED is true (RF-080)', () => {
+  const read = (lines: string[]) => sourceFlagValue(dotenvEnvironment(lines.join('\n')), 'ENABLE_DOMAIN_EVENTS');
+  assert.equal(read(['ENABLE_DOMAIN_EVENTS=false', 'EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED=true']), true);
+  assert.equal(read(['ENABLE_DOMAIN_EVENTS=true', 'EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED=false']), true);
+  assert.equal(read(['ENABLE_DOMAIN_EVENTS=false', 'EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED=false']), false);
+  assert.equal(read([]), false);
+  assert.equal(read(['ENABLE_DOMAIN_EVENTS=false', 'EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED=${PROTOTYPE}']), undefined, 'set where the stack starts');
+  const prototype = composeServiceEnvironment(['services:', '  core-api:', '    environment:', '      ENABLE_DOMAIN_EVENTS: "false"',
+    '      EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED: "true"', ''].join('\n'), 'core-api')!;
+  assert.equal(sourceFlagValue(prototype, 'ENABLE_DOMAIN_EVENTS'), true);
+  assert.deepEqual(TARGET_CONFIGURATION_FLAGS.ENABLE_DOMAIN_EVENTS.alsoEnabledBy, ['EDC_PLATFORM_EVENTS_PROTOTYPE_ENABLED']);
+});
+
+test('each flag-observing OQ case reads only its own disabled code as its flag off (RF-078)', () => {
+  const oq = (testCaseId: string, outcomeCode?: string, passed = false): EvidenceResult => ({
+    testCaseId, timestamp: '2026-10-24T00:00:00Z', endpoint: '/synthetic', method: 'GET', responseStatus: 503,
+    responseBody: null, passed, notes: 'Synthetic observation', ...(outcomeCode ? { outcomeCode } : {}),
+  });
+  assert.deepEqual(FLAG_OBSERVING_CASES.map(entry => [entry.caseId, entry.disabledCode]), [
+    ['OQ-206', 'ENGINE_DISABLED'], ['OQ-221', 'FEATURE_DISABLED_AT_TARGET'], ['OQ-222', 'FEATURE_DISABLED_AT_TARGET'],
+    ['OQ-223', 'FEATURE_DISABLED_AT_TARGET'], ['OQ-224', 'FEATURE_DISABLED_AT_TARGET'], ['OQ-241', 'FEATURE_DISABLED_AT_TARGET'],
+    ['OQ-242', 'FEATURE_DISABLED_AT_TARGET']]);
+  // An O-1 case that met a disabled engine says nothing about ENABLE_DEVIATION_DECISIONS, nor the engine case about another feature.
+  assert.equal(observedFlag(oq('OQ-221', 'ENGINE_DISABLED'), true, 'FEATURE_DISABLED_AT_TARGET'), undefined);
+  assert.equal(observedFlag(oq('OQ-206', 'FEATURE_DISABLED_AT_TARGET'), true, 'ENGINE_DISABLED'), undefined);
+  assert.equal(observedFlag(oq('OQ-221', 'FEATURE_DISABLED_AT_TARGET'), true, 'FEATURE_DISABLED_AT_TARGET'), false);
+  assert.equal(observedFlag(oq('OQ-206', 'ENGINE_DISABLED'), true, 'ENGINE_DISABLED'), false);
+  assert.deepEqual(configurationMismatches({ ENABLE_DEVIATION_ENGINE: true, ENABLE_DEVIATION_DECISIONS: true },
+    { iq: [], oq: [oq('OQ-206', 'ENGINE_DISABLED'), oq('OQ-221', 'ENGINE_DISABLED'), oq('OQ-222', 'ENGINE_DISABLED')] }),
+  [{ flag: 'ENABLE_DEVIATION_ENGINE', declared: true, observed: false, observedBy: 'OQ-206' }]);
 });

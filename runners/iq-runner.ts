@@ -28,8 +28,8 @@ import {
 export const IQ_CASE_COUNT = 35;
 
 export interface IqRunOptions {
-  /** The validation-target-configuration/1 declaration IQ-033 checks (--target-config);
-   * without one IQ-033 is not executed (NO_TARGET_CONFIGURATION). */
+  /** The validation-target-configuration/1 declaration IQ-029 and IQ-033 read (--target-config);
+   * without one both are not executed (NO_TARGET_CONFIGURATION). */
   targetConfigFile?: string;
 }
 
@@ -430,6 +430,51 @@ function sourceEnvironment(file: string, text: string): { reader: string; enviro
 }
 
 const valueText = (value: FlagValue | null | undefined) => (value === null || value === undefined ? 'not determinable' : String(value));
+
+/** IQ-029: the target under test is segregated from production, read from the configuration
+ * declaration: neither its target nor the run's --base-url is the production API host the
+ * system description names, and its source file is no production configuration file (no
+ * "production" in its name). A production target records TARGET_IS_PRODUCTION: its
+ * segregation from the test environments is the System Owner's confirmation, not this check.
+ * Without a declaration the case is not executed (NO_TARGET_CONFIGURATION). */
+export function checkEnvironmentSegregation(declarationFile: string | undefined, baseUrl: string): EvidenceResult {
+  const label = 'Environment segregation';
+  if (!declarationFile) {
+    return {
+      testCaseId: 'IQ-029', timestamp: ts(), endpoint: 'Configuration declaration (--target-config)', method: 'CONTRACT',
+      responseStatus: 0, responseBody: null, passed: false, outcomeCode: 'NO_TARGET_CONFIGURATION',
+      notes: `${label}: not executed. No --target-config declaration (${TARGET_CONFIGURATION_CONTRACT}) was given, `
+        + 'so the target under test cannot be shown to be segregated from production.',
+    };
+  }
+  let declared: DeclaredConfiguration;
+  try { declared = readTargetConfiguration(declarationFile); }
+  catch (error) { return fileResult('IQ-029', label, false, errorText(error), path.resolve(declarationFile)); }
+  const { configuration } = declared;
+  const host = (url: string) => { try { return new URL(url).hostname.toLowerCase(); } catch { return null; } };
+  const productionHost = host(SYSTEM_INFO.environments.production.apiUrl);
+  const production = [configuration.target, baseUrl].filter(url => productionHost !== null && host(url) === productionHost);
+  const sourceName = path.basename(configuration.source.path);
+  const productionSource = /production/i.test(sourceName);
+  const body = {
+    target: configuration.target, baseUrl, productionApiHost: productionHost, source: configuration.source.path,
+    declaredNodeEnv: configuration.flags.NODE_ENV ?? null, declarationSha256: declared.sha256,
+  };
+  if (production.length) {
+    return {
+      ...fileResult('IQ-029', label, false, `the target under test (${production.join(', ')}) is the production API host ${productionHost}; `
+        + 'its segregation from the test environments is the System Owner\'s confirmation, not this check', declared.file, body),
+      outcomeCode: 'TARGET_IS_PRODUCTION',
+    };
+  }
+  const passed = !productionSource;
+  return fileResult('IQ-029', label, passed,
+    passed
+      ? `the declared target ${configuration.target} is not the production API host ${productionHost}, and its configuration source `
+        + `${sourceName} is not a production configuration file${configuration.flags.NODE_ENV ? ` (declared NODE_ENV ${configuration.flags.NODE_ENV})` : ''}`
+      : `the configuration source ${configuration.source.path} is a production configuration file, so the declared target is not shown to be segregated from production`,
+    declared.file, body);
+}
 
 /** IQ-033: the configuration under test. The declaration's target is the run's; its
  * source file, when present here, has the declared SHA-256 and, for a compose or env
@@ -832,7 +877,7 @@ function checkConfiguration(apiRoot: string): EvidenceResult[] {
 //    IQ-031 is API-based and runs separately in the main runner.
 // ---------------------------------------------------------------------------
 
-function checkSecurityAndBackup(workspaceRoot: string, apiRoot: string): EvidenceResult[] {
+function checkSecurityAndBackup(_workspaceRoot: string, apiRoot: string): EvidenceResult[] {
   const results: EvidenceResult[] = [];
   const backupDir = path.join(apiRoot, 'src', 'services', 'backup');
   const cfgDir = path.join(apiRoot, 'src', 'config');
@@ -868,19 +913,7 @@ function checkSecurityAndBackup(workspaceRoot: string, apiRoot: string): Evidenc
       exists ? 'backup-scheduler.service.ts present' : 'backup-scheduler.service.ts NOT found', fp));
   }
 
-  // IQ-029: Environment segregation (both Docker Compose files exist)
-  {
-    const localCompose = path.join(workspaceRoot, 'docker-compose.local.yml');
-    const testCompose = path.join(workspaceRoot, 'docker-compose.test-env.yml');
-    const localExists = fs.existsSync(localCompose);
-    const testExists = fs.existsSync(testCompose);
-    const passed = localExists && testExists;
-    results.push(fileResult('IQ-029', 'Environment segregation', passed,
-      passed
-        ? 'Both docker-compose.local.yml and docker-compose.test-env.yml present'
-        : `Missing: ${!localExists ? 'docker-compose.local.yml' : ''} ${!testExists ? 'docker-compose.test-env.yml' : ''}`.trim(),
-      localCompose, { localExists, testExists }));
-  }
+  // IQ-029 (environment segregation) reads the configuration declaration: checkEnvironmentSegregation, from run().
 
   // IQ-030: UTC timezone reference in database or environment config
   {
@@ -955,6 +988,9 @@ export async function run(
   }
   try { results.push(...checkSecurityAndBackup(wsRoot, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkSecurityAndBackup error:', err);
+  }
+  try { results.push(checkEnvironmentSegregation(options.targetConfigFile, baseUrl)); } catch (err: unknown) {
+    console.error('  [IQ] checkEnvironmentSegregation error:', err);
   }
   try { results.push(checkConfigurationUnderTest(options.targetConfigFile, baseUrl, apiRoot)); } catch (err: unknown) {
     console.error('  [IQ] checkConfigurationUnderTest error:', err);

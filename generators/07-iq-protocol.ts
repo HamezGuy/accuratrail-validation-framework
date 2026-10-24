@@ -15,6 +15,7 @@ import {
   type TestCaseOptions,
 } from './helpers/markdown-writer';
 import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
+import { TARGET_CONFIGURATION_CONTRACT } from '../runners/target-configuration';
 
 interface IqTestCase {
   id: string;
@@ -307,17 +308,18 @@ function configurationCases(): IqTestCase[] {
   return [
     {
       id: 'IQ-019',
-      title: 'HTTPS/TLS configured for production',
-      requirement: 'All production traffic is encrypted via HTTPS/TLS',
+      title: 'HTTPS/TLS configured on the target under test',
+      requirement: 'All traffic to the target under test is encrypted via HTTPS/TLS',
       cfr: '§11.10(c) — Protection of records; HIPAA §164.312(e)(1)',
       steps: [
-        `Attempt HTTP connection to ${SYSTEM_INFO.environments.production.apiUrl.replace('https', 'http')}.`,
+        `Attempt an HTTP connection to the target under test, API ${recordedTargetUrl()}.`,
         'Verify HTTP redirects to HTTPS or is refused.',
-        `Connect via HTTPS to ${SYSTEM_INFO.environments.production.apiUrl}.`,
+        'Connect via HTTPS to the same target.',
         'Verify TLS certificate is valid and not expired.',
         'Verify TLS version is 1.2 or higher.',
+        'A test stack served over plain HTTP does not meet this case; the production installation\'s TLS is verified only by a run whose target is production.',
       ],
-      expectedResult: 'Production endpoints enforce HTTPS with valid TLS 1.2+ certificates.',
+      expectedResult: 'The target under test enforces HTTPS with a valid TLS 1.2+ certificate.',
       evidence: 'See evidence/iq/IQ-019.json',
     },
     {
@@ -326,7 +328,7 @@ function configurationCases(): IqTestCase[] {
       requirement: 'JWT signing secret is set to a strong, non-default value',
       cfr: '§11.10(d) — Authority checks',
       steps: [
-        'Verify JWT_SECRET environment variable is set on the production server.',
+        `Verify JWT_SECRET is set in the environment of the target under test, API ${recordedTargetUrl()}, as the source file of its configuration declaration (--target-config) sets it.`,
         'Verify the value is NOT a default/placeholder (e.g., not "secret", "changeme", "jwt-secret").',
         'Verify the secret length is at least 32 characters.',
         'Note: Do NOT record the actual secret value in evidence.',
@@ -355,25 +357,25 @@ function configurationCases(): IqTestCase[] {
       steps: [
         'Send an OPTIONS preflight request with Origin: https://malicious-site.com.',
         'Verify the response does NOT include Access-Control-Allow-Origin for the malicious origin.',
-        `Send an OPTIONS preflight request with Origin: ${SYSTEM_INFO.environments.production.frontendUrl}.`,
+        'Send an OPTIONS preflight request with an Origin the target under test is configured to allow (ALLOWED_ORIGINS in the source file of its configuration declaration, --target-config).',
         'Verify the response includes the correct Access-Control-Allow-Origin header.',
       ],
-      expectedResult: 'CORS only allows the authorized frontend origin, rejecting unknown origins.',
+      expectedResult: 'CORS on the target under test only allows its configured frontend origins, rejecting unknown origins.',
       evidence: 'See evidence/iq/IQ-022.json',
     },
     {
       id: 'IQ-023',
       title: 'Environment variables set (DATABASE_URL, JWT_SECRET, etc.)',
-      requirement: 'All required environment variables are configured for production operation',
+      requirement: 'All required environment variables are configured on the target under test',
       cfr: '§11.10(a) — Validation',
       steps: [
-        'Verify DATABASE_URL is set and points to the production database.',
-        'Verify JWT_SECRET is set (existence only — do not log the value).',
-        'Verify NODE_ENV is set to "production".',
+        'In the source file of the configuration declaration (--target-config), verify the database settings are set and name the target\'s own database, never the production database.',
+        'Verify JWT_SECRET is set (existence only; do not log the value).',
+        'Verify NODE_ENV is the value the declaration states (IQ-033 cross-checks it against the source file).',
         'Verify PORT is set.',
         'Check for any additional required variables documented in .env.example.',
       ],
-      expectedResult: 'All required environment variables are present with appropriate values.',
+      expectedResult: 'All required environment variables are present on the target under test with the values its declaration states.',
       evidence: 'See evidence/iq/IQ-023.json',
     },
     {
@@ -451,16 +453,16 @@ function securityBackupCases(): IqTestCase[] {
     {
       id: 'IQ-029',
       title: 'Environment segregation verified',
-      requirement: 'Development, staging, and production environments use different URLs and databases',
+      requirement: 'The target under test is segregated from production: it is not the production API and its configuration source is not a production configuration file',
       cfr: '§11.10(a) — Validation',
       steps: [
-        `Verify production API URL: ${SYSTEM_INFO.environments.production.apiUrl}`,
-        `Verify staging API URL: ${SYSTEM_INFO.environments.staging.apiUrl}`,
-        `Verify development API URL: ${SYSTEM_INFO.environments.development.apiUrl}`,
-        'Confirm all three URLs are distinct.',
-        'Confirm database hosts differ between environments.',
+        `Read the configuration declaration (--target-config, ${TARGET_CONFIGURATION_CONTRACT}) of the target under test, API ${recordedTargetUrl()}.`,
+        'Verify the declared target and the run\'s --base-url are not the production API host the system description names.',
+        'Verify the declaration\'s source file is not a production configuration file (no "production" in its file name, as in .env.production.example or docker-compose.production.yml).',
+        'Without a declaration the case is not executed (NO_TARGET_CONFIGURATION). A production target records TARGET_IS_PRODUCTION; '
+          + 'the segregation of production from the test environments is then the System Owner\'s confirmation.',
       ],
-      expectedResult: 'All three environments have distinct URLs and database configurations.',
+      expectedResult: 'The declared target and its configuration source are distinct from production.',
       evidence: 'See evidence/iq/IQ-029.json',
     },
     {
@@ -568,14 +570,24 @@ function configurationUnderTestCases(): IqTestCase[] {
   ];
 }
 
-export function generate(outputDir: string, _workspaceRoot: string): void {
-  const allCases: IqTestCase[][] = [
+/** Every IQ case of the protocol with the regulation it cites, in protocol order; the regulatory
+ * map's IQ appendix (generators/18) is checked against it. */
+export function iqProtocolCases(): ReadonlyArray<Pick<IqTestCase, 'id' | 'title' | 'cfr'>> {
+  return iqCaseSections().flat().map(({ id, title, cfr }) => ({ id, title, cfr }));
+}
+
+function iqCaseSections(): IqTestCase[][] {
+  return [
     softwareInstallationCases(),
     databaseInstallationCases(),
     configurationCases(),
     securityBackupCases(),
     configurationUnderTestCases(),
   ];
+}
+
+export function generate(outputDir: string, _workspaceRoot: string): void {
+  const allCases: IqTestCase[][] = iqCaseSections();
 
   const sectionTitles = [
     'Software Installation Verification',
