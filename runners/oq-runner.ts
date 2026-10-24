@@ -3,7 +3,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { OQ_CASE_IDS, OQ_NOT_AUTOMATED } from '../config/oq-case-registry';
 /**
  * OQ Runner — Operational Qualification test execution.
- * Executes the 205-case OQ catalog and retains unmet evidence as failures.
+ * Executes the OQ catalog of config/oq-case-registry.ts (OQ_CASE_IDS) and retains
+ * unmet evidence as failures.
  */
 import { authHeaders, captureLoginProbe, login, qualificationCredentials } from './auth';
 import {
@@ -2418,7 +2419,7 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   const { username, password } = qualificationCredentials();
   const qualification = qualificationFlags.length ? { ...qualificationOptions(qualificationFlags, baseUrl), username, password,
     reason: 'Execute the explicitly requested synthetic operational qualification fixture' } : undefined;
-  console.log(`\n  Running OQ tests (200+ cases) against ${baseUrl}...`);
+  console.log(`\n  Running OQ tests (${OQ_CASE_IDS.length} cases) against ${baseUrl}...`);
 
   const allResults: EvidenceResult[] = [];
 

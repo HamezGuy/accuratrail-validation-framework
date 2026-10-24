@@ -230,13 +230,20 @@ only where the eTMF requires signed decisions (`IL_TMF_SIGNATURE=required`).
 
 ### OQ case registry and training evidence
 
-`config/oq-case-registry.ts` is the one list of OQ cases (OQ-001 to OQ-205 in
-twelve suites). The OQ runner records a result for exactly these IDs and the OQ
+`config/oq-case-registry.ts` is the one list of OQ cases (OQ-001 to OQ-244 in
+eighteen suites; suites 13 to 18, OQ-206 to OQ-244, are the TA3 suites, appended
+without renumbering). The OQ runner records a result for exactly these IDs and the OQ
 protocol lists exactly these IDs, so the protocol cannot fall behind the runner.
 Suites 1 to 7 keep their detailed protocol steps; suites 8 to 12 are listed by
 case, with each case's description, acceptance criteria and regulatory reference
-recorded in its evidence record. OQ-073 to OQ-075 are defined but not automated;
-the runner records them as not executed.
+recorded in its evidence record; suites 13 to 18 are detailed from the TA3 case
+catalog `config/ta3-oq-cases.ts`, which also gives each case's evidence record its
+description, acceptance criterion, Part 11 and ICH E6(R3) references, and names the
+plan item whose code the case needs (O-1, O-2, M-2 or W-1). OQ-073 to OQ-075 are
+defined but not automated; the runner records them as not executed.
+`config/ta3-inspection-coverage.ts` is W-1's TA3 inventory of the inspection copy
+(spec P17 2.2.1: 39 tables, two of them in the segmented copy only, then the late
+tables with the item that owns each).
 
 `15-training-matrix.md` is generated from the training module's own
 `training-inspection-evidence/1` capture. Pass it with

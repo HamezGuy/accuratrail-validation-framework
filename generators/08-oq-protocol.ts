@@ -14,8 +14,10 @@ import {
 } from './helpers/markdown-writer';
 import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
 import {
-  OQ_CASE_IDS, OQ_NOT_AUTOMATED, OQ_SUITES, assertOqRegistryContiguous, oqSuiteCaseIds,
+  OQ_CASE_IDS, OQ_NOT_AUTOMATED, OQ_SUITES, TA3_OQ_SUITES, assertOqRegistryContiguous, oqSuiteCaseIds,
 } from '../config/oq-case-registry';
+import { TA3_OQ_CASES } from '../config/ta3-oq-cases';
+import { e6r3 } from '../config/regulatory-scope';
 
 interface OqTestCase {
   id: string;
@@ -27,6 +29,10 @@ interface OqTestCase {
   steps: string[];
   expectedResult: string;
   evidence: string;
+  /** The plan item whose code the case exercises (TA3 suites). */
+  needs?: string;
+  /** ICH E6(R3) references (TA3 suites). */
+  gcp?: string;
 }
 
 const YEAR = new Date().getFullYear();
@@ -38,7 +44,9 @@ function oqTestCaseBlock(tc: OqTestCase): string {
     '',
     `- **Requirement:** ${tc.requirement}`,
     `- **CFR Reference:** ${tc.cfr}`,
+    ...(tc.gcp ? [`- **ICH E6(R3):** ${tc.gcp}`] : []),
     `- **Risk Level:** ${riskBadge(tc.riskLevel)}`,
+    ...(tc.needs ? [`- **Needs:** ${tc.needs}`] : []),
     `- **Preconditions:** ${tc.preconditions}`,
     '- **Steps:**',
   ];
@@ -950,9 +958,18 @@ function part11ComplianceCases(): OqTestCase[] {
 }
 
 
+/** The TA3 suites 13 to 18, detailed from the case catalog the TA3 runner records from. */
+function ta3Cases(suite: number): OqTestCase[] {
+  return TA3_OQ_CASES.filter(entry => entry.suite === suite).map(entry => ({
+    id: entry.id, title: entry.title, requirement: entry.requirement, cfr: entry.cfr, riskLevel: entry.riskLevel,
+    preconditions: entry.preconditions, steps: [...entry.steps], expectedResult: entry.expectedResult,
+    evidence: `See evidence/oq/${entry.id}.json`, needs: entry.needs, gcp: entry.e6r3.map(e6r3).join('; '),
+  }));
+}
+
 export function generate(outputDir: string, _workspaceRoot: string): void {
-  // Detailed protocol entries for the first seven suites; the later suites are
-  // listed from the shared case registry the runner also uses.
+  // Detailed protocol entries for suites 1 to 7 and the TA3 suites 13 to 18;
+  // suites 8 to 12 are listed from the shared case registry the runner also uses.
   const detailed: Record<number, OqTestCase[]> = {
     1: authenticationCases(),
     2: accessControlCases(),
@@ -961,6 +978,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     5: dataOperationsCases(),
     6: dataLockCases(),
     7: part11ComplianceCases(),
+    ...Object.fromEntries(TA3_OQ_SUITES.map(suite => [suite, ta3Cases(suite)])),
   };
   assertOqRegistryContiguous();
   const listed: string[] = [];
@@ -1014,7 +1032,19 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- **Electronic Signatures:** Re-authentication, manifestation, linkage, non-repudiation\n';
   content += '- **Data Operations:** eCRF CRUD, validation rules, exports, query workflow\n';
   content += '- **Data Locks:** Freeze/lock enforcement, unlock workflow, status reporting\n';
-  content += '- **Part 11 Compliance Controls:** Password expiration, session revocation, audit immutability, PHI redaction, independent multi-device sessions\n\n';
+  content += '- **Part 11 Compliance Controls:** Password expiration, session revocation, audit immutability, PHI redaction, independent multi-device sessions\n';
+  content += '- **TA3 Deviation Detection (suite 13):** Save-time and sweep detection by the deviation engine, unevaluated subjects never clean, no duplicates, append-only receipts, correction history, the follow-up task\n';
+  content += '- **TA3 Protocol Version Applicability (suite 14):** Restricted recording, stated dates, the governing version by planned visit date, unresolved versions stated\n';
+  content += '- **TA3 Deviation Assessment (suite 15):** Platform list, occurrence dates, signed assessment and closure by other people, importance, corrective-action review independence, stale decisions\n';
+  content += '- **TA3 Deviation Escalation (suite 16):** A signed, independently reviewed policy; one escalation per level; codes only, no arm\n';
+  content += '- **TA3 Metrics Ledger Records (suite 17):** Reviewed milestones, measurement documents as exact bytes, blinded readers, the one-snapshot TA3 ledger, no rewrite\n';
+  content += '- **TA3 Inspection Copy (suite 18):** The flat copy byte for byte, deviation records, the TA3 inventory and its flag, the segmented representation, role restriction\n\n';
+  content += 'Suites 13 to 18 run against a dedicated duplicate armed synthetic study that a `ta3-oq-plan/1` names (never the study the O-7 benchmark scores), '
+    + 'after the suites 1 to 12 and their fixture cleanup and before the final login quota probe, with the plan\'s synthetic named accounts. '
+    + 'A case whose feature is absent at the release, or switched off at the target, is recorded failed with its outcome code '
+    + '(`FEATURE_ABSENT_AT_RELEASE`, `FEATURE_DISABLED_AT_TARGET`, `ENGINE_DISABLED`); a case whose setup cannot be made is recorded not executed '
+    + 'with its code (for example `NO_TA3_PLAN`, `TRAINING_NOT_CURRENT`, `RECIPIENT_UNAVAILABLE`, `ESCALATION_WINDOW_NOT_WAITED`). '
+    + 'No TA3 case is ever passed or skipped on that basis.\n\n';
   content += `**Applicable regulations:** ${REGULATORY_SCOPE.part11Applicable ? '21 CFR Part 11' : ''}` +
     `${REGULATORY_SCOPE.hipaaApplicable ? ', HIPAA Security Rule' : ''}\n\n`;
 

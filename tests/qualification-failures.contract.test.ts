@@ -16,6 +16,7 @@ import path from 'node:path';
 import { testXssInjection, testPathTraversal, testCorsPreflight, testErrorLeakage } from '../runners/security-runner';
 import { captureWithValidator, captureWithExpectedStatus, redactEvidenceSecrets } from '../runners/evidence-capture';
 import { captureLoginProbe } from '../runners/auth';
+import { OQ_CASE_IDS } from '../config/oq-case-registry';
 
 const baseUrl = 'https://qualification.invalid';
 
@@ -725,7 +726,7 @@ test('an unexpected OQ suite error still archives only its owned study, closes i
   const results = await oq.run(output, baseUrl, undefined, ['--synthetic-qualification', '--allow-production-qualification']);
   assert.equal(results.find((row: any) => row.testCaseId === 'OQ-EXECUTION').passed, false);
   assert.equal(results.find((row: any) => row.testCaseId === 'OQ-RUN-LOGOUT').passed, true);
-  assert.equal(results.filter((row: any) => /^OQ-\d{3}$/.test(row.testCaseId)).length, 205);
+  assert.equal(results.filter((row: any) => /^OQ-\d{3}$/.test(row.testCaseId)).length, OQ_CASE_IDS.length);
   assert.equal(calls.filter(route => route.startsWith('DELETE ')).join(), 'DELETE /api/studies/42');
   assert.equal(calls.at(-1), 'POST /api/auth/login', 'Quota probe runs only after all cleanup and logout');
   assert.equal(calls.at(-2), 'POST /api/auth/logout');
