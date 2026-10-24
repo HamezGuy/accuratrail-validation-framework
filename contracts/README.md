@@ -12,6 +12,8 @@ validator dependency is added.
 | `validation-evidence-package/1` | `validation-evidence-package-v1.schema.json` | this framework, `runners/evidence-package.ts` (`sealPackage`) | `npm run verify:package`; the Intelligence Layer eTMF stores the filed `package-manifest.json` as an original without parsing it |
 | `validation-target-configuration/1` | `validation-target-configuration-v1.schema.json` | owner: this framework, `runners/target-configuration.ts`; producer: the operator, later the CommandCenter harness | IQ-033 (`runners/iq-runner.ts`); `createPackage`, which retains it as `inputs/target-configuration.json`; `sealPackage` and `npm run verify:package` (`configurationUnderTest`) |
 | `ta3-oq-plan/1` | `ta3-oq-plan-v1.schema.json` | owner: this framework, `runners/ta3-oq-plan.ts`; producer: the operator (VAL-1/validation-run step 0, every member read back from the stack) | the TA3 OQ suites 13 to 18 (`runners/oq-ta3-runner.ts`); `createPackage`, which retains it as `inputs/ta3-oq-plan.json` |
+| `platform-validation-evidence-plan/1` | `platform-validation-evidence-plan-v1.schema.json` | owner: this framework, `runners/platform-evidence-plan.ts`; producer: the operator (the validation lead, VAL-1/validation-run step 3) | `checkPlatformEvidencePlan` (`runners/evidence-package.ts`) and the platform summary (`generators/22-platform-validation-summary.ts`); `createPackage`, which retains it as `inputs/platform-evidence-plan.json` |
+| `platform-validation-summary/1` | `platform-validation-summary-v1.schema.json` | this framework, `generators/22-platform-validation-summary.ts` | CommandCenter W-5 readiness, when it is built (not yet) |
 
 ## Versioning
 
@@ -76,3 +78,49 @@ refuses the file. Member names were finalised against the EDC routes:
 `saveRule.item` became `itemId` (the form save keys values by `item_<itemId>`),
 and `applicability` gained `earlyEnrollmentDate` and `lateEnrollmentDate`,
 because a visit's planned target date runs from the subject's Day 1.
+
+## platform-validation-evidence-plan/1
+
+The evidence the platform summary admits (`--platform-evidence <file>`), per
+system of the platform inventory (`config/platform-inventory.ts`): who prepared
+the plan and, under `systems.<id>.evidence`, each entry's `kind`, absolute
+`path`, `sha256` and `synthetic`, with an optional `note`. Evidence is admitted
+only by hash. A `validation-evidence-package/1` entry names a sealed package of
+this framework (its directory or its `package-manifest.json`) by the SHA-256 of
+`package-manifest.json`, the value `npm run verify:package` prints, and is
+verified with `verifyPackage`; its `synthetic` must equal the manifest's. Any
+other kind names a file by its own SHA-256 and is admitted by hash only; its
+`synthetic` is the preparer's declaration. Each system admits what its
+inventory entry names: a package (for the Intelligence Layer only one holding
+`p13` evidence, for the Command Center only one holding `benchmark` evidence),
+files by hash, both, or nothing. A system the inventory lacks, an entry the
+system does not admit, a synthetic declaration that differs from the cited
+manifest, or a package without its system's category refuses the plan before
+anything runs; a hash that does not match is shown in the summary as
+`mismatch`, and a file or package that cannot be read as `unreadable`. Any
+synthetic entry makes the documents package synthetic (`syntheticBasis`
+`platform-evidence-plan`).
+
+## platform-validation-summary/1
+
+`platform-validation-summary.json`, written beside
+`22-platform-validation-summary.md`. For each of the fourteen systems: its
+repository path under the platform root, HEAD and whether tracked files differ
+(read with `git rev-parse` and `git status`, never written), its TA3 uses, the
+line that states its qualification status quoted exactly from the current
+bytes with the file's SHA-256 and line number (`not-found` when the inventory
+is stale, `not-stated` when the repository states none), the evidence the plan
+cites with each entry's status (`verified`, `hash-only`, `mismatch`,
+`unreadable`), and its gaps with the plan item and the probe result (`open`,
+`probe-not-matched`, `file-missing`, or null for a stated gap). A system's
+status is `evidence-present-unapproved` when an admitted entry verified or
+matched by hash, else `gap`; it is never "qualified", and approval is recorded
+in the eTMF. `releaseConsistency` compares the EDC API release of each cited
+OQ package with the release each cited O-7 import recorded in PQT-005
+(`responseBody.release.api`): `same`, `RELEASE_MISMATCH` (also a gap of
+`edc-api`) or `not-comparable`. `pendingValidatedChanges` lists the D-04 change
+with the production profile lines of its settings, the OQ cases it needs, how
+many of them passed in each cited OQ package, the SOP-CC-001 category row and
+the status `no-change-control-record`. A synthetic or development run adds
+`synthetic`, `syntheticNotice` or `retention`, as evidence summaries do. The
+summary holds no subject, site or arm data.

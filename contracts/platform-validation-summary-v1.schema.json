@@ -1,0 +1,242 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.accuratrials.com/validation-framework/platform-validation-summary/1",
+  "title": "platform-validation-summary/1",
+  "description": "platform-validation-summary.json, written beside 22-platform-validation-summary.md by generator 22 (TA3 plan VAL-1, spec P20 3.3, 3.7, VD-7 and VD-10). For every system of the platform inventory: its repository, HEAD and tracked-change state (read only), the line that states its qualification status quoted from the current bytes with the file's SHA-256, the evidence a platform-validation-evidence-plan/1 cites, each entry checked by hash, and its gaps with their plan items and probes. Then the release consistency of the cited OQ and O-7 packages and the validated changes awaiting change control. Owner and producer: accuratrail-validation-framework (generators/22-platform-validation-summary.ts). Consumer: CommandCenter W-5 readiness, when it is built. Data, not verdicts: no status is ever qualified, and it holds no subject, site or arm data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "generatedAt", "framework", "inventoryVersion", "platformRoot", "evidencePlan", "e6r3", "systems", "releaseConsistency", "pendingValidatedChanges"],
+  "properties": {
+    "contract": { "const": "platform-validation-summary/1" },
+    "generatedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "framework": { "$ref": "#/definitions/framework" },
+    "inventoryVersion": { "description": "The date the inventory's statements and probes were last read at the repository heads.", "type": "string", "minLength": 1 },
+    "platformRoot": { "description": "The absolute directory the repositories were resolved under (--platform-root, by default the parent of the EDC workspace).", "type": "string", "minLength": 1 },
+    "evidencePlan": {
+      "description": "The plan the evidence came from, or null when none was given (every system then shows its gap).",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/evidencePlan" }]
+    },
+    "e6r3": { "$ref": "#/definitions/e6r3" },
+    "systems": { "description": "Every system of the inventory, in its order.", "type": "array", "items": { "$ref": "#/definitions/system" } },
+    "releaseConsistency": { "$ref": "#/definitions/releaseConsistency" },
+    "pendingValidatedChanges": { "type": "array", "items": { "$ref": "#/definitions/pendingChange" } },
+    "synthetic": { "description": "Present on the summary of a synthetic run.", "const": true },
+    "syntheticNotice": { "const": "SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval." },
+    "retention": { "description": "Present on the summary of a development run.", "const": "Development run: not retained, not validation evidence" }
+  },
+  "definitions": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableSha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/sha256" }] },
+    "framework": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "dirty"],
+      "properties": {
+        "commit": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }] },
+        "dirty": { "type": ["boolean", "null"] }
+      }
+    },
+    "evidencePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "preparedBy"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "preparedBy": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "e6r3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["citation", "sectionVerification", "sectionStatus"],
+      "properties": {
+        "citation": { "const": "ICH E6(R3)" },
+        "sectionVerification": { "const": "pending-qa" },
+        "sectionStatus": { "type": "string", "minLength": 1 }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "repo", "head", "dirty", "ta3Uses", "statement", "evidenceAdmitted", "evidence", "gaps", "status"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "repo": { "description": "The repository's posix path under the platform root, or null when not found.", "type": ["string", "null"] },
+        "head": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }] },
+        "dirty": { "description": "Whether tracked files differ from HEAD; null unless the repository is its own git checkout.", "type": ["boolean", "null"] },
+        "ta3Uses": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "statement": {
+          "oneOf": [
+            { "$ref": "#/definitions/quotedLine" },
+            { "$ref": "#/definitions/statementNotFound" },
+            { "$ref": "#/definitions/statementNotStated" }
+          ]
+        },
+        "evidenceAdmitted": { "description": "What the inventory admits as this system's evidence.", "type": "string", "minLength": 1 },
+        "evidence": { "type": "array", "items": { "$ref": "#/definitions/evidence" } },
+        "gaps": { "type": "array", "items": { "$ref": "#/definitions/gap" } },
+        "status": {
+          "description": "evidence-present-unapproved when an admitted entry verified or matched by hash; gap otherwise. Approval is recorded in the eTMF, never here.",
+          "enum": ["evidence-present-unapproved", "gap"]
+        }
+      }
+    },
+    "quotedLine": {
+      "description": "The first line of the file holding the inventory's literal, exactly, with the file's SHA-256 and the one-based line number.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "text", "fileSha256"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string" },
+        "fileSha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "statementNotFound": {
+      "description": "The repository, the file or the literal is missing: the inventory is stale.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "detail"],
+      "properties": { "status": { "const": "not-found" }, "detail": { "type": "string", "minLength": 1 } }
+    },
+    "statementNotStated": {
+      "description": "The repository states no qualification status, and the inventory names none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": { "status": { "const": "not-stated" } }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256", "synthetic", "status", "detail"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "description": "The SHA-256 the plan states.", "$ref": "#/definitions/sha256" },
+        "synthetic": { "description": "The cited manifest's flag for a package whose manifest could be read; otherwise the plan's declaration.", "type": "boolean" },
+        "status": { "enum": ["verified", "hash-only", "mismatch", "unreadable"] },
+        "detail": { "type": "string", "minLength": 1 },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "item", "probe"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "item": { "description": "The plan item that closes the gap.", "type": "string", "minLength": 1 },
+        "probe": {
+          "description": "null for a stated gap, which is re-verified at review.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/probe" }]
+        }
+      }
+    },
+    "probe": {
+      "description": "contains keeps the gap open while the literal is present, absent while it is absent; probe-not-matched means re-verify, the gap may be closed; file-missing means the inventory is stale.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "rule", "literal", "status"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "rule": { "enum": ["contains", "absent"] },
+        "literal": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["open", "probe-not-matched", "file-missing"] },
+        "line": { "description": "The first line holding the literal, when present.", "type": "integer", "minimum": 1 }
+      }
+    },
+    "releaseConsistency": {
+      "description": "The EDC API release of each cited OQ package against the release each cited O-7 import recorded in PQT-005 (spec P20 3.5). RELEASE_MISMATCH is also listed as a gap of edc-api.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "detail", "oq", "o7"],
+      "properties": {
+        "status": { "enum": ["same", "RELEASE_MISMATCH", "not-comparable"] },
+        "detail": { "type": "string", "minLength": 1 },
+        "oq": { "type": "array", "items": { "$ref": "#/definitions/releaseSide" } },
+        "o7": { "type": "array", "items": { "$ref": "#/definitions/releaseSide" } }
+      }
+    },
+    "releaseSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "manifestSha256", "api", "detail"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "manifestSha256": { "$ref": "#/definitions/sha256" },
+        "api": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/releaseApi" }] },
+        "detail": { "type": "string", "minLength": 1 }
+      }
+    },
+    "releaseApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": { "enum": ["git-commit", "image-id", "not-deployed"] },
+        "identity": { "type": "string", "minLength": 1 }
+      }
+    },
+    "pendingChange": {
+      "description": "A validated change awaiting change control (VD-10). The framework creates no change-control record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "decision", "change", "system", "flags", "oqCases", "oqEvidence", "category", "status", "statusText"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "decision": { "type": "string", "minLength": 1 },
+        "change": { "type": "string", "minLength": 1 },
+        "system": { "type": "string", "minLength": 1 },
+        "flags": { "type": "array", "items": { "$ref": "#/definitions/changeFlag" } },
+        "oqCases": { "type": "array", "items": { "type": "string", "pattern": "^OQ-\\d{3}$" } },
+        "oqEvidence": { "type": "array", "items": { "$ref": "#/definitions/oqEvidence" } },
+        "category": { "$ref": "#/definitions/category" },
+        "status": { "const": "no-change-control-record" },
+        "statusText": { "type": "string", "minLength": 1 }
+      }
+    },
+    "changeFlag": {
+      "description": "A setting the change turns on, as the system's production profile sets it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flag", "file", "fileSha256", "line", "value"],
+      "properties": {
+        "flag": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "fileSha256": { "$ref": "#/definitions/nullableSha256" },
+        "line": { "description": "The line that sets it, or null when the profile does not set it.", "type": ["integer", "null"], "minimum": 1 },
+        "value": { "description": "The setting as the EDC reads it (an unset flag reads as its default), or null when the profile was not read.", "type": ["boolean", "string", "null"] }
+      }
+    },
+    "oqEvidence": {
+      "description": "A cited, verified OQ package and how many of the cases the change needs passed there.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "manifestSha256", "synthetic", "api", "passed", "notPassed", "notRecorded"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "manifestSha256": { "$ref": "#/definitions/sha256" },
+        "synthetic": { "type": "boolean" },
+        "api": { "type": ["string", "null"] },
+        "passed": { "type": "integer", "minimum": 0 },
+        "notPassed": { "type": "integer", "minimum": 0 },
+        "notRecorded": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "reason", "sop"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "sop": { "oneOf": [{ "$ref": "#/definitions/quotedLine" }, { "$ref": "#/definitions/statementNotFound" }] }
+      }
+    }
+  }
+}

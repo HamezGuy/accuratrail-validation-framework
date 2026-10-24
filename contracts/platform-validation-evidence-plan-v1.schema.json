@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.accuratrials.com/validation-framework/platform-validation-evidence-plan/1",
+  "title": "platform-validation-evidence-plan/1",
+  "description": "The evidence the platform validation summary (generator 22, --platform-evidence) admits, per system of the platform inventory (TA3 plan VAL-1, spec P20 3.3 and 3.7). Producer: the operator (the validation lead, VAL-1/validation-run step 3); owner and consumer: accuratrail-validation-framework (runners/platform-evidence-plan.ts parses it strictly; runners/evidence-package.ts checks every entry against the bytes it names; a retained package copies it to inputs/platform-evidence-plan.json). Evidence is admitted only by hash: a validation-evidence-package/1 by the SHA-256 of its package-manifest.json, verified with verifyPackage, any other kind by the file's own SHA-256 alone. A system the inventory lacks, an entry kind the inventory does not admit for the system, a synthetic declaration that differs from the cited package manifest, or a package without the evidence category its system needs (the Intelligence Layer: p13; the Command Center: benchmark) refuses the plan. Any synthetic entry makes the documents package synthetic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "preparedBy", "systems"],
+  "properties": {
+    "contract": { "const": "platform-validation-evidence-plan/1" },
+    "preparedBy": {
+      "description": "Who prepared the plan (a person or a role), as printable text.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "systems": {
+      "description": "At least one system, keyed by its id in config/platform-inventory.ts.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "edc-api": { "$ref": "#/definitions/system" },
+        "edc-ui": { "$ref": "#/definitions/system" },
+        "libreclinica-core": { "$ref": "#/definitions/system" },
+        "training-service": { "$ref": "#/definitions/system" },
+        "interop-bridge": { "$ref": "#/definitions/system" },
+        "shared-types": { "$ref": "#/definitions/system" },
+        "auth-core": { "$ref": "#/definitions/system" },
+        "intelligence-layer": { "$ref": "#/definitions/system" },
+        "semantic-layer": { "$ref": "#/definitions/system" },
+        "command-center": { "$ref": "#/definitions/system" },
+        "workbench": { "$ref": "#/definitions/system" },
+        "data-manager-tools": { "$ref": "#/definitions/system" },
+        "openstudybuilder": { "$ref": "#/definitions/system" },
+        "validation-framework": { "$ref": "#/definitions/system" }
+      }
+    }
+  },
+  "definitions": {
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence"],
+      "properties": {
+        "evidence": {
+          "description": "1 to 100 entries, no path twice.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/definitions/entry" }
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256", "synthetic"],
+      "properties": {
+        "kind": {
+          "description": "validation-evidence-package/1 for a sealed package of this framework; any other kind label is admitted by hash only.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+        },
+        "path": {
+          "description": "Absolute path: a package directory or its package-manifest.json, or the file admitted by hash.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "sha256": {
+          "description": "For a package, the SHA-256 of its package-manifest.json (npm run verify:package prints it); otherwise the SHA-256 of the file's bytes.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "synthetic": {
+          "description": "For a package, it must equal the manifest's synthetic; otherwise the preparer's declaration, printed as declared.",
+          "type": "boolean"
+        },
+        "note": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    }
+  }
+}

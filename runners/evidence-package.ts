@@ -14,6 +14,11 @@ import {
   CONFIGURATION_MISMATCH_REQUIRED, CONFIGURATION_UNDER_TEST_REQUIRED, type ConfigurationUnderTest,
 } from './target-configuration';
 import { parseTa3OqPlan } from './ta3-oq-plan';
+import {
+  loadPlatformEvidencePlan, parsePlatformEvidencePlan, planEntries, PACKAGE_EVIDENCE_KIND,
+  type PlatformEvidenceEntry, type PlatformEvidencePlan,
+} from './platform-evidence-plan';
+import { PLATFORM_SYSTEMS, type EvidenceAdmission, type PlatformSystemId } from '../config/platform-inventory';
 import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 
 // Retained evidence packages (TA3 plan VAL-1, spec P20 VD-3, 3.2). A package is
@@ -23,9 +28,10 @@ import { tmfFilingText, TMF_FILING_FILE } from '../generators/helpers/tmf-filing
 // call packaging needs: generate.ts calls it and makes none of its own, so the
 // offline CLI fixture passes this module through to the real filesystem.
 
-// generate.ts reaches the evidence marking, the configuration declaration check and
-// the TA3 OQ plan check through this module, because the offline CLI fixture replaces
-// every other runner module it requires.
+// generate.ts reaches the evidence marking, the configuration declaration check, the
+// TA3 OQ plan check and the platform evidence plan check (checkPlatformEvidencePlan,
+// below) through this module, because the offline CLI fixture replaces every other
+// runner module it requires.
 export { DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE, evidenceNoticeLines } from './evidence-capture';
 export { checkTargetConfiguration } from './target-configuration';
 export { loadTa3OqPlan as checkTa3OqPlan } from './ta3-oq-plan';
@@ -38,9 +44,9 @@ export const SYNTHETIC_ROOT_MARKER = 'SYNTHETIC-TRIAL-DATA-ROOT';
  * and the directory name carries no time stamp, so the data root's retention never moves it. */
 export const SYNTHETIC_PACKAGE_HOME = ['runs', 'validation-packages'] as const;
 
-/** What a package retains in inputs/<role>.json. ta3-oq-plan is the --ta3-oq-plan file and
- * target-configuration the --target-config declaration; VAL-1/validation-platform adds the
- * producer of platform-evidence-plan. */
+/** What a package retains in inputs/<role>.json. ta3-oq-plan is the --ta3-oq-plan file,
+ * target-configuration the --target-config declaration and platform-evidence-plan the
+ * --platform-evidence plan of the platform summary. */
 export const INPUT_ROLES = [
   'ta3-oq-plan', 'platform-evidence-plan', 'p13-plan', 'training-evidence',
   'benchmark-run-summary', 'benchmark-metrics', 'target-configuration',
@@ -191,11 +197,12 @@ function isWithin(base: string, target: string): boolean {
   return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
 }
 
+const isFile = (file: string) => {
+  try { return fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true; } catch { return false; }
+};
+
 /** The nearest directory at or above `start` holding the synthetic data root marker. */
 export function markedDataRoot(start: string): string | undefined {
-  const isFile = (file: string) => {
-    try { return fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true; } catch { return false; }
-  };
   for (let current = path.resolve(start); ; current = path.dirname(current)) {
     if (isFile(path.join(current, SYNTHETIC_ROOT_MARKER))) return current;
     if (path.dirname(current) === current) return undefined;
@@ -284,6 +291,7 @@ function prepareInput(source: PackageInputSource): PreparedInput {
 const INPUT_CONTRACTS: Partial<Record<PackageInputRole, (value: unknown, at: string) => void>> = {
   'target-configuration': (value, at) => { parseTargetConfiguration(value, at); },
   'ta3-oq-plan': (value, at) => { parseTa3OqPlan(value, at); },
+  'platform-evidence-plan': (value, at) => { parsePlatformEvidencePlan(value, at); },
 };
 
 function writeInput(evidencePackage: EvidencePackage, input: PreparedInput): PackageInput {
@@ -643,4 +651,104 @@ export function verifyPackage(directory: string): PackageVerification {
     if (text.includes(DEVELOPMENT_RUN_NOTICE)) problems.push(`${file} is marked as a development run`);
   }
   return { ok: problems.length === 0, dir, problems, manifestSha256, manifest };
+}
+
+// ---------------------------------------------------------------------------
+// The platform evidence plan (spec P20 3.3, 3.7): every entry checked by hash
+// ---------------------------------------------------------------------------
+
+/** verified: a sealed package whose manifest SHA-256 is the plan's and whose files verify;
+ * hash-only: a file whose SHA-256 is the plan's, admitted by hash alone; mismatch: bytes
+ * that are not what the plan or the package manifest states; unreadable: nothing to hash. */
+export const PLATFORM_EVIDENCE_STATUSES = ['verified', 'hash-only', 'mismatch', 'unreadable'] as const;
+export type PlatformEvidenceStatus = typeof PLATFORM_EVIDENCE_STATUSES[number];
+
+export interface CheckedPlatformEvidence {
+  system: PlatformSystemId;
+  entry: PlatformEvidenceEntry;
+  status: PlatformEvidenceStatus;
+  detail: string;
+  /** The verified manifest's flag for a package whose manifest could be read, else the plan's declaration. */
+  synthetic: boolean;
+  /** A cited package whose manifest could be read; its files verified only when status is verified. */
+  package?: { dir: string; manifestSha256: string; manifest: PackageManifest };
+}
+
+export interface CheckedPlatformEvidencePlan {
+  /** The absolute path read. */
+  file: string;
+  /** SHA-256 of the plan's bytes. */
+  sha256: string;
+  plan: PlatformEvidencePlan;
+  /** In inventory order, then plan order. */
+  entries: CheckedPlatformEvidence[];
+  /** True when an entry is synthetic, which makes a documents package synthetic (VD-3). */
+  synthetic: boolean;
+}
+
+/** The SHA-256 of a file read in slices, so a large evidence file is never held whole. */
+function fileSha256(file: string): { sha256: string } | { error: string } {
+  let descriptor: number | undefined;
+  try {
+    if (!fs.statSync(file).isFile()) return { error: 'is not a file' };
+    descriptor = fs.openSync(file, 'r');
+    const hash = createHash('sha256');
+    const slice = Buffer.alloc(1024 * 1024);
+    for (let read = fs.readSync(descriptor, slice, 0, slice.length, null); read > 0; read = fs.readSync(descriptor, slice, 0, slice.length, null)) {
+      hash.update(slice.subarray(0, read));
+    }
+    return { sha256: hash.digest('hex') };
+  } catch (error) {
+    return { error: `cannot be read (${errorText(error)})` };
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+/** A plan entry checked against the bytes it names. */
+function checkPlatformEvidence(system: PlatformSystemId, entry: PlatformEvidenceEntry, at: string): CheckedPlatformEvidence {
+  if (entry.kind !== PACKAGE_EVIDENCE_KIND) {
+    const hashed = fileSha256(entry.path);
+    if ('error' in hashed) return { system, entry, status: 'unreadable', detail: `${entry.path} ${hashed.error}`, synthetic: entry.synthetic };
+    return hashed.sha256 === entry.sha256
+      ? { system, entry, status: 'hash-only', detail: 'SHA-256 matches; admitted by hash only, not verified as a package', synthetic: entry.synthetic }
+      : { system, entry, status: 'mismatch', detail: `SHA-256 is ${hashed.sha256}, the plan states ${entry.sha256}`, synthetic: entry.synthetic };
+  }
+  // A package is cited by its directory or by its package-manifest.json.
+  const citesManifest = path.basename(entry.path) === MANIFEST_FILE && isFile(entry.path);
+  const verified = verifyPackage(citesManifest ? path.dirname(entry.path) : entry.path);
+  if (!verified.manifestSha256) return { system, entry, status: 'unreadable', detail: verified.problems.join('; '), synthetic: entry.synthetic };
+  const { manifest, manifestSha256 } = verified;
+  // The declaration must be the manifest's whenever the manifest can be read, so no plan can make a package look real.
+  packageCheck(!manifest || manifest.synthetic === entry.synthetic, `${at} declares synthetic ${entry.synthetic}, but the package `
+    + `${verified.dir} states synthetic ${manifest?.synthetic}; correct the plan`);
+  const cited = manifest ? { package: { dir: verified.dir, manifestSha256, manifest } } : {};
+  if (manifestSha256 !== entry.sha256) {
+    return { system, entry, status: 'mismatch', detail: `${MANIFEST_FILE} SHA-256 is ${manifestSha256}, the plan states ${entry.sha256}`, synthetic: manifest?.synthetic ?? entry.synthetic, ...cited };
+  }
+  if (!verified.ok || !manifest) {
+    return { system, entry, status: 'mismatch', detail: `the package does not verify: ${verified.problems.slice(0, 5).join('; ')}`, synthetic: manifest?.synthetic ?? entry.synthetic, ...cited };
+  }
+  // A system that admits packages only for a category (the IL's p13, the Command Center's benchmark) needs one.
+  const admitted: EvidenceAdmission = PLATFORM_SYSTEMS.find(item => item.id === system)!.evidence;
+  const categories = admitted.package?.categories;
+  packageCheck(!categories || manifest.categories.some(item => categories.includes(item.category)),
+    `${at} cites the package ${verified.dir} for ${system}, which holds no ${categories?.join(' or ')} evidence; the inventory admits a package for ${system} only with it`);
+  return {
+    system, entry, status: 'verified', synthetic: manifest.synthetic, ...cited,
+    detail: `${manifest.files.length} files verified (package ${manifest.packageId}, ${manifest.executed ? 'executed' : 'documents only'}`
+      + `${manifest.categories.length ? `, ${manifest.categories.map(item => item.category).join(', ')}` : ''})`,
+  };
+}
+
+/** Reads a platform-validation-evidence-plan/1 strictly and checks every entry against the bytes
+ * it names: a cited package with verifyPackage and its manifest SHA-256, any other file by its
+ * SHA-256. A system the inventory lacks, an entry it does not admit, a synthetic declaration that
+ * differs from the cited manifest, or a package without the category its system needs refuses
+ * the plan. Hashes that do not match are reported, not refused: the summary shows them. */
+export function checkPlatformEvidencePlan(file: string): CheckedPlatformEvidencePlan {
+  const loaded = loadPlatformEvidencePlan(file);
+  const entries = planEntries(loaded.plan).map(({ system, index, entry }) =>
+    checkPlatformEvidence(system, entry, `The platform evidence plan ${loaded.file} systems.${system}.evidence[${index}]`));
+  return { ...loaded, entries, synthetic: entries.some(entry => entry.synthetic) };
 }
