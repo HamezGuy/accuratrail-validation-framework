@@ -234,7 +234,8 @@ export const TA3_REQUIREMENTS: readonly Ta3Requirement[] = [
     planned: [
       verify('Policy in force only after another person\'s signed review', ['OQ-227']),
       verify('Unassessed deviation escalates once at level 1 with one task', ['OQ-228'],
-        'needs a wait of at least 70 minutes (ESCALATION_WINDOW_NOT_WAITED otherwise) and a confirmed recipient (RECIPIENT_UNAVAILABLE otherwise).'),
+        'needs a wait of at least 70 minutes (ESCALATION_WINDOW_NOT_WAITED otherwise); a missing escalation records RECIPIENT_UNAVAILABLE only '
+          + 'when O-2 holds the level so coded or both staff lists show nobody in the role.'),
       verify('No level escalates twice', ['OQ-229']),
       verify('Overdue corrective action escalates once', ['OQ-230']),
     ],

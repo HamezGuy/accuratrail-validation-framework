@@ -872,7 +872,8 @@ FEATURE_DATA.set('FEAT-165', {
   activities: [
     covered('The policy is in force only after another person\'s signed review', ['OQ-227']),
     covered('An unassessed deviation escalates once at level 1 with one task', ['OQ-228'],
-      'needs a wait of at least 70 minutes and a confirmed recipient.'),
+      'needs a wait of at least 70 minutes; a missing escalation is a setup gap only when O-2 holds the level as RECIPIENT_UNAVAILABLE '
+        + 'or both staff lists show nobody in the role.'),
     covered('No level escalates twice', ['OQ-229']),
     covered('An overdue corrective action escalates once', ['OQ-230']),
     covered('Escalate events and tasks carry codes and no arm', ['OQ-231']),

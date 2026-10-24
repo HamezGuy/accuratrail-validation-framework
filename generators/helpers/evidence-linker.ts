@@ -208,11 +208,13 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'OQ-226': { check: 'A corrective-action plan with a stale revision must answer 409 and, unless O-1 is absent or off, a signed assessment with a stale '
     + 'source hash 409; the deviation\'s history and revision must be unchanged.' },
   'OQ-227': { check: 'O-2 (spec P09 5.2.5), only on a study the plan declares a duplicate (study.duplicateOf; else suite 16 records '
-    + 'DUPLICATE_STUDY_NOT_DECLARED and makes no request): the platform study\'s staff list must show the operator and the reviewer as investigator '
-    + 'or data manager (else POLICY_DECIDER_UNAVAILABLE and no decision is sent); the policy workspace must read (a head answer, the deviation-id 400 '
-    + 'or the unknown-route 404, fails FEATURE_ABSENT_AT_RELEASE); the operator\'s signed proposal must answer 201 and not be in force, the '
-    + 'proposer\'s signed review 403, and the reviewer\'s signed acceptance 201, after which the OQ row is in force. 503 DEVIATION_DECISIONS_DISABLED '
-    + 'fails FEATURE_DISABLED_AT_TARGET. The accepted policy stays in force, and OQ-TA3-SUITE-16 lists it as persisting.' },
+    + 'DUPLICATE_STUDY_NOT_DECLARED and makes no request): first the policy workspace must read (a head answer, the deviation-id 400 or the '
+    + 'unknown-route 404, fails FEATURE_ABSENT_AT_RELEASE) and must not state decisionsEnabled false (FEATURE_DISABLED_AT_TARGET); then the '
+    + 'platform study\'s staff list must show the operator and the reviewer as investigator or data manager (else POLICY_DECIDER_UNAVAILABLE and no '
+    + 'decision is sent, or FEATURE_DISABLED_AT_TARGET when a workspace without decisionsEnabled leaves ENABLE_DEVIATION_DECISIONS off by the '
+    + 'declaration or by O-1 in the same run); the operator\'s signed proposal must answer 201 and not be in force, the proposer\'s signed review '
+    + '403, and the reviewer\'s signed acceptance 201, after which the OQ row is in force. 503 DEVIATION_DECISIONS_DISABLED fails '
+    + 'FEATURE_DISABLED_AT_TARGET. The accepted policy stays in force, and OQ-TA3-SUITE-16 lists it as persisting.' },
   'OQ-228': { check: 'With the OQ policy in force and escalation.maxWaitMinutes at least 70 (else ESCALATION_WINDOW_NOT_WAITED), a fresh owned '
     + 'deviation must show no escalation at 58 minutes, then exactly one escalate event (clock assessment, level 1) at least 59 minutes after it was '
     + 'logged, naming the policy\'s recipient role, the recipient\'s staff list user id among its recipientUserIds, and the one deviation_escalation '

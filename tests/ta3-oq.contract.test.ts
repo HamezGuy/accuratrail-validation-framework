@@ -232,6 +232,35 @@ test('OQ-227 sends no policy decision unless the platform staff list shows the o
   assert.deepEqual((row('OQ-TA3-SUITE-16').responseBody as { persisting: unknown[] }).persisting, [], 'no policy was put in force');
 });
 
+test('without the deciders on the platform staff list, O-2 absent or off still fails suite 16, and no decision is sent', async t => {
+  const policyPosts = (calls: string[]) => calls.filter(call => call === 'POST /api/protocol-deviations/escalation-policy').length;
+  const absent = await runAgainst(t, { o2: 'absent', platformStaff: [] }, { selection: [16] });
+  for (const id of idsOf(227, 231)) assert.deepEqual(outcome(absent.row(id)), [false, false, TA3_OUTCOME.FEATURE_ABSENT_AT_RELEASE], `${id}: ${absent.row(id).notes}`);
+  assert.equal(policyPosts(absent.edc.calls), 0);
+
+  // The workspace states decisionsEnabled false: off, read before the deciders, and cross-checked against the declaration.
+  const disabled = await runAgainst(t, { o2: 'disabled', platformStaff: [] }, { selection: [16] });
+  for (const id of idsOf(227, 231)) assert.deepEqual(outcome(disabled.row(id)), [false, false, TA3_OUTCOME.FEATURE_DISABLED_AT_TARGET], `${id}: ${disabled.row(id).notes}`);
+  assert.match(disabled.row('OQ-227').notes, /decisionsEnabled false: ENABLE_DEVIATION_DECISIONS is off at the target/);
+  assert.match(disabled.row('OQ-227').notes, /CONFIGURATION_MISMATCH: ENABLE_DEVIATION_DECISIONS is declared true but the target answered it off/);
+  assert.equal(policyPosts(disabled.edc.calls), 0);
+
+  // A workspace without decisionsEnabled: off by the declaration fails; declared on, the deciders' gap stays a setup gap.
+  const declaredOff = await runAgainst(t, { o2: 'disabled', platformStaff: [], workspaceOmitsDecisionsEnabled: true },
+    { selection: [16], declaredFlags: { ...DECLARED, ENABLE_DEVIATION_DECISIONS: false } });
+  for (const id of idsOf(227, 231)) assert.deepEqual(outcome(declaredOff.row(id)), [false, false, TA3_OUTCOME.FEATURE_DISABLED_AT_TARGET], `${id}: ${declaredOff.row(id).notes}`);
+  assert.match(declaredOff.row('OQ-227').notes, /off by the target configuration declaration/);
+  assert.equal(policyPosts(declaredOff.edc.calls), 0);
+  const declaredOn = await runAgainst(t, { o2: 'disabled', platformStaff: [], workspaceOmitsDecisionsEnabled: true }, { selection: [16] });
+  assert.deepEqual(outcome(declaredOn.row('OQ-227')), [false, true, TA3_OUTCOME.POLICY_DECIDER_UNAVAILABLE]);
+  assert.equal(policyPosts(declaredOn.edc.calls), 0);
+
+  // With the deciders listed, the command's own 503 still answers for a workspace without the member.
+  const commandOff = await runAgainst(t, { o2: 'disabled', workspaceOmitsDecisionsEnabled: true }, { selection: [16] });
+  for (const id of idsOf(227, 231)) assert.deepEqual(outcome(commandOff.row(id)), [false, false, TA3_OUTCOME.FEATURE_DISABLED_AT_TARGET], `${id}: ${commandOff.row(id).notes}`);
+  assert.match(commandOff.row('OQ-227').notes, /answers HTTP 503 DEVIATION_DECISIONS_DISABLED/);
+});
+
 test('suite 16 runs only on a study the plan declares a duplicate, and makes no request otherwise', async t => {
   const { results, edc, row } = await runAgainst(t, {}, { selection: [16], plan: plan({ study: { studyId: 100, siteStudyId: 101, expectedSpecHash: 'e'.repeat(64) } }) });
   for (const id of idsOf(227, 231)) {

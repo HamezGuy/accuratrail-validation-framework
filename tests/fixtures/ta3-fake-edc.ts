@@ -22,6 +22,8 @@ export interface FakeEdcOptions {
   engine?: boolean;
   o1?: 'present' | 'disabled' | 'absent';
   o2?: 'present' | 'disabled' | 'absent';
+  /** An older O-2 whose policy workspace states no decisionsEnabled, so off shows only as the command's 503. */
+  workspaceOmitsDecisionsEnabled?: boolean;
   m2?: boolean;
   w1?: 'present' | 'disabled' | 'absent';
   /** The target's INSPECTION_COPY_TA3_INVENTORY. */
@@ -378,7 +380,8 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
           return method === 'GET' ? refuse(400, 'Validation failed', { errors: [{ field: 'deviationId', message: '"deviationId" must be a number', type: 'number.base' }] }) : notFound();
         }
         const workspace = () => ({ revision: state.policy.revision, sourceHash: sha(`policy-${state.policy.revision}`), inForce: state.policy.inForce,
-          pendingProposal: state.policy.proposals.find(entry => !entry.reviewed) ?? null });
+          pendingProposal: state.policy.proposals.find(entry => !entry.reviewed) ?? null,
+          ...(options.workspaceOmitsDecisionsEnabled ? {} : { decisionsEnabled: o2 !== 'disabled' }) });
         if (method === 'GET') return ok(workspace());
         if (o2 === 'disabled') return refuse(503, 'Protocol-deviation decisions are disabled.', { code: 'DEVIATION_DECISIONS_DISABLED' });
         if (!signed) return refuse(403, 'Electronic signature required for this action (21 CFR Part 11 §11.50).', { code: 'SIGNATURE_REQUIRED' });

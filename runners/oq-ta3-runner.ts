@@ -1585,7 +1585,7 @@ async function suite16(ctx: Ta3Context): Promise<void> {
     if (ctx.o2 === 'absent') await policyWorkspace(run, session);
     if (ctx.o2 === 'disabled') {
       await policyWorkspace(run, session);
-      fail('O-2 escalation is off at the target: its policy command answers 503 DEVIATION_DECISIONS_DISABLED (OQ-227).', OUTCOME.FEATURE_DISABLED_AT_TARGET);
+      fail('O-2 escalation is off at the target: ENABLE_DEVIATION_DECISIONS is off, as OQ-227 recorded.', OUTCOME.FEATURE_DISABLED_AT_TARGET);
     }
     if (!ctx.facts.policy) prerequisite('OQ-227', 'The OQ escalation policy in force');
   };
@@ -1614,7 +1614,27 @@ async function suite16(ctx: Ta3Context): Promise<void> {
   await ctx.runCase('OQ-227', async run => {
     const op = ctx.session('operator'), reviewer = ctx.session('reviewer');
     const rowId = `oq-ta3-${ctx.runId.slice(0, 8)}`;
-    await requirePolicyDeciders(run, [op, reviewer]);
+    // The workspace first, so a release without O-2 fails FEATURE_ABSENT_AT_RELEASE and one with it off (the workspace's
+    // decisionsEnabled, the same ENABLE_DEVIATION_DECISIONS the command's 503 answers) FEATURE_DISABLED_AT_TARGET,
+    // whoever the platform staff list shows; only then the deciders.
+    const first = await policyWorkspace(run, op);
+    if (first.decisionsEnabled === false) {
+      ctx.o2 = 'disabled';
+      ctx.crossCheck(run, 'ENABLE_DEVIATION_DECISIONS', false);
+      fail('The O-2 policy workspace states decisionsEnabled false: ENABLE_DEVIATION_DECISIONS is off at the target, so no policy decision was sent.',
+        OUTCOME.FEATURE_DISABLED_AT_TARGET);
+    }
+    try {
+      await requirePolicyDeciders(run, [op, reviewer]);
+    } catch (error) {
+      // A workspace without decisionsEnabled leaves the command's 503 the only answer, which no decision is sent to read:
+      // off by the declaration (or by O-1, the same flag, earlier in this run) fails rather than resting on the deciders.
+      const off = typeof first.decisionsEnabled !== 'boolean' && (ctx.declared('ENABLE_DEVIATION_DECISIONS') === false || ctx.o1 === 'disabled');
+      if (!off || !(error instanceof Ta3Stop) || error.code !== OUTCOME.POLICY_DECIDER_UNAVAILABLE) throw error;
+      ctx.o2 = 'disabled';
+      fail(`The policy deciders are unconfirmed and ENABLE_DEVIATION_DECISIONS is off ${ctx.o1 === 'disabled' ? 'at the target by the O-1 commands of this run'
+        : 'by the target configuration declaration'}; the policy workspace states no decisionsEnabled, so no policy decision was sent.`, OUTCOME.FEATURE_DISABLED_AT_TARGET);
+    }
     const decide = async (session: Ta3Session, workspace: Record<string, any>, input: Record<string, unknown>): Promise<Reply> => {
       const reply = await run.call(session, 'POST', '/api/protocol-deviations/escalation-policy', { studyId: ctx.root, requestKey: randomUUID(),
         revision: workspace.revision, sourceHash: workspace.sourceHash, reason: `${rowId} synthetic qualification policy decision; test stack only`,
@@ -1628,7 +1648,7 @@ async function suite16(ctx: Ta3Context): Promise<void> {
       if (code) { ctx.o2 = 'absent'; fail(`The release has no O-2 policy command (${messageOf(reply)}).`, code); }
       return reply;
     };
-    const proposed = await decide(op, await policyWorkspace(run, op), { kind: 'propose', policy: escalationPolicy(ctx, rowId) });
+    const proposed = await decide(op, first, { kind: 'propose', policy: escalationPolicy(ctx, rowId) });
     run.expect(proposed, [201], 'The operator\'s signed policy proposal');
     const proposal = dataOf(proposed);
     const proposeEventId = isRecord(proposal) ? (isRecord(proposal.event) ? proposal.event.eventId : proposal.eventId) : undefined;

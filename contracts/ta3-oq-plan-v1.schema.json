@@ -40,7 +40,7 @@
         "siteStudyId": { "description": "The OQ site, where the owned subjects, deviations and applicability rows are made.", "$ref": "#/definitions/positiveId" },
         "expectedSpecHash": { "description": "The spec hash the receipts carry (acc_deviation_evaluations.spec_hash).", "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "expectedCslReleaseId": { "description": "When stated, the stored release binding must name it.", "type": "string", "minLength": 1, "maxLength": 200 },
-        "duplicateOf": { "description": "The study this one duplicates (never studyId itself).", "$ref": "#/definitions/positiveId" }
+        "duplicateOf": { "description": "The study this one duplicates (never studyId itself). Suite 16 runs only when it is set.", "$ref": "#/definitions/positiveId" }
       }
     },
     "account": {

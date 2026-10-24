@@ -298,10 +298,15 @@ cannot be made is recorded not executed with its code: `NO_TA3_PLAN`,
 `VERSION_FIXTURE_ABSENT`, `DUE_AT_REFUSED`, `NO_TARGET_CONFIGURATION`,
 `FOLLOW_UP_TASK_NOT_CONFIGURED`, `OPERATOR_NOT_UNBLINDED`, `SWEEP_RACED`,
 `POLICY_DECIDER_UNAVAILABLE`, `DUPLICATE_STUDY_NOT_DECLARED`,
-`ACCOUNTS_NOT_DISTINCT` or `PREREQUISITE_MISSING`. OQ-227 sends no policy
-decision unless the platform study's staff list shows the operator and the
-reviewer as investigator or data manager, as O-2 requires
-(`POLICY_DECIDER_UNAVAILABLE`). OQ-228 checks that the escalation names the
+`ACCOUNTS_NOT_DISTINCT` or `PREREQUISITE_MISSING`. OQ-227 reads the policy
+workspace first, so a release without O-2 fails `FEATURE_ABSENT_AT_RELEASE`
+and a workspace stating `decisionsEnabled` false fails
+`FEATURE_DISABLED_AT_TARGET`, whoever the staff list shows. It then sends no
+policy decision unless the platform study's staff list shows the operator and
+the reviewer as investigator or data manager, as O-2 requires
+(`POLICY_DECIDER_UNAVAILABLE`; `FEATURE_DISABLED_AT_TARGET` instead when a
+workspace without `decisionsEnabled` leaves `ENABLE_DEVIATION_DECISIONS` off
+by the declaration or by O-1 in the same run). OQ-228 checks that the escalation names the
 policy's recipient role and the recipient's staff list user id among its
 `recipientUserIds`. A missing escalation in OQ-228 or OQ-230 records
 `RECIPIENT_UNAVAILABLE` only when O-2 holds the level with that code
@@ -329,12 +334,12 @@ copies of two documents a real EDC retained, which the ledger checks read.
 checkout: every non-late coverage table has a `CREATE TABLE`, the signature
 meanings (`DEVIATION_ESCALATION_POLICY_MEANING` among them) are the EDC's, the
 recipient role names are the ones O-2 resolves holders by (the EDC's auth-core
-`getRoleByName` and `expandRoleAliases`), and two blocks fail by name until
-their items land:
-"W-1 not landed" (the coverage list must equal the `ta3: true` declarations of
-`INSPECTION_STORES`) and "M-2 not landed" (the `edc-ta3-ledger/1` schema's
-required members and the EDC's synthetic ledger fixture, read by the OQ-237
-checks).
+`getRoleByName` and `expandRoleAliases`), the M-2 block checks the
+`edc-ta3-ledger/1` schema's required members and the EDC's synthetic ledger
+fixture, read by the OQ-237 checks, and two blocks fail by name until their
+items land: "W-1 not landed" (the coverage list must equal the `ta3: true`
+declarations of `INSPECTION_STORES`) and "O-7 not landed" (the CommandCenter
+deviation detection scorer and its reconstruction entry).
 
 ### OQ case registry and training evidence
 
