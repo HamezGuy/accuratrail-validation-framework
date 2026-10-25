@@ -21,6 +21,9 @@ if (!directory || rest.length) {
     const { manifest } = result;
     console.log(`Package verified: ${result.dir}`);
     if (result.restricted) console.log(`  ${result.restricted}`);
+    if (result.restrictedNoticeMissing) {
+      console.log(`  TMF-FILING.md does not open with the RESTRICTED notice: follow the line above, not the filing, and upload only package-manifest.json and the validation summaries.`);
+    }
     if (result.notRunOfRecord) console.log(`  ${result.notRunOfRecord}`);
     console.log(`  Package ID:   ${manifest.packageId} (${manifest.version})`);
     console.log(`  Synthetic:    ${manifest.synthetic ? `yes (${manifest.syntheticBasis.join(', ')})` : 'no'}`);

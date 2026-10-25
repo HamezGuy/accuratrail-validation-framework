@@ -401,8 +401,28 @@ test('a package that retains the training capture opens its filing RESTRICTED an
     assert.match(upload(filing), /\| package-manifest\.json \|[\s\S]*\| 12-validation-summary\.md \|[\s\S]*\| 22-platform-validation-summary\.md \|/);
     assert.doesNotMatch(upload(filing), /\| (inputs|evidence)\//);
     const verified = verifyPackage(evidencePackage.dir);
-    assert.deepEqual([verified.ok, verified.restricted, verified.notRunOfRecord], [true, RESTRICTED_FILING_LINE, undefined]);
+    assert.deepEqual([verified.ok, verified.restricted, verified.notRunOfRecord, verified.restrictedNoticeMissing], [true, RESTRICTED_FILING_LINE, undefined, undefined]);
   }
+
+  // A package sealed before the notice: the manifest lists the capture and the filing does not open with the line.
+  // It still verifies, and verification says the notice is missing.
+  const older = createPackage(syntheticPackage(home, { version: 'training-older-v1', inputs: [{ role: 'training-evidence', file: capture }] }));
+  sealPackage(older);
+  const filingPath = path.join(older.dir, TMF_FILING_FILE), olderManifestPath = path.join(older.dir, MANIFEST_FILE);
+  const olderFiling = Buffer.from(read(older.dir, TMF_FILING_FILE).slice(`${RESTRICTED_FILING_LINE}
+
+`.length), 'utf8');
+  const olderManifest = JSON.parse(read(older.dir, MANIFEST_FILE));
+  const { packageHash: _olderHash, ...olderBody } = { ...olderManifest, files: olderManifest.files.map((file: { path: string }) =>
+    file.path === TMF_FILING_FILE ? { ...file, bytes: olderFiling.length, sha256: sha256(olderFiling) } : file) };
+  for (const file of [filingPath, olderManifestPath]) fs.chmodSync(file, 0o644);
+  fs.writeFileSync(filingPath, olderFiling);
+  fs.writeFileSync(olderManifestPath, `${JSON.stringify({ ...olderBody, packageHash: manifestHash(olderBody) }, null, 2)}
+`);
+  const olderVerified = verifyPackage(older.dir);
+  assert.ok(!read(older.dir, TMF_FILING_FILE).includes('RESTRICTED'));
+  assert.deepEqual([olderVerified.ok, olderVerified.problems, olderVerified.restricted, olderVerified.restrictedNoticeMissing],
+    [true, [], RESTRICTED_FILING_LINE, true]);
   assert.match(RESTRICTED_FILING_LINE, /^RESTRICTED: .*privileged inspection capture, with assessment answer keys .*only holders of training inspection authority read it, and never upload those files\.$/);
   assert.doesNotMatch(RESTRICTED_FILING_LINE, /[\u2013\u2014]/);
 
@@ -421,7 +441,7 @@ test('a package that retains the training capture opens its filing RESTRICTED an
   const filing = read(plain.dir, TMF_FILING_FILE);
   assert.ok(filing.startsWith(`${SYNTHETIC_FILING_LINE}\n`));
   assert.ok(!filing.includes('RESTRICTED') && !filing.includes(never));
-  assert.equal(verifyPackage(plain.dir).restricted, undefined);
+  assert.deepEqual([verifyPackage(plain.dir).restricted, verifyPackage(plain.dir).restrictedNoticeMissing], [undefined, undefined]);
 });
 
 test('the filing instructions name the requirement, the bytes check and the people, without provenance or a signature', () => {

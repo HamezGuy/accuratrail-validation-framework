@@ -641,6 +641,9 @@ export interface PackageVerification {
   notRunOfRecord?: typeof NOT_RUN_OF_RECORD_LINE;
   /** RESTRICTED_FILING_LINE when the manifest lists a training capture file (IR-453). */
   restricted?: typeof RESTRICTED_FILING_LINE;
+  /** Set when the manifest lists a training capture but TMF-FILING.md does not open with
+   * RESTRICTED_FILING_LINE (a package sealed before the notice). ok is unchanged. */
+  restrictedNoticeMissing?: true;
 }
 
 /** Verifies a sealed package: every listed file is present with its byte count
@@ -758,7 +761,8 @@ export function verifyPackage(directory: string): PackageVerification {
     || manifest.framework.commit === null || manifest.framework.dirty !== false;
   const restricted = manifest.files.some(file => isTrainingCaptureFile(file.path));
   return { ok: problems.length === 0, dir, problems, manifestSha256, manifest, ...(notRecord ? { notRunOfRecord: NOT_RUN_OF_RECORD_LINE } : {}),
-    ...(restricted ? { restricted: RESTRICTED_FILING_LINE } : {}) };
+    ...(restricted ? { restricted: RESTRICTED_FILING_LINE } : {}),
+    ...(restricted && opening[0] !== RESTRICTED_FILING_LINE ? { restrictedNoticeMissing: true as const } : {}) };
 }
 
 // ---------------------------------------------------------------------------
