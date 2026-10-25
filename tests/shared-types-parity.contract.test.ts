@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { frameworkSharedTypes, requireInstalledSharedTypes } from '../runners/release-identity';
 
 const root = path.resolve(__dirname, '..');
 const PACKAGE = '@accura-trial/shared-types';
@@ -40,8 +41,12 @@ test('package.json, the lockfile and the installed package name exactly that arc
   assert.equal(locked.resolved, selector);
   assert.equal(locked.integrity, receipt.integrity);
   assert.equal(locked.version, receipt.version);
-  const installed = path.join(root, 'node_modules', ...PACKAGE.split('/'));
-  assert.equal(readJson(path.join(installed, 'package.json')).version, receipt.version);
-  assert.equal(sha256(fs.readFileSync(path.join(installed, 'release-manifest.json'))), receipt.manifestSha256,
-    'node_modules holds another build: reinstall with npm install --offline');
+  // The helper the release identity records and a live run's refusal of a stale install reads (IR-272).
+  const build = frameworkSharedTypes(root);
+  assert.ok(build);
+  assert.deepEqual([build.selector, build.archive, build.archiveSha256, build.receiptSha256, build.receiptManifestSha256],
+    [selector, selector.replace(/^file:/, ''), sha256(fs.readFileSync(archive)), receipt.sha256, receipt.manifestSha256]);
+  assert.equal(build.installed.version, receipt.version);
+  assert.equal(build.installed.manifestSha256, receipt.manifestSha256, 'node_modules holds another build: reinstall with npm install --offline');
+  assert.doesNotThrow(() => requireInstalledSharedTypes(build));
 });

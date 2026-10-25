@@ -280,6 +280,21 @@ as `none` reads "not deployed". Documents generated without a release are marked
 summary's `executedAt`), and "Cases Executed" gives the first and last record
 time, when the cases ran.
 
+The identity also names the contract builds, outside its hash and its stamp, so
+version 1 and 2 hashes are unchanged (IR-272). `framework.sharedTypes` is the
+framework's shared-types selector, archive, archive SHA-256, the SHA-256 its
+receipt states and the build installed in `node_modules`, which the dirty check
+does not cover; a live run is refused when the installed `release-manifest.json`
+SHA-256 is not the receipt's `manifestSha256` (`requireInstalledSharedTypes`, the
+helper the parity contract test reads too). `apiContracts` is the API's
+shared-types and interop builds, read with `git show` at the `--release-api`
+commit in the workspace API checkout, never at its HEAD; an image ID, or a
+commit the checkout does not hold, records `not resolved` and why. An archive
+without a receipt reads `no receipt` (the API's interop 0.3.0 has none yet). The
+package manifest's `framework` member carries `sharedTypes` too, and the master
+evidence index, the validation summary (12) and the execution records (20) print
+the builds.
+
 ```powershell
 npm run generate -- --oq --base-url http://localhost:3000 --synthetic-qualification --no-retain `
   --release-api <api commit> --release-ui <ui commit> --release-core <core image id>

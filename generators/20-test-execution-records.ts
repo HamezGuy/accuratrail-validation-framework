@@ -17,6 +17,7 @@ import {
 import { SYSTEM_INFO } from '../config/system-info';
 import { e6r3 } from '../config/regulatory-scope';
 import { RECORDED_AT_EXECUTION, recordedTargetUrl, systemVersionText } from './helpers/version-stamper';
+import { contractBuildRows, currentReleaseIdentity } from '../runners/release-identity';
 import {
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
   executionPeriod,
@@ -277,7 +278,10 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += `- **Test Execution Date:** ${period}\n`;
   // The person the run's --executor named, on every record (IR-090); attribution only, nothing is signed (D-21).
   content += `- **Executed By:** ${executorText(allRecords)}\n`;
-  content += `- **System Version:** ${systemVersionText()}\n\n`;
+  content += `- **System Version:** ${systemVersionText()}\n`;
+  // The contract builds the release identity names, outside its identity hash (IR-272).
+  for (const [label, text] of contractBuildRows(currentReleaseIdentity())) content += `- **${label}:** ${text}\n`;
+  content += '\n';
 
   content += section(3, 'Test Execution Approach');
   content += 'Each case was executed by the runner of this validation framework that its category names (runners/, ';

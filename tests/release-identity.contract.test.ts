@@ -6,11 +6,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadEvidence, saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import {
-  frameworkCommit, isReleaseStamp, observeTargetVersion, parseReleaseComponent, releaseIdentityFromInputs, releaseIndexCells, releaseStamp,
-  releaseSummary, requireTrainingRelease, setReleaseIdentity, RELEASE_CONTRACT_V2, type ReleaseIdentity,
+  contractBuildRows, frameworkCommit, frameworkSharedTypes, frameworkState, isReleaseStamp, observeTargetVersion, parseReleaseComponent,
+  releaseIdentityFromInputs, releaseIndexCells, releaseStamp, releaseSummary, requireInstalledSharedTypes, requireTrainingRelease,
+  setReleaseIdentity, NO_RECEIPT, RELEASE_CONTRACT_V2, type ReleaseIdentity,
 } from '../runners/release-identity';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
-import { temporaryCheckout, temporaryDirectory } from './generated-documents';
+import { commitCheckout, temporaryCheckout, temporaryDirectory } from './generated-documents';
 
 const API = '1'.repeat(40), UI = '2'.repeat(40), CORE = `sha256:${'3'.repeat(64)}`;
 const TRAINING = '4'.repeat(40);
@@ -268,4 +269,139 @@ test('the framework checkout is dirty with a modified tracked file or an untrack
   assert.deepEqual(frameworkCommit(checkout), { commit: clean.commit, dirty: true }, 'a modified tracked file makes it dirty');
   assert.deepEqual(frameworkCommit(temporaryDirectory(t, 'accura-no-checkout-')), {}, 'no checkout, no commit');
   assert.match(frameworkCommit().commit ?? '', /^[0-9a-f]{40}$/, 'this checkout by default');
+});
+
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** A synthetic package.json installing shared types (with a receipt) and interop (without one) from
+ * vendor/ archives named by `build`: the files of the checkout keyed by path (IR-272). */
+function vendoredCheckout(build: string, manifestSha256 = 'e'.repeat(64)): { files: Record<string, string>; sharedTypes: string; interop: string } {
+  const sharedTypes = `vendor/accura-trial-shared-types-0.2.0.${build}.tgz`;
+  const interop = `vendor/accura-trial-interop-middleware-0.3.0.${build}.tgz`;
+  const sharedBytes = `synthetic shared-types archive ${build}\n`;
+  return {
+    sharedTypes, interop,
+    files: {
+      'package.json': JSON.stringify({ name: 'synthetic', dependencies: {
+        '@accura-trial/shared-types': `file:${sharedTypes}`, '@accura-trial/interop-middleware': `file:${interop}` } }),
+      [sharedTypes]: sharedBytes,
+      [`${sharedTypes}.json`]: JSON.stringify({ packageName: '@accura-trial/shared-types', filename: path.basename(sharedTypes),
+        byteLength: sharedBytes.length, sha256: sha256(sharedBytes), manifestSha256 }),
+      [interop]: `synthetic interop archive ${build}\n`,
+    },
+  };
+}
+
+test('the API contract builds are read at the --release-api commit, never at the API checkout HEAD (IR-272)', t => {
+  const api = temporaryDirectory(t, 'accura-api-contracts-');
+  const first = vendoredCheckout('1111111111111111');
+  commitCheckout(api, first.files);
+  const released = frameworkCommit(api).commit!;
+  // The checkout moves on to another build, and its working tree changes too: neither is read.
+  commitCheckout(api, vendoredCheckout('2222222222222222').files);
+  assert.notEqual(frameworkCommit(api).commit, released);
+  fs.writeFileSync(path.join(api, 'package.json'), '{"dependencies":{}}');
+
+  const identity = releaseIdentityFromInputs({ api: released, ui: UI, core: CORE }, { apiCheckout: api });
+  const sharedSha = sha256(first.files[first.sharedTypes]);
+  assert.deepEqual(identity.apiContracts, {
+    status: 'resolved', commit: released,
+    sharedTypes: { selector: `file:${first.sharedTypes}`, archive: first.sharedTypes, archiveSha256: sharedSha, receiptSha256: sharedSha },
+    interop: { selector: `file:${first.interop}`, archive: first.interop, archiveSha256: sha256(first.files[first.interop]), receiptSha256: NO_RECEIPT },
+  });
+  // Outside the hash and the stamp: the same release with and without the builds compares equal.
+  const plain = releaseIdentityFromInputs({ api: released, ui: UI, core: CORE });
+  assert.equal(plain.apiContracts, undefined);
+  assert.equal(identity.identityHash, plain.identityHash);
+  assert.deepEqual(releaseStamp(identity), releaseStamp(plain));
+  const rows = new Map(contractBuildRows(identity));
+  assert.equal(rows.get('API shared types'),
+    `${first.sharedTypes} (archive SHA-256 ${sharedSha}; receipt SHA-256 ${sharedSha}) at API commit ${released}`);
+  assert.equal(rows.get('API interop'),
+    `${first.interop} (archive SHA-256 ${sha256(first.files[first.interop])}; no receipt) at API commit ${released}`);
+});
+
+test('an absent commit, an image ID or a folder git does not read as its own records the API builds not resolved, with the hash unchanged', t => {
+  const api = temporaryDirectory(t, 'accura-api-unresolved-');
+  commitCheckout(api, vendoredCheckout('3333333333333333').files);
+  const head = frameworkCommit(api).commit!;
+  const absent = releaseIdentityFromInputs({ api: API, ui: UI, core: CORE }, { apiCheckout: api });
+  assert.deepEqual(absent.apiContracts, { status: 'not resolved', reason: `the API checkout ${api} does not hold commit ${API}` });
+  assert.equal(absent.identityHash, V1_HASH, 'version 1 keeps its hash');
+  assert.deepEqual(Object.keys(releaseStamp(absent)), ['contract', 'identityHash', 'api', 'ui', 'core', 'frameworkCommit']);
+  assert.ok(!JSON.stringify(absent.apiContracts).includes(head), 'never the checkout HEAD');
+  const image = releaseIdentityFromInputs({ api: CORE, ui: UI, core: CORE, training: TRAINING }, { apiCheckout: api });
+  assert.deepEqual(image.apiContracts, { status: 'not resolved',
+    reason: `the API release under test is image-id ${CORE}, which names no commit to read the API's package.json at` });
+  assert.equal(image.identityHash, sha256(`api=image-id:${CORE}\nui=git-commit:${UI}\ncore=image-id:${CORE}\ntraining=git-commit:${TRAINING}`));
+  const nested = path.join(api, 'vendor');
+  assert.match((releaseIdentityFromInputs({ api: head, ui: UI, core: CORE }, { apiCheckout: nested }).apiContracts as { reason: string }).reason,
+    /is not the top level of a git checkout/);
+  const none = temporaryDirectory(t, 'accura-api-none-');
+  assert.deepEqual(releaseIdentityFromInputs({ api: head, ui: UI, core: CORE }, { apiCheckout: none }).apiContracts,
+    { status: 'not resolved', reason: `the API checkout ${none} cannot be read by git` });
+  assert.equal(new Map(contractBuildRows(absent)).get('API shared types'), `not resolved: the API checkout ${api} does not hold commit ${API}`);
+});
+
+test('the framework records its shared-types build and installed build outside the hash, and a live run refuses a stale install (IR-272)', t => {
+  const checkout = temporaryDirectory(t, 'accura-framework-shared-types-');
+  const manifest = '{"synthetic":"release manifest"}\n';
+  const vendored = vendoredCheckout('4444444444444444', sha256(manifest));
+  commitCheckout(checkout, vendored.files);
+  const installed = path.join(checkout, 'node_modules', '@accura-trial', 'shared-types');
+  fs.mkdirSync(installed, { recursive: true });
+  fs.writeFileSync(path.join(installed, 'package.json'), '{"name":"@accura-trial/shared-types","version":"0.2.0"}');
+  fs.writeFileSync(path.join(installed, 'release-manifest.json'), manifest);
+  const archiveSha = sha256(vendored.files[vendored.sharedTypes]);
+  const current = frameworkSharedTypes(checkout)!;
+  assert.deepEqual(current, {
+    selector: `file:${vendored.sharedTypes}`, archive: vendored.sharedTypes, archiveSha256: archiveSha, receiptSha256: archiveSha,
+    receiptManifestSha256: sha256(manifest), installed: { version: '0.2.0', manifestSha256: sha256(manifest) },
+  });
+  requireInstalledSharedTypes(current);
+  assert.deepEqual(frameworkState(checkout), { ...frameworkCommit(checkout), sharedTypes: current });
+
+  const other = '{"synthetic":"another build"}\n';
+  fs.writeFileSync(path.join(installed, 'release-manifest.json'), other);
+  const stale = frameworkSharedTypes(checkout)!;
+  assert.throws(() => requireInstalledSharedTypes(stale), new RegExp(`installed @accura-trial/shared-types is not the vendored build ${escaped(vendored.sharedTypes)}: `
+    + `.*release-manifest\\.json SHA-256 is ${sha256(other)}, its receipt states ${sha256(manifest)}\\. Reinstall`));
+  const staleIdentity: ReleaseIdentity = { ...releaseIdentityFromInputs({ api: API, ui: UI, core: CORE }), framework: { sharedTypes: stale } };
+  assert.match(new Map(contractBuildRows(staleIdentity)).get('Framework shared types')!,
+    new RegExp(`; installed 0\\.2\\.0, release-manifest\\.json SHA-256 ${sha256(other)} \\(not the build its receipt names\\)$`));
+  fs.rmSync(path.join(checkout, 'node_modules'), { recursive: true });
+  assert.throws(() => requireInstalledSharedTypes(frameworkSharedTypes(checkout)), /SHA-256 is unreadable/);
+  assert.throws(() => requireInstalledSharedTypes(undefined), /names no @accura-trial\/shared-types build/);
+  // A checkout whose package.json names no shared-types build records none: its state is its commit alone.
+  const plain = temporaryCheckout(t, 'accura-framework-plain-');
+  assert.equal(frameworkSharedTypes(plain), undefined);
+  assert.deepEqual(frameworkState(plain), frameworkCommit(plain));
+
+  // This checkout: the identity names the build package.json pins, outside the hash.
+  const identity = releaseIdentityFromInputs({ api: API, ui: UI, core: CORE });
+  const pinned = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).dependencies['@accura-trial/shared-types'];
+  assert.equal(identity.framework.sharedTypes?.selector, pinned);
+  assert.equal(identity.identityHash, V1_HASH);
+});
+
+test('the validation summary and the execution records name the contract builds of the release identity (IR-272)', t => {
+  const directory = workspace(t);
+  const render = () => {
+    for (const generator of ['12-validation-summary', '20-test-execution-records']) {
+      (require(path.join(__dirname, '..', 'generators', generator)) as { generate(outputDir: string, workspaceRoot: string): void })
+        .generate(directory, directory);
+    }
+    return ['12-validation-summary.md', '20-test-execution-records.md'].map(file => fs.readFileSync(path.join(directory, file), 'utf8'));
+  };
+  setReleaseIdentity(undefined);
+  const [summaryNone, recordsNone] = render();
+  assert.match(summaryNone, /^\| API interop \| not recorded: no release identity was supplied \|$/m);
+  assert.match(recordsNone, /^- \*\*Framework shared types:\*\* not recorded: no release identity was supplied$/m);
+  const api = temporaryDirectory(t, 'accura-api-none-');
+  setReleaseIdentity(releaseIdentityFromInputs({ api: API, ui: UI, core: CORE }, { apiCheckout: api }));
+  const [summary, records] = render();
+  assert.match(summary, /^### Contract Builds Under Test$/m);
+  assert.match(summary, /^\| Framework shared types \| vendor\/accura-trial-shared-types-\S+\.tgz \(archive SHA-256 [0-9a-f]{64}; receipt SHA-256 [0-9a-f]{64}\); installed /m);
+  assert.match(summary, new RegExp(`^\\| API shared types \\| not resolved: the API checkout ${escaped(api)} cannot be read by git \\|$`, 'm'));
+  assert.match(records, new RegExp(`^- \\*\\*API interop:\\*\\* not resolved: the API checkout ${escaped(api)} cannot be read by git$`, 'm'));
 });

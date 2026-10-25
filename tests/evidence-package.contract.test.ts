@@ -10,16 +10,18 @@ import {
 } from '../runners/evidence-capture';
 import {
   createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
-  APPROVAL_RECORDED_IN, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_REQUIRED, MANIFEST_OPTIONAL, MANIFEST_REQUIRED,
-  QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, type PackageOptions,
+  APPROVAL_RECORDED_IN, FRAMEWORK_SHARED_TYPES_REQUIRED, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_OPTIONAL, MANIFEST_MEMBER_REQUIRED,
+  MANIFEST_OPTIONAL, MANIFEST_REQUIRED, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED,
+  type PackageOptions,
 } from '../runners/evidence-package';
+import { frameworkSharedTypes, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
 import {
   tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, SCRATCH_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE,
   VALIDATION_PACKAGE_REQUIREMENT,
 } from '../generators/helpers/tmf-filing';
-import { generateAllDocuments, temporaryCheckout, temporaryDirectory } from './generated-documents';
+import { commitCheckout, generateAllDocuments, temporaryCheckout, temporaryDirectory } from './generated-documents';
 
 type Context = { after(callback: () => void): void };
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
@@ -592,10 +594,19 @@ test('the package manifest schema requires exactly what the validator requires',
   assert.deepEqual(schema.required, [...MANIFEST_REQUIRED]);
   assert.deepEqual(Object.keys(schema.properties).sort(), [...MANIFEST_REQUIRED, ...MANIFEST_OPTIONAL].sort());
   for (const [name, required] of Object.entries(MANIFEST_MEMBER_REQUIRED)) {
+    const optional = MANIFEST_MEMBER_OPTIONAL[name as keyof typeof MANIFEST_MEMBER_REQUIRED] ?? [];
+    assert.deepEqual(schema.definitions[name].required, [...required], name);
+    assert.deepEqual(Object.keys(schema.definitions[name].properties).sort(), [...required, ...optional].sort(), name);
+    assert.equal(schema.definitions[name].additionalProperties, false, name);
+  }
+  // The contract builds of the release identity (IR-272), read as strictly.
+  for (const [name, required] of [['vendoredBuild', VENDORED_BUILD_REQUIRED], ['frameworkSharedTypes', FRAMEWORK_SHARED_TYPES_REQUIRED]] as const) {
     assert.deepEqual(schema.definitions[name].required, [...required], name);
     assert.deepEqual(Object.keys(schema.definitions[name].properties).sort(), [...required].sort(), name);
     assert.equal(schema.definitions[name].additionalProperties, false, name);
   }
+  assert.equal(schema.definitions.framework.properties.sharedTypes.$ref, '#/definitions/frameworkSharedTypes');
+  assert.deepEqual(Object.keys(schema.definitions.releaseIdentity.properties), ['contract', 'components', 'identityHash', 'framework', 'apiContracts', 'target']);
   assert.deepEqual(schema.definitions.input.properties.role.enum, [...INPUT_ROLES]);
   assert.deepEqual(schema.properties.syntheticBasis.items.enum, [...SYNTHETIC_BASES]);
   assert.deepEqual(schema.definitions.category.properties.category.enum, [...EVIDENCE_CATEGORIES]);
@@ -773,4 +784,55 @@ test('a run that names no executor leaves the manifest, records, summaries and r
   markDevelopmentRun(false, 'Synthetic Tester');
   assert.deepEqual(currentEvidenceMarking(), { synthetic: false, retained: false, executor: 'Synthetic Tester' });
   assert.throws(() => markDevelopmentRun(false, ''), /--executor names the person who ran the run/);
+});
+
+test('the manifest records the contract builds of the framework and the API release, read strictly (IR-272)', t => {
+  const { home } = markedRoot(t);
+  // A clean framework checkout whose package.json installs a vendored shared-types build with its receipt.
+  const framework = temporaryDirectory(t, 'accura-package-framework-builds-');
+  const archive = 'vendor/accura-trial-shared-types-0.2.0.5555555555555555.tgz';
+  const bytes = 'synthetic shared-types archive\n';
+  commitCheckout(framework, {
+    'package.json': JSON.stringify({ dependencies: { '@accura-trial/shared-types': `file:${archive}` } }),
+    [archive]: bytes,
+    [`${archive}.json`]: JSON.stringify({ sha256: sha256(bytes), manifestSha256: 'd'.repeat(64) }),
+  });
+  const api = temporaryDirectory(t, 'accura-package-api-');
+  t.after(() => setReleaseIdentity(undefined));
+  setReleaseIdentity(releaseIdentityFromInputs({ api: 'a'.repeat(40), ui: 'none', core: 'none', training: 'none' }, { apiCheckout: api }));
+  const evidencePackage = createPackage(syntheticPackage(home, { frameworkCheckout: framework }));
+  saveEvidence(evidencePackage.dir, 'iq', [record('IQ-001')]);
+  const manifest = JSON.parse(fs.readFileSync(sealPackage(evidencePackage).manifestPath, 'utf8'));
+  assert.deepEqual(manifest.framework.sharedTypes, frameworkSharedTypes(framework));
+  assert.deepEqual(manifest.framework.sharedTypes.installed, { version: null, manifestSha256: null });
+  assert.deepEqual(manifest.releaseUnderTest.apiContracts, { status: 'not resolved', reason: `the API checkout ${api} cannot be read by git` });
+  assert.equal(manifest.releaseUnderTest.framework.sharedTypes.selector,
+    JSON.parse(read(path.resolve(__dirname, '..'), 'package.json')).dependencies['@accura-trial/shared-types']);
+  const dir = evidencePackage.dir;
+  assert.deepEqual(verifyPackage(dir).problems, []);
+
+  const sha = 'b'.repeat(64);
+  const build = { selector: 'file:vendor/x.tgz', archive: 'vendor/x.tgz', archiveSha256: sha, receiptSha256: 'no receipt' };
+  const resolved = { status: 'resolved', commit: 'a'.repeat(40), sharedTypes: build, interop: build };
+  // Each rewrite starts from the sealed manifest, so one change never carries into the next.
+  const withContracts = (apiContracts: unknown) => () => ({ ...manifest, releaseUnderTest: { ...manifest.releaseUnderTest, apiContracts } });
+  const withSharedTypes = (sharedTypes: unknown) => () => ({ ...manifest, framework: { ...manifest.framework, sharedTypes } });
+  assert.equal(rewriteManifest(dir, withContracts(resolved)), '');
+  assert.match(rewriteManifest(dir, withContracts({ ...resolved, checkoutHead: 'c'.repeat(40) })),
+    /releaseUnderTest\.apiContracts has unknown member checkoutHead/);
+  assert.match(rewriteManifest(dir, withContracts({ ...resolved, status: 'partly' })), /apiContracts\.status must be resolved or not resolved/);
+  assert.match(rewriteManifest(dir, withContracts({ ...resolved, interop: { ...build, receiptSha256: 'none' } })),
+    /apiContracts\.interop\.receiptSha256 must be a SHA-256 or no receipt/);
+  assert.match(rewriteManifest(dir, withContracts({ status: 'not resolved' })), /apiContracts lacks reason/);
+  assert.match(rewriteManifest(dir, withContracts({ ...resolved, sharedTypes: { ...build, archive: '../escape.tgz' } })),
+    /apiContracts\.sharedTypes\.archive is malformed/);
+  assert.equal(rewriteManifest(dir, withSharedTypes({ ...build, receiptManifestSha256: null, installed: { version: '0.2.0', manifestSha256: sha } })), '');
+  assert.match(rewriteManifest(dir, withSharedTypes({ ...build, receiptManifestSha256: null, installed: { version: '0.2.0' } })),
+    /framework\.sharedTypes\.installed lacks manifestSha256/);
+  assert.match(rewriteManifest(dir, withSharedTypes(build)), /framework\.sharedTypes lacks receiptManifestSha256, installed/);
+  assert.match(rewriteManifest(dir, () => ({ ...manifest, releaseUnderTest: { ...manifest.releaseUnderTest,
+    framework: { commit: 'a'.repeat(40), dirty: false, sharedTypes: build } } })), /releaseUnderTest\.framework\.sharedTypes lacks receiptManifestSha256/);
+  assert.match(rewriteManifest(dir, () => ({ ...manifest, framework: { ...manifest.framework, installed: true } })),
+    /framework has unknown member installed/);
+  assert.equal(rewriteManifest(dir, () => manifest), '');
 });

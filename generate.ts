@@ -3,7 +3,8 @@ import * as path from 'path';
 import type { EvidenceResult } from './runners/evidence-capture';
 import { SYSTEM_INFO } from './config/system-info';
 import {
-  observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, requireTrainingRelease, setReleaseIdentity,
+  contractBuildRows, observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, requireInstalledSharedTypes,
+  requireTrainingRelease, setReleaseIdentity, workspaceApiCheckout,
   type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
 import { approvalBlock, masterEvidenceIndexHeader, registryCasesText } from './generators/helpers/markdown-writer';
@@ -214,11 +215,13 @@ function parseArgs(): CliArgs {
         + `(${DEVELOPMENT_RUN_NOTICE}).`);
     }
     checkRunnerTarget(args);
-    args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
+    args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs, { apiCheckout: workspaceApiCheckout(WORKSPACE_ROOT) });
+    // The validators check EDC exports with the installed shared-types build: a stale node_modules is refused (IR-272).
+    requireInstalledSharedTypes(args.releaseIdentity.framework.sharedTypes);
     // The training gate decides every clinical save the TA3 suites make (spec P20 3.10).
     if (args.runOq && args.ta3OqPlan && (args.oqSuites ?? ALL_OQ_SUITES).ta3.length) requireTrainingRelease(args.releaseIdentity, 'OQ suites 13 to 18');
   } else if (Object.keys(args.releaseInputs).length) {
-    args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs);
+    args.releaseIdentity = releaseIdentityFromInputs(args.releaseInputs, { apiCheckout: workspaceApiCheckout(WORKSPACE_ROOT) });
   }
   return args;
 }
@@ -759,26 +762,39 @@ function generateMasterEvidenceIndex(outputDir: string): void {
   lines.push('| Category | Release Identity | API | UI | Core | Training |');
   lines.push('| --- | --- | --- | --- | --- | --- |');
   const identities = new Set<string>();
+  // The contract builds each category's identity names, outside its identity hash (IR-272).
+  const buildLines: string[] = [];
   for (const cat of categories) {
     const identityPath = path.join(evidenceBase, cat, 'release-identity.json');
     if (!fs.existsSync(path.join(evidenceBase, cat, `${cat}-summary.json`))) continue;
     if (!fs.existsSync(identityPath)) {
       lines.push(`| ${cat.toUpperCase()} | not recorded | | | | |`);
+      buildLines.push(`| ${cat.toUpperCase()} | not recorded | | |`);
       continue;
     }
     try {
       // Version 1 or 2; a version 1 identity's training cell reads "not recorded".
       const identity = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as ReleaseIdentity;
+      const cells = releaseIndexCells(identity);
+      const builds = contractBuildRows(identity).map(([, text]) => text);
       identities.add(identity.identityHash);
-      lines.push(`| ${cat.toUpperCase()} | ${releaseIndexCells(identity).join(' | ')} |`);
+      lines.push(`| ${cat.toUpperCase()} | ${cells.join(' | ')} |`);
+      buildLines.push(`| ${cat.toUpperCase()} | ${builds.join(' | ')} |`);
     } catch {
       lines.push(`| ${cat.toUpperCase()} | unreadable | | | | |`);
+      buildLines.push(`| ${cat.toUpperCase()} | unreadable | | |`);
     }
   }
   if (identities.size > 1) {
     lines.push('');
     lines.push('**The categories above were produced against different releases; they do not qualify one release together.**');
   }
+  lines.push('');
+  lines.push('## Contract Builds');
+  lines.push('');
+  lines.push(`| Category | ${contractBuildRows(undefined).map(([label]) => label).join(' | ')} |`);
+  lines.push('| --- | --- | --- | --- |');
+  lines.push(...buildLines);
   lines.push('');
   lines.push('---');
   lines.push('');

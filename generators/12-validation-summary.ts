@@ -16,6 +16,7 @@ import {
 import { loadEvidence, registryCounts, type RegistryCounts } from '../runners/evidence-capture';
 import { complianceRow, E6_R3_MAPPINGS, HIPAA_MAPPINGS, PART11_MAPPINGS, TA3_USE_MAPPINGS } from './helpers/compliance-mapping';
 import { DEVIATION_DETECTION_CONTRACT, TA3_PQ_CASES } from '../config/ta3-pq-cases';
+import { contractBuildRows, currentReleaseIdentity } from '../runners/release-identity';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
 const DOC_YEAR = new Date().getFullYear();
@@ -141,6 +142,13 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
       ['AI Pipeline', SYSTEM_INFO.architecture.aiPipeline.name, SYSTEM_INFO.architecture.aiPipeline.version],
     ],
   );
+  content += '\n';
+
+  // The builds the run's release identity names, outside its identity hash (IR-272).
+  content += section(3, 'Contract Builds Under Test');
+  content += 'The shared-types build the framework checks EDC exports with, and the shared-types and interop builds of the ';
+  content += 'API release under test, read at its commit (never the API checkout\'s HEAD), as the release identity records them.\n\n';
+  content += markdownTable(['Build', 'Recorded'], contractBuildRows(currentReleaseIdentity()));
   content += '\n';
 
   content += section(3, 'Infrastructure');

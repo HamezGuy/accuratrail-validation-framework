@@ -7,7 +7,8 @@ import {
   DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceCategory, type EvidenceResult,
 } from './evidence-capture';
 import {
-  currentReleaseIdentity, frameworkCommit, releaseComponentNames, RELEASE_CONTRACT_V1, RELEASE_CONTRACT_V2, type ReleaseIdentity,
+  currentReleaseIdentity, frameworkCommit, frameworkSharedTypes, releaseComponentNames, NO_RECEIPT, NOT_RESOLVED, RELEASE_CONTRACT_V1,
+  RELEASE_CONTRACT_V2, type FrameworkSharedTypes, type ReleaseIdentity,
 } from './release-identity';
 import { BENCHMARK_RUN_FILES } from './benchmark-evidence';
 import {
@@ -84,6 +85,14 @@ export const MANIFEST_MEMBER_REQUIRED = {
   configurationUnderTest: CONFIGURATION_UNDER_TEST_REQUIRED,
   mismatch: CONFIGURATION_MISMATCH_REQUIRED,
 } as const;
+/** Optional members of the manifest's objects: the framework's shared-types build (IR-272), present
+ * when the framework checkout's package.json names one, so a package from another checkout keeps its bytes. */
+export const MANIFEST_MEMBER_OPTIONAL: Partial<Record<keyof typeof MANIFEST_MEMBER_REQUIRED, readonly string[]>> = {
+  framework: ['sharedTypes'],
+};
+/** Members of a vendored contract build and of the framework's shared-types build (release-identity.ts). */
+export const VENDORED_BUILD_REQUIRED = ['selector', 'archive', 'archiveSha256', 'receiptSha256'] as const;
+export const FRAMEWORK_SHARED_TYPES_REQUIRED = [...VENDORED_BUILD_REQUIRED, 'receiptManifestSha256', 'installed'] as const;
 
 export interface PackageInputSource { role: PackageInputRole; file: string }
 export interface PackageInput { role: PackageInputRole; path: string; sha256: string; originalPath: string }
@@ -114,7 +123,7 @@ export interface PackageManifest {
   syntheticNotice?: typeof SYNTHETIC_NOTICE;
   /** Present only when the run named its executor; every record then carries executedBy equal to its name. */
   executor?: PackageExecutor;
-  framework: { commit: string | null; dirty: boolean | null };
+  framework: { commit: string | null; dirty: boolean | null; sharedTypes?: FrameworkSharedTypes };
   releaseUnderTest: ReleaseIdentity | null;
   target: PackageTarget | null;
   /** The retained --target-config declaration (validation-target-configuration/1) with every
@@ -538,6 +547,7 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
   try {
     packageCheck(!fs.existsSync(manifestPath), `Package ${dir} already holds ${MANIFEST_FILE}.`);
     const framework = frameworkCommit(evidencePackage.frameworkCheckout);
+    const sharedTypes = frameworkSharedTypes(evidencePackage.frameworkCheckout);
     // The privileged training capture stays with the package and is never uploaded (IR-453).
     const restricted = packageEntries(dir).files.some(isTrainingCaptureFile);
     fs.writeFileSync(path.join(dir, TMF_FILING_FILE), tmfFilingText({
@@ -569,7 +579,7 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
       ...(evidencePackage.synthetic ? { syntheticNotice: SYNTHETIC_NOTICE } : {}),
       // Only when --executor named one, so a package naming none keeps its manifest bytes (IR-090).
       ...(evidencePackage.executor ? { executor: { ...evidencePackage.executor } } : {}),
-      framework: { commit: framework.commit ?? null, dirty: framework.dirty ?? null },
+      framework: { commit: framework.commit ?? null, dirty: framework.dirty ?? null, ...(sharedTypes ? { sharedTypes } : {}) },
       // A plain JSON copy: the identity object may hold members JSON leaves out.
       releaseUnderTest: identity ? JSON.parse(JSON.stringify(identity)) as ReleaseIdentity : null,
       target: options.baseUrl
@@ -623,8 +633,48 @@ const oneOf = <T extends string>(value: unknown, at: string, allowed: readonly T
   return value as T;
 };
 
+const nullOr = (value: unknown, at: string, check: (value: unknown, at: string) => unknown) => {
+  if (value !== null) check(value, at);
+};
+
+/** A vendored contract build (release-identity.ts VendoredBuild): its selector, archive path,
+ * archive SHA-256 and the SHA-256 its receipt states, or `no receipt`. */
+function vendoredBuildShape(value: unknown, at: string, members: readonly string[] = VENDORED_BUILD_REQUIRED): Record<string, unknown> {
+  const build = strictObject(value, at, members);
+  nullOr(build.selector, `${at}.selector`, manifestText);
+  nullOr(build.archive, `${at}.archive`, (item, where) => manifestPattern(item, where, /^vendor\/[A-Za-z0-9._-]+\.tgz$/));
+  nullOr(build.archiveSha256, `${at}.archiveSha256`, (item, where) => manifestPattern(item, where, SHA256_HEX));
+  packageCheck(build.receiptSha256 === NO_RECEIPT || (typeof build.receiptSha256 === 'string' && SHA256_HEX.test(build.receiptSha256)),
+    `${at}.receiptSha256 must be a SHA-256 or ${NO_RECEIPT}`);
+  return build;
+}
+
+/** The framework's shared-types build with the build installed in its node_modules. */
+function frameworkSharedTypesShape(value: unknown, at: string): void {
+  const build = vendoredBuildShape(value, at, FRAMEWORK_SHARED_TYPES_REQUIRED);
+  nullOr(build.receiptManifestSha256, `${at}.receiptManifestSha256`, (item, where) => manifestPattern(item, where, SHA256_HEX));
+  const installed = strictObject(build.installed, `${at}.installed`, ['version', 'manifestSha256']);
+  nullOr(installed.version, `${at}.installed.version`, manifestText);
+  nullOr(installed.manifestSha256, `${at}.installed.manifestSha256`, (item, where) => manifestPattern(item, where, SHA256_HEX));
+}
+
+/** The API's contract builds at the API release under test, or `not resolved` with the reason. */
+function apiContractsShape(value: unknown, at: string): void {
+  packageCheck(isRecord(value), `${at} must be an object`);
+  if (value.status === NOT_RESOLVED) {
+    const unresolved = strictObject(value, at, ['status', 'reason']);
+    manifestText(unresolved.reason, `${at}.reason`);
+    return;
+  }
+  const resolved = strictObject(value, at, ['status', 'commit', 'sharedTypes', 'interop']);
+  packageCheck(resolved.status === 'resolved', `${at}.status must be resolved or ${NOT_RESOLVED}`);
+  manifestPattern(resolved.commit, `${at}.commit`, GIT_COMMIT);
+  vendoredBuildShape(resolved.sharedTypes, `${at}.sharedTypes`);
+  vendoredBuildShape(resolved.interop, `${at}.interop`);
+}
+
 function releaseIdentityShape(value: unknown, at: string): void {
-  const identity = strictObject(value, at, ['contract', 'components', 'identityHash', 'framework'], ['target']);
+  const identity = strictObject(value, at, ['contract', 'components', 'identityHash', 'framework'], ['apiContracts', 'target']);
   const contract = oneOf(identity.contract, `${at}.contract`, [RELEASE_CONTRACT_V1, RELEASE_CONTRACT_V2]);
   manifestPattern(identity.identityHash, `${at}.identityHash`, SHA256_HEX);
   const names = releaseComponentNames({ contract });
@@ -635,7 +685,9 @@ function releaseIdentityShape(value: unknown, at: string): void {
     oneOf(component.kind, `${at}.components.${name}.kind`, ['git-commit', 'image-id', 'not-deployed']);
     oneOf(component.source, `${at}.components.${name}.source`, ['operator-input', 'target-version-endpoint']);
   }
-  strictObject(identity.framework, `${at}.framework`, [], ['commit', 'dirty']);
+  const framework = strictObject(identity.framework, `${at}.framework`, [], ['commit', 'dirty', 'sharedTypes']);
+  if (framework.sharedTypes !== undefined) frameworkSharedTypesShape(framework.sharedTypes, `${at}.framework.sharedTypes`);
+  if (identity.apiContracts !== undefined) apiContractsShape(identity.apiContracts, `${at}.apiContracts`);
   if (identity.target !== undefined) packageCheck(isRecord(identity.target), `${at}.target must be an object`);
 }
 
@@ -661,7 +713,8 @@ export function parseManifest(value: unknown): PackageManifest {
     checkExecutorName(executor.name, `${at} executor.name`);
     if (executor.osAccount !== null) manifestText(executor.osAccount, `${at} executor.osAccount`);
   }
-  const framework = strictObject(manifest.framework, `${at} framework`, MANIFEST_MEMBER_REQUIRED.framework);
+  const framework = strictObject(manifest.framework, `${at} framework`, MANIFEST_MEMBER_REQUIRED.framework, MANIFEST_MEMBER_OPTIONAL.framework);
+  if (framework.sharedTypes !== undefined) frameworkSharedTypesShape(framework.sharedTypes, `${at} framework.sharedTypes`);
   packageCheck(framework.commit === null || (typeof framework.commit === 'string' && GIT_COMMIT.test(framework.commit)), `${at} framework.commit is malformed`);
   packageCheck(framework.dirty === null || typeof framework.dirty === 'boolean', `${at} framework.dirty must be a boolean or null`);
   if (manifest.releaseUnderTest !== null) releaseIdentityShape(manifest.releaseUnderTest, `${at} releaseUnderTest`);

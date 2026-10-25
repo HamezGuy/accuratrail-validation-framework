@@ -8,7 +8,6 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { createHash } from 'node:crypto';
 import {
   EvidenceResult,
   captureWithExpectedStatus,
@@ -24,6 +23,11 @@ import {
   type ConfigurationMismatch, type DeclaredConfiguration, type FlagValue, type SourceEnvironment, type TargetConfigurationFlag,
 } from './target-configuration';
 import { checkoutState, currentReleaseIdentity, type CheckoutState, type ReleaseComponent } from './release-identity';
+import {
+  declaredDependency, errorText, readVendoredArchive, safeParseJson, sha256, VENDORED_SELECTOR,
+} from './vendored-archive';
+
+export { readVendoredArchive, type VendoredArchive } from './vendored-archive';
 
 /** The IQ protocol's cases, IQ-001 to IQ-035; the runner records a result for each. */
 export const IQ_CASE_COUNT = 35;
@@ -45,8 +49,6 @@ const FRAMEWORK_ROOT = path.resolve(__dirname, '..');
 const SHARED_TYPES = '@accura-trial/shared-types';
 /** The EDC's own check of a consumer installation against its receipt (libreclinicaapi). */
 export const SHARED_TYPES_VERIFIER = path.join('scripts', 'verify-study-contract-consumers.cjs');
-/** A package.json value that installs a vendored archive; no path separator may follow vendor/. */
-const VENDORED_SELECTOR = /^file:vendor\/[A-Za-z0-9._-]+\.tgz$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,12 +57,6 @@ const VENDORED_SELECTOR = /^file:vendor\/[A-Za-z0-9._-]+\.tgz$/;
 function ts(): string {
   return new Date().toISOString();
 }
-
-const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-const sha512Integrity = (bytes: Buffer) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-/** JSON text without a leading byte order mark, which JSON.parse refuses. */
-const withoutBom = (text: string) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
 
 /** A file system record. `filePath` is the file the record names; a check that reads more files
  * (or a directory) lists every one it read in `extra.readPaths`, so bindApiSourceToRelease checks each. */
@@ -93,18 +89,6 @@ function safeReadFile(filePath: string): string | null {
   }
 }
 
-function safeParseJson(content: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(content);
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 function countMatches(content: string, pattern: RegExp): number {
   const matches = content.match(pattern);
   return matches ? matches.length : 0;
@@ -115,78 +99,10 @@ function readPackageJson(filePath: string): Record<string, unknown> | null {
   return content ? safeParseJson(content) : null;
 }
 
-/** A dependency's declared version in dependencies, then devDependencies. */
-function declaredDependency(pkg: Record<string, unknown> | null, name: string): string {
-  for (const group of ['dependencies', 'devDependencies']) {
-    const deps = pkg?.[group];
-    if (isRecord(deps) && typeof deps[name] === 'string') return deps[name] as string;
-  }
-  return '';
-}
-
 /** The major version a package.json range names: ^20.3.27, ~5.9.3, 20.1.0, 20.x or >=20. */
 export function declaredMajor(range: string): number | undefined {
   const match = /^\s*(?:[\^~]|[<>]=?|=)?\s*v?(\d+)(?:[.\s]|$)/.exec(range);
   return match ? Number(match[1]) : undefined;
-}
-
-/** A vendored archive a package.json installs, read with its receipt (`<archive>.json`).
- * IQ-008 hands the receipt to the EDC's verifier; IQ-035 checks every vendored
- * dependency of the API with it. */
-export interface VendoredArchive {
-  packageName: string;
-  selector: string;
-  archive: string;
-  receiptPath: string;
-  receipt: Record<string, unknown> | null;
-  bytes: number | null;
-  sha256: string | null;
-  /** The archive's SHA-512 in the lockfile's integrity form. */
-  integrity: string | null;
-  /** Empty when the receipt exists and its filename, byte count, SHA-256, integrity
-   * and package name describe the archive's bytes. */
-  problems: string[];
-}
-
-export function readVendoredArchive(root: string, packageName: string, selector: string): VendoredArchive {
-  const archive = path.resolve(root, selector.replace(/^file:/, ''));
-  const receiptPath = `${archive}.json`;
-  const result: VendoredArchive = {
-    packageName, selector, archive, receiptPath, receipt: null, bytes: null, sha256: null, integrity: null, problems: [],
-  };
-  if (!VENDORED_SELECTOR.test(selector)) {
-    result.problems.push(`${packageName} is not installed from a vendored archive (${JSON.stringify(selector)})`);
-    return result;
-  }
-  let bytes: Buffer | undefined;
-  try {
-    bytes = fs.readFileSync(archive);
-    result.bytes = bytes.length;
-    result.sha256 = sha256(bytes);
-    result.integrity = sha512Integrity(bytes);
-  } catch (error) {
-    result.problems.push(`archive ${archive} cannot be read (${(error as NodeJS.ErrnoException).code ?? errorText(error)})`);
-  }
-  const receiptText = safeReadFile(receiptPath);
-  if (receiptText === null) {
-    result.problems.push(`no receipt ${receiptPath}`);
-    return result;
-  }
-  result.receipt = safeParseJson(withoutBom(receiptText));
-  if (!result.receipt) {
-    result.problems.push(`receipt ${receiptPath} is not a JSON object`);
-    return result;
-  }
-  if (!bytes) return result;
-  const receipt = result.receipt;
-  if (receipt.packageName !== packageName) result.problems.push(`receipt ${receiptPath} names package ${JSON.stringify(receipt.packageName)}`);
-  if (receipt.filename !== path.basename(archive)) result.problems.push(`receipt ${receiptPath} names file ${JSON.stringify(receipt.filename)}`);
-  if (receipt.byteLength !== bytes.length) result.problems.push(`archive ${archive} has ${bytes.length} bytes, its receipt ${JSON.stringify(receipt.byteLength)}`);
-  if (receipt.sha256 !== result.sha256) result.problems.push(`archive ${archive} does not match its receipt's SHA-256`);
-  if (receipt.integrity !== undefined && receipt.integrity !== result.integrity) {
-    result.problems.push(`archive ${archive} does not match its receipt's integrity`);
-  }
-  return result;
 }
 
 /** IQ-035: every `file:vendor/*.tgz` dependency of the API has a receipt beside its

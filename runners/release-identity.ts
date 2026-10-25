@@ -1,6 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
+import {
+  commitFiles, declaredDependency, readVendoredArchive, safeParseJson, sha256, withoutBom, workingTreeFiles, type CheckoutFileReader,
+} from './vendored-archive';
 
 /** The release a validation run qualifies. Evidence without it cannot be tied
  * to the system that produced it, so every live run records it. */
@@ -42,10 +47,51 @@ export interface TargetVersionObservation {
   error?: string;
 }
 
+/** The contract packages whose vendored builds a release identity names (IR-272): the framework
+ * checks EDC exports with its shared-types build, and the API runs its shared-types and interop builds. */
+export const SHARED_TYPES_PACKAGE = '@accura-trial/shared-types';
+export const INTEROP_PACKAGE = '@accura-trial/interop-middleware';
+/** A vendored build whose archive has no readable receipt stating its SHA-256. */
+export const NO_RECEIPT = 'no receipt';
+/** API contract builds that cannot be read at the API release under test. */
+export const NOT_RESOLVED = 'not resolved';
+
+/** A contract package as a checkout's package.json installs it. */
+export interface VendoredBuild {
+  /** The package.json dependency selector (file:vendor/<archive>.tgz); null when package.json names none. */
+  selector: string | null;
+  /** The vendored archive the selector names, relative to the checkout; null when it names none. */
+  archive: string | null;
+  /** SHA-256 of the archive's bytes; null when the archive cannot be read. */
+  archiveSha256: string | null;
+  /** The archive SHA-256 its receipt (`<archive>.json`) states, or `no receipt`. */
+  receiptSha256: string;
+}
+
+/** The framework's own shared-types build: the vendored build, the release-manifest.json SHA-256
+ * its receipt states, and the build installed in node_modules (which the dirty check, ignoring
+ * node_modules/, does not cover). A live run refuses an install that is not the receipt's. */
+export interface FrameworkSharedTypes extends VendoredBuild {
+  receiptManifestSha256: string | null;
+  installed: { version: string | null; manifestSha256: string | null };
+}
+
+/** The framework checkout that ran. sharedTypes is recorded outside the identity hash. */
+export interface FrameworkState { commit?: string; dirty?: boolean; sharedTypes?: FrameworkSharedTypes }
+
+/** The API's shared-types and interop builds, read at the --release-api commit in the API
+ * checkout, never at its HEAD; `not resolved`, with the reason, when the release is an image
+ * ID or the checkout does not hold the commit. Recorded outside the identity hash. */
+export type ApiContractBuilds =
+  | { status: 'resolved'; commit: string; sharedTypes: VendoredBuild; interop: VendoredBuild }
+  | { status: typeof NOT_RESOLVED; reason: string };
+
 interface ReleaseIdentityFields {
   /** SHA-256 over the canonical component identities, for quick comparison. */
   identityHash: string;
-  framework: { commit?: string; dirty?: boolean };
+  framework: FrameworkState;
+  /** Present when the CLI named the API checkout (releaseIdentityFromInputs' apiCheckout). */
+  apiContracts?: ApiContractBuilds;
   target?: TargetVersionObservation;
 }
 
@@ -135,6 +181,105 @@ export function frameworkCommit(checkout = path.resolve(__dirname, '..')): { com
   return state.commit ? { commit: state.commit, dirty: state.changed!.length > 0 } : {};
 }
 
+/** A contract package as package.json names it in the checkout at `root`, read through `files`
+ * (the working tree, or a commit's files), with the receipt it read. */
+function vendoredBuild(root: string, packageName: string, files: CheckoutFileReader): VendoredBuild & { receipt: Record<string, unknown> | null } {
+  let pkg: Record<string, unknown> | null;
+  try { pkg = safeParseJson(withoutBom(files(path.join(root, 'package.json')).toString('utf-8'))); }
+  catch { pkg = null; }
+  const selector = declaredDependency(pkg, packageName) || null;
+  if (!selector || !selector.startsWith('file:')) {
+    return { selector, archive: null, archiveSha256: null, receiptSha256: NO_RECEIPT, receipt: null };
+  }
+  const vendored = readVendoredArchive(root, packageName, selector, files);
+  const stated = vendored.receipt?.sha256;
+  return {
+    selector,
+    archive: path.relative(root, vendored.archive).split(path.sep).join('/'),
+    archiveSha256: vendored.sha256,
+    receiptSha256: typeof stated === 'string' && SHA256_HEX.test(stated) ? stated : NO_RECEIPT,
+    receipt: vendored.receipt,
+  };
+}
+
+/** The framework's shared-types build (IR-272): the selector, archive and receipt its package.json
+ * names, and the build installed in its node_modules. Undefined when package.json names no
+ * shared-types dependency (a checkout that is not the framework's). The parity contract test and
+ * the live-run refusal (requireInstalledSharedTypes) both read it. */
+export function frameworkSharedTypes(checkout = path.resolve(__dirname, '..')): FrameworkSharedTypes | undefined {
+  const { receipt, ...build } = vendoredBuild(checkout, SHARED_TYPES_PACKAGE, workingTreeFiles);
+  if (build.selector === null) return undefined;
+  const installed = path.join(checkout, 'node_modules', ...SHARED_TYPES_PACKAGE.split('/'));
+  let version: string | null;
+  try {
+    const stated = safeParseJson(withoutBom(fs.readFileSync(path.join(installed, 'package.json'), 'utf-8')))?.version;
+    version = typeof stated === 'string' ? stated : null;
+  } catch { version = null; }
+  let manifestSha256: string | null;
+  try { manifestSha256 = sha256(fs.readFileSync(path.join(installed, 'release-manifest.json'))); }
+  catch { manifestSha256 = null; }
+  const statedManifest = receipt?.manifestSha256;
+  return {
+    ...build,
+    receiptManifestSha256: typeof statedManifest === 'string' && SHA256_HEX.test(statedManifest) ? statedManifest : null,
+    installed: { version, manifestSha256 },
+  };
+}
+
+/** Whether node_modules holds the build the receipt names: its release-manifest.json SHA-256 is
+ * the receipt's manifestSha256. */
+export function installedSharedTypesCurrent(build: FrameworkSharedTypes | undefined): boolean {
+  return Boolean(build?.receiptManifestSha256 && build.installed.manifestSha256 === build.receiptManifestSha256);
+}
+
+/** A live run checks EDC exports with the installed shared-types build, so it refuses an install
+ * that is not the build the framework's receipt names (a stale node_modules). */
+export function requireInstalledSharedTypes(build: FrameworkSharedTypes | undefined): void {
+  if (installedSharedTypesCurrent(build)) return;
+  if (!build) throw new Error(`The framework's package.json names no ${SHARED_TYPES_PACKAGE} build; a live run checks EDC exports with it.`);
+  throw new Error(`The installed ${SHARED_TYPES_PACKAGE} is not the vendored build ${build.archive ?? build.selector}: `
+    + `node_modules/${SHARED_TYPES_PACKAGE}/release-manifest.json SHA-256 is ${build.installed.manifestSha256 ?? 'unreadable'}, `
+    + `its receipt states ${build.receiptManifestSha256 ?? 'none'}. Reinstall with npm install --offline before a live run.`);
+}
+
+/** The framework checkout's commit and dirty state (frameworkCommit) and its shared-types build. */
+export function frameworkState(checkout = path.resolve(__dirname, '..')): FrameworkState {
+  const sharedTypes = frameworkSharedTypes(checkout);
+  return { ...frameworkCommit(checkout), ...(sharedTypes ? { sharedTypes } : {}) };
+}
+
+/** The API checkout of the EDC workspace, which the CLI reads the API's contract builds in. */
+export function workspaceApiCheckout(workspaceRoot: string): string {
+  return resolveLibreclinicaApiRoot(workspaceRoot);
+}
+
+/** The API's shared-types and interop builds at the API release under test (IR-272): package.json
+ * and the receipts beside the archives it names, read with git show at the --release-api commit in
+ * the API checkout. Never the checkout's HEAD or working tree: an image ID, a folder that is not
+ * its git top level, or a checkout that does not hold the commit records `not resolved` and why. */
+export function apiContractBuilds(api: ReleaseComponent, apiCheckout: string): ApiContractBuilds {
+  if (api.kind !== 'git-commit') {
+    return { status: NOT_RESOLVED, reason: `the API release under test is ${api.kind} ${api.identity}, which names no commit to read the API's package.json at` };
+  }
+  const git = (...args: string[]) => execFileSync('git', ['-C', apiCheckout, ...args],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, windowsHide: true }).trim();
+  let root: string;
+  try { root = git('rev-parse', '--show-toplevel'); }
+  catch { return { status: NOT_RESOLVED, reason: `the API checkout ${apiCheckout} cannot be read by git` }; }
+  const real = (file: string) => { try { return fs.realpathSync.native(file); } catch { return path.resolve(file); } };
+  if (path.relative(real(root), real(apiCheckout)) !== '') {
+    return { status: NOT_RESOLVED, reason: `the API folder ${apiCheckout} is not the top level of a git checkout (git reads ${root})` };
+  }
+  try { git('cat-file', '-e', `${api.identity}^{commit}`); }
+  catch { return { status: NOT_RESOLVED, reason: `the API checkout ${apiCheckout} does not hold commit ${api.identity}` }; }
+  const files = commitFiles(apiCheckout, api.identity);
+  const build = (name: string): VendoredBuild => {
+    const { receipt: _receipt, ...read } = vendoredBuild(apiCheckout, name, files);
+    return read;
+  };
+  return { status: 'resolved', commit: api.identity, sharedTypes: build(SHARED_TYPES_PACKAGE), interop: build(INTEROP_PACKAGE) };
+}
+
 /** The components an identity records, in hash order. */
 export function releaseComponentNames(identity: Pick<ReleaseIdentity, 'contract'>): readonly ReleaseComponentName[] {
   return identity.contract === RELEASE_CONTRACT_V2 ? RELEASE_COMPONENTS : RELEASE_COMPONENTS_V1;
@@ -154,9 +299,11 @@ function hashComponents(
 
 /** Builds the identity from explicit operator inputs. Every component its
  * version names is required; nothing is inferred from the framework checkout,
- * so a component that is not deployed is stated as `none`. */
+ * so a component that is not deployed is stated as `none`. The framework's
+ * shared-types build is recorded in `framework`, and with `apiCheckout` the API's
+ * contract builds at --release-api in `apiContracts`; neither enters the hash. */
 export function releaseIdentityFromInputs(
-  inputs: Partial<Record<ReleaseComponentName, string>>,
+  inputs: Partial<Record<ReleaseComponentName, string>>, options: { apiCheckout?: string } = {},
 ): ReleaseIdentity {
   const v2 = inputs.training !== undefined
     || (['ui', 'core'] as const).some(name => inputs[name]?.trim().toLowerCase() === 'none');
@@ -167,12 +314,16 @@ export function releaseIdentityFromInputs(
       + '(full Git commit or sha256 image ID of each deployed component; none for a UI, core or training service that is not deployed).');
   }
   const components = Object.fromEntries(names.map(name => [name, parseReleaseComponent(name, inputs[name]!)]));
+  const recorded = (api: ReleaseComponent) => ({
+    framework: frameworkState(),
+    ...(options.apiCheckout ? { apiContracts: apiContractBuilds(api, options.apiCheckout) } : {}),
+  });
   if (!v2) {
     const v1 = components as Record<V1ComponentName, ReleaseComponent>;
-    return { contract: RELEASE_CONTRACT_V1, components: v1, identityHash: hashComponents(names, v1), framework: frameworkCommit() };
+    return { contract: RELEASE_CONTRACT_V1, components: v1, identityHash: hashComponents(names, v1), ...recorded(v1.api) };
   }
   const v2Components = components as Record<ReleaseComponentName, ReleaseComponent>;
-  return { contract: RELEASE_CONTRACT_V2, components: v2Components, identityHash: hashComponents(names, v2Components), framework: frameworkCommit() };
+  return { contract: RELEASE_CONTRACT_V2, components: v2Components, identityHash: hashComponents(names, v2Components), ...recorded(v2Components.api) };
 }
 
 /** OQ suites 13 to 18 exercise the TA3 uses by saving forms on a stack whose
@@ -286,4 +437,34 @@ export function releaseIndexCells(identity: ReleaseIdentity): string[] {
     throw new Error(`Unsupported release identity contract ${JSON.stringify((identity as { contract?: unknown }).contract)}.`);
   }
   return [identity.identityHash, ...RELEASE_COMPONENTS.map(name => releaseComponentText(releaseComponent(identity, name), 'identity'))];
+}
+
+/** A vendored build as reports print it. */
+function vendoredBuildText(build: VendoredBuild): string {
+  if (build.selector === null) return 'not named in package.json';
+  if (build.archive === null) return `${build.selector} (not a vendored archive)`;
+  return `${build.archive} (archive SHA-256 ${build.archiveSha256 ?? 'unreadable'}; `
+    + `${build.receiptSha256 === NO_RECEIPT ? NO_RECEIPT : `receipt SHA-256 ${build.receiptSha256}`})`;
+}
+
+/** The contract builds an identity records (IR-272), as label and text on one line with no table
+ * cell separator: the framework's shared-types build with its installed build, and the API's
+ * shared-types and interop builds at the API release under test. The master evidence index, 12
+ * and 20 print them; an identity recorded before them reads "not recorded". */
+export function contractBuildRows(identity: ReleaseIdentity | undefined): Array<[string, string]> {
+  const labels = ['Framework shared types', 'API shared types', 'API interop'] as const;
+  if (!identity) return labels.map(label => [label, 'not recorded: no release identity was supplied']);
+  const framework = identity.framework?.sharedTypes;
+  const frameworkText = framework
+    ? `${vendoredBuildText(framework)}; installed ${framework.installed.version ?? 'version unreadable'}, release-manifest.json SHA-256 `
+      + `${framework.installed.manifestSha256 ?? 'unreadable'} (${installedSharedTypesCurrent(framework) ? 'the build its receipt names' : 'not the build its receipt names'})`
+    : 'not recorded';
+  const api = identity.apiContracts;
+  const apiText = (pick: 'sharedTypes' | 'interop') => {
+    if (!api) return 'not recorded';
+    if (api.status !== 'resolved') return `${NOT_RESOLVED}: ${api.reason}`;
+    return `${vendoredBuildText(api[pick])} at API commit ${api.commit}`;
+  };
+  const texts = [frameworkText, apiText('sharedTypes'), apiText('interop')];
+  return labels.map((label, index): [string, string] => [label, texts[index].replace(/[|\s]+/g, ' ').trim()]);
 }

@@ -107,8 +107,68 @@
       "required": ["commit", "dirty"],
       "properties": {
         "commit": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }] },
-        "dirty": { "description": "Whether tracked files differed from the commit.", "type": ["boolean", "null"] }
+        "dirty": { "description": "Whether tracked files differed from the commit.", "type": ["boolean", "null"] },
+        "sharedTypes": { "description": "The framework's shared-types build (frameworkSharedTypes), present when its package.json names one. Outside the identity hash.", "$ref": "#/definitions/frameworkSharedTypes" }
       }
+    },
+    "vendoredBuild": {
+      "description": "A contract package as a checkout's package.json installs it (release-identity.ts VendoredBuild).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "archive", "archiveSha256", "receiptSha256"],
+      "properties": {
+        "selector": { "description": "The package.json dependency selector, or null when it names none.", "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }] },
+        "archive": { "description": "The vendored archive the selector names, relative to the checkout, or null.", "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^vendor/[A-Za-z0-9._-]+\\.tgz$" }] },
+        "archiveSha256": { "description": "SHA-256 of the archive's bytes, or null when it cannot be read.", "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/sha256" }] },
+        "receiptSha256": { "description": "The archive SHA-256 its receipt states, or no receipt.", "oneOf": [{ "const": "no receipt" }, { "$ref": "#/definitions/sha256" }] }
+      }
+    },
+    "frameworkSharedTypes": {
+      "description": "The framework's shared-types build with the build installed in its node_modules; a live run refuses an install whose release-manifest.json SHA-256 is not the receipt's manifestSha256.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "archive", "archiveSha256", "receiptSha256", "receiptManifestSha256", "installed"],
+      "properties": {
+        "selector": { "$ref": "#/definitions/vendoredBuild/properties/selector" },
+        "archive": { "$ref": "#/definitions/vendoredBuild/properties/archive" },
+        "archiveSha256": { "$ref": "#/definitions/vendoredBuild/properties/archiveSha256" },
+        "receiptSha256": { "$ref": "#/definitions/vendoredBuild/properties/receiptSha256" },
+        "receiptManifestSha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/sha256" }] },
+        "installed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "manifestSha256"],
+          "properties": {
+            "version": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }] },
+            "manifestSha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/sha256" }] }
+          }
+        }
+      }
+    },
+    "apiContracts": {
+      "description": "The API's shared-types and interop builds read with git show at the --release-api commit in the API checkout, or not resolved with the reason (an image ID, or a commit the checkout does not hold). Never the checkout's HEAD. Outside the identity hash.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "commit", "sharedTypes", "interop"],
+          "properties": {
+            "status": { "const": "resolved" },
+            "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            "sharedTypes": { "$ref": "#/definitions/vendoredBuild" },
+            "interop": { "$ref": "#/definitions/vendoredBuild" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": { "const": "not resolved" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
     },
     "executor": {
       "description": "The person who ran the CLI (generate.ts --executor), present only when the run named one; required for an executed package that is not synthetic. Every evidence record of the package then carries executedBy equal to name. Attribution only: the package carries no signature.",
@@ -129,7 +189,16 @@
         "contract": { "enum": ["validation-release-identity/1", "validation-release-identity/2"] },
         "components": { "type": "object" },
         "identityHash": { "$ref": "#/definitions/sha256" },
-        "framework": { "type": "object" },
+        "framework": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "commit": { "type": "string" },
+            "dirty": { "type": "boolean" },
+            "sharedTypes": { "$ref": "#/definitions/frameworkSharedTypes" }
+          }
+        },
+        "apiContracts": { "$ref": "#/definitions/apiContracts" },
         "target": { "type": "object" }
       }
     },
