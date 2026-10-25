@@ -3,7 +3,7 @@ import * as path from 'path';
 import type { EvidenceResult } from './runners/evidence-capture';
 import { SYSTEM_INFO } from './config/system-info';
 import {
-  contractBuildRows, observeTargetVersion, releaseIdentityFromInputs, releaseIndexCells, releaseSummary, requireInstalledSharedTypes,
+  observeTargetVersion, releaseIdentityFromInputs, releaseIndexSections, releaseSummary, requireInstalledSharedTypes,
   requireTrainingRelease, setReleaseIdentity, workspaceApiCheckout,
   type ReleaseComponentName, type ReleaseIdentity,
 } from './runners/release-identity';
@@ -757,44 +757,7 @@ function generateMasterEvidenceIndex(outputDir: string): void {
   const grandRate = grandTotal > 0 ? `${((grandPassed / grandTotal) * 100).toFixed(1)}%` : 'N/A';
   lines.push(`| **TOTAL** | **${grandTotal}** | **${grandPassed}** | **${grandFailed}** | — | **${grandRate}** | — | — |`);
   lines.push('');
-  lines.push('## Release Under Test');
-  lines.push('');
-  lines.push('| Category | Release Identity | API | UI | Core | Training |');
-  lines.push('| --- | --- | --- | --- | --- | --- |');
-  const identities = new Set<string>();
-  // The contract builds each category's identity names, outside its identity hash (IR-272).
-  const buildLines: string[] = [];
-  for (const cat of categories) {
-    const identityPath = path.join(evidenceBase, cat, 'release-identity.json');
-    if (!fs.existsSync(path.join(evidenceBase, cat, `${cat}-summary.json`))) continue;
-    if (!fs.existsSync(identityPath)) {
-      lines.push(`| ${cat.toUpperCase()} | not recorded | | | | |`);
-      buildLines.push(`| ${cat.toUpperCase()} | not recorded | | |`);
-      continue;
-    }
-    try {
-      // Version 1 or 2; a version 1 identity's training cell reads "not recorded".
-      const identity = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as ReleaseIdentity;
-      const cells = releaseIndexCells(identity);
-      const builds = contractBuildRows(identity).map(([, text]) => text);
-      identities.add(identity.identityHash);
-      lines.push(`| ${cat.toUpperCase()} | ${cells.join(' | ')} |`);
-      buildLines.push(`| ${cat.toUpperCase()} | ${builds.join(' | ')} |`);
-    } catch {
-      lines.push(`| ${cat.toUpperCase()} | unreadable | | | | |`);
-      buildLines.push(`| ${cat.toUpperCase()} | unreadable | | |`);
-    }
-  }
-  if (identities.size > 1) {
-    lines.push('');
-    lines.push('**The categories above were produced against different releases; they do not qualify one release together.**');
-  }
-  lines.push('');
-  lines.push('## Contract Builds');
-  lines.push('');
-  lines.push(`| Category | ${contractBuildRows(undefined).map(([label]) => label).join(' | ')} |`);
-  lines.push('| --- | --- | --- | --- |');
-  lines.push(...buildLines);
+  lines.push(...releaseIndexSections(evidenceBase, categories));
   lines.push('');
   lines.push('---');
   lines.push('');

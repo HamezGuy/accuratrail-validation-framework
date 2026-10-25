@@ -44,7 +44,27 @@ Module._load = function (request, parent, isMain) {
     }
     // The release identity module is pure apart from /health, which the
     // offline fetch below refuses; use the real implementation.
-    if (request === './runners/release-identity') return originalLoad.call(this, request, parent, isMain);
+    // A scenario may name the API checkout the contract builds are read in (a temporary git
+    // checkout, in place of the workspace's), and a framework checkout whose shared-types build and
+    // node_modules install the identity records in place of this checkout's, so the live-run
+    // refusal of a stale install is exercised through the CLI (IR-272).
+    if (request === './runners/release-identity') {
+      const real = originalLoad.call(this, request, parent, isMain);
+      const apiCheckout = process.env.QUALIFICATION_CLI_TEST_API_CHECKOUT;
+      const sharedTypesCheckout = process.env.QUALIFICATION_CLI_TEST_SHARED_TYPES_CHECKOUT;
+      return {
+        ...real,
+        ...(apiCheckout ? { workspaceApiCheckout: () => apiCheckout } : {}),
+        ...(sharedTypesCheckout ? {
+          releaseIdentityFromInputs(inputs, options) {
+            const identity = real.releaseIdentityFromInputs(inputs, options);
+            const sharedTypes = real.frameworkSharedTypes(sharedTypesCheckout);
+            const { sharedTypes: _own, ...framework } = identity.framework;
+            return { ...identity, framework: { ...framework, ...(sharedTypes ? { sharedTypes } : {}) } };
+          },
+        } : {}),
+      };
+    }
     // The evidence package module owns every filesystem call packaging needs
     // (generate.ts makes none of its own), so a scenario that names a
     // temporary --retain-root creates, seals and verifies a real package there.

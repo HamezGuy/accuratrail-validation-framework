@@ -7,7 +7,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { verifyPackage, DEVELOPMENT_RUN_NOTICE, MANIFEST_FILE, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
 import { NOT_RUN_OF_RECORD_LINE, SCRATCH_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
-import { temporaryCheckout, temporaryDirectory } from './generated-documents';
+import { frameworkCommit } from '../runners/release-identity';
+import { commitCheckout, temporaryCheckout, temporaryDirectory } from './generated-documents';
 import { ta3PlanJson } from './ta3-plan-fixture';
 
 const root = path.resolve(__dirname, '..');
@@ -20,17 +21,24 @@ const defaultRetention = (flags: string[]) => !flags.includes('--docs-only') && 
 /** framework: the flags about the framework checkout; by default --allow-dirty-framework, so a scenario
  * does not depend on this checkout's state. frameworkCheckout: the checkout a package reads instead of this one.
  * outputRoot: where a scratch run creates its folder; by default a temporary directory removed after the run,
- * never this checkout's output/. */
+ * never this checkout's output/. apiCheckout: the API checkout the contract builds are read in, instead of the
+ * workspace's. sharedTypesCheckout: the framework checkout whose shared-types build and install the identity records. */
 function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid', release = RELEASE,
   retention = defaultRetention(flags),
-  { framework = ['--allow-dirty-framework'], frameworkCheckout, outputRoot }: { framework?: string[]; frameworkCheckout?: string; outputRoot?: string } = {}) {
+  { framework = ['--allow-dirty-framework'], frameworkCheckout, outputRoot, apiCheckout, sharedTypesCheckout }: {
+    framework?: string[]; frameworkCheckout?: string; outputRoot?: string; apiCheckout?: string; sharedTypesCheckout?: string;
+  } = {}) {
   const scratchRoot = outputRoot ?? fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'accura-cli-output-'));
-  try { return spawnCli(scenario, flags, baseUrl, release, retention, framework, frameworkCheckout, scratchRoot); }
+  const env = {
+    ...(apiCheckout ? { QUALIFICATION_CLI_TEST_API_CHECKOUT: apiCheckout } : {}),
+    ...(sharedTypesCheckout ? { QUALIFICATION_CLI_TEST_SHARED_TYPES_CHECKOUT: sharedTypesCheckout } : {}),
+  };
+  try { return spawnCli(scenario, flags, baseUrl, release, retention, framework, frameworkCheckout, scratchRoot, env); }
   finally { if (!outputRoot) fs.rmSync(scratchRoot, { recursive: true, force: true }); }
 }
 
 function spawnCli(scenario: string, flags: string[], baseUrl: string | null, release: string[], retention: string[], framework: string[],
-  frameworkCheckout: string | undefined, outputRoot: string) {
+  frameworkCheckout: string | undefined, outputRoot: string, extraEnv: Record<string, string> = {}) {
   const result = spawnSync(process.execPath, [
     '-r', require.resolve('ts-node/register'),
     '-r', path.join(__dirname, 'fixtures', 'qualification-cli-offline.cjs'),
@@ -42,6 +50,7 @@ function spawnCli(scenario: string, flags: string[], baseUrl: string | null, rel
       ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '',
       QUALIFICATION_CLI_TEST_OUTPUT_ROOT: outputRoot,
       ...(frameworkCheckout ? { QUALIFICATION_CLI_TEST_FRAMEWORK_CHECKOUT: frameworkCheckout } : {}),
+      ...extraEnv,
     },
     encoding: 'utf8',
     timeout: 20_000,
@@ -368,6 +377,67 @@ test('--retain-root under a marked data root creates, seals and verifies a packa
   // A run naming no executor prints none and its manifest records none (IR-090).
   assert.doesNotMatch(result.output, /^Executor: /m);
   assert.equal(manifest.executor, undefined);
+});
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
+
+/** A synthetic checkout whose package.json installs shared types (with a receipt naming `manifestSha256`)
+ * and interop (without one) from vendor/ archives: the files keyed by path (IR-272). */
+function contractCheckoutFiles(manifestSha256 = 'e'.repeat(64)): { files: Record<string, string>; sharedTypes: string; interop: string } {
+  const sharedTypes = 'vendor/accura-trial-shared-types-0.2.0.6666666666666666.tgz';
+  const interop = 'vendor/accura-trial-interop-middleware-0.3.0.6666666666666666.tgz';
+  const bytes = 'synthetic shared-types archive for a CLI contract test\n';
+  return {
+    sharedTypes, interop,
+    files: {
+      'package.json': JSON.stringify({ dependencies: {
+        '@accura-trial/shared-types': `file:${sharedTypes}`, '@accura-trial/interop-middleware': `file:${interop}` } }),
+      [sharedTypes]: bytes,
+      [`${sharedTypes}.json`]: JSON.stringify({ sha256: sha256(bytes), manifestSha256 }),
+      [interop]: 'synthetic interop archive for a CLI contract test\n',
+    },
+  };
+}
+
+test('a live run reads the API contract builds at --release-api in the API checkout and records them in the manifest (IR-272)', t => {
+  const home = markedRoot(t);
+  const api = temporaryDirectory(t, 'accura-cli-api-');
+  const checkout = contractCheckoutFiles();
+  commitCheckout(api, checkout.files);
+  const commit = frameworkCommit(api).commit!;
+  const result = runCli('pass', ['--iq', '--synthetic-qualification', '--version', 'cli-contracts'], undefined,
+    ['--release-api', commit, '--release-ui', UI, '--release-core', CORE], ['--retain-root', home],
+    { frameworkCheckout: temporaryCheckout(t, 'accura-cli-framework-'), apiCheckout: api });
+  assert.equal(result.status, 0, result.output);
+  const verified = verifyPackage(path.join(home, fs.readdirSync(home)[0]));
+  assert.deepEqual(verified.problems, []);
+  const sharedSha = sha256(checkout.files[checkout.sharedTypes]);
+  assert.deepEqual(verified.manifest!.releaseUnderTest?.apiContracts, {
+    status: 'resolved', commit,
+    sharedTypes: { selector: `file:${checkout.sharedTypes}`, archive: checkout.sharedTypes, archiveSha256: sharedSha, receiptSha256: sharedSha },
+    interop: { selector: `file:${checkout.interop}`, archive: checkout.interop,
+      archiveSha256: sha256(checkout.files[checkout.interop]), receiptSha256: 'no receipt' },
+  });
+});
+
+test('a live run refuses a shared-types install that is not the build its receipt names, before any runner starts (IR-272)', t => {
+  const manifest = '{"synthetic":"release manifest"}\n';
+  const framework = temporaryDirectory(t, 'accura-cli-shared-types-');
+  commitCheckout(framework, contractCheckoutFiles(sha256(manifest)).files);
+  const installed = path.join(framework, 'node_modules', '@accura-trial', 'shared-types');
+  fs.mkdirSync(installed, { recursive: true });
+  fs.writeFileSync(path.join(installed, 'release-manifest.json'), '{"synthetic":"another build"}\n');
+  const stale = runCli('pass', ['--iq'], undefined, undefined, undefined, { sharedTypesCheckout: framework });
+  assert.equal(stale.status, 1, stale.output);
+  assert.match(stale.output, /The installed @accura-trial\/shared-types is not the vendored build .*Reinstall with npm install --offline before a live run\./);
+  assert.doesNotMatch(stale.output, /OFFLINE_RUNNER /);
+  // A documents run names the release without running the validators, so it is not refused.
+  assert.equal(runCli('pass', ['--docs-only', '--all'], null, undefined, undefined, { sharedTypesCheckout: framework }).status, 0);
+  // Only a stale install is refused: the build the receipt names runs.
+  fs.writeFileSync(path.join(installed, 'release-manifest.json'), manifest);
+  const current = runCli('pass', ['--iq'], undefined, undefined, undefined, { sharedTypesCheckout: framework });
+  assert.equal(current.status, 0, current.output);
+  assert.match(current.output, /OFFLINE_RUNNER \.\/runners\/iq-runner/);
 });
 
 test('--executor is parsed and recorded in the package manifest with the OS account, and in a development run (IR-090)', t => {
