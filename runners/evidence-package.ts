@@ -19,7 +19,7 @@ import {
   type PlatformEvidenceEntry, type PlatformEvidencePlan,
 } from './platform-evidence-plan';
 import { PLATFORM_SYSTEMS, type EvidenceAdmission, type PlatformSystemId } from '../config/platform-inventory';
-import { tmfFilingText, NOT_RUN_OF_RECORD_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
+import { isTrainingCaptureFile, tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 
 // Retained evidence packages (TA3 plan VAL-1, spec P20 VD-3, 3.2). A package is
 // one exclusively created directory holding everything a run writes, sealed at
@@ -439,6 +439,8 @@ export interface SealedPackage {
   files: number;
   /** Set when the package is not a run of record (its TMF-FILING.md opens with the line). */
   notRunOfRecord?: typeof NOT_RUN_OF_RECORD_LINE;
+  /** Set when the package retains the privileged training capture (its TMF-FILING.md opens with the line). */
+  restricted?: typeof RESTRICTED_FILING_LINE;
 }
 
 /** A package is not a run of record when the framework checkout was dirty or unreadable
@@ -459,9 +461,12 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
   try {
     packageCheck(!fs.existsSync(manifestPath), `Package ${dir} already holds ${MANIFEST_FILE}.`);
     const framework = frameworkCommit(evidencePackage.frameworkCheckout);
+    // The privileged training capture stays with the package and is never uploaded (IR-453).
+    const restricted = packageEntries(dir).files.some(isTrainingCaptureFile);
     fs.writeFileSync(path.join(dir, TMF_FILING_FILE), tmfFilingText({
       packageId: evidencePackage.packageId, version: evidencePackage.version, synthetic: evidencePackage.synthetic,
       ...(notRunOfRecord(evidencePackage.frameworkAtStart, framework) ? { notRunOfRecord: true } : {}),
+      ...(restricted ? { restricted: true } : {}),
     }), { flag: 'wx' });
     const categories = EVIDENCE_CATEGORIES.filter(category => fs.existsSync(path.join(dir, ...resultsFile(category).split('/'))))
       .map(category => categoryCounts(category, loadEvidence(dir, category)));
@@ -510,6 +515,7 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
     return {
       dir, manifestPath, manifestSha256: sha256(manifestBytes), packageHash, files: files.length,
       ...(verified.notRunOfRecord ? { notRunOfRecord: verified.notRunOfRecord } : {}),
+      ...(verified.restricted ? { restricted: verified.restricted } : {}),
     };
   } finally {
     // Nothing more is written as this package's evidence.
@@ -633,6 +639,8 @@ export interface PackageVerification {
   /** NOT_RUN_OF_RECORD_LINE when the verified TMF-FILING.md opens with it, or the manifest
    * records a framework checkout that was dirty or unreadable at the seal. */
   notRunOfRecord?: typeof NOT_RUN_OF_RECORD_LINE;
+  /** RESTRICTED_FILING_LINE when the manifest lists a training capture file (IR-453). */
+  restricted?: typeof RESTRICTED_FILING_LINE;
 }
 
 /** Verifies a sealed package: every listed file is present with its byte count
@@ -744,9 +752,13 @@ export function verifyPackage(directory: string): PackageVerification {
     if (text.includes(DEVELOPMENT_RUN_NOTICE)) problems.push(`${file} is marked as a development run`);
   }
   const filing = contents.get(TMF_FILING_FILE)?.toString('utf8');
-  const notRecord = filing?.split(/\r?\n/, 1)[0] === NOT_RUN_OF_RECORD_LINE
+  // The not-run-of-record line opens the filing, or follows the restricted notice.
+  const opening = filing?.split(/\r?\n/, 3) ?? [];
+  const notRecord = (opening[0] === RESTRICTED_FILING_LINE ? opening[2] : opening[0]) === NOT_RUN_OF_RECORD_LINE
     || manifest.framework.commit === null || manifest.framework.dirty !== false;
-  return { ok: problems.length === 0, dir, problems, manifestSha256, manifest, ...(notRecord ? { notRunOfRecord: NOT_RUN_OF_RECORD_LINE } : {}) };
+  const restricted = manifest.files.some(file => isTrainingCaptureFile(file.path));
+  return { ok: problems.length === 0, dir, problems, manifestSha256, manifest, ...(notRecord ? { notRunOfRecord: NOT_RUN_OF_RECORD_LINE } : {}),
+    ...(restricted ? { restricted: RESTRICTED_FILING_LINE } : {}) };
 }
 
 // ---------------------------------------------------------------------------

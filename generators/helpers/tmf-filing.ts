@@ -11,6 +11,17 @@ export const SYNTHETIC_FILING_LINE = 'SYNTHETIC: file only in an IL project on a
  * dirty, unreadable or changed during the run (--allow-dirty-framework, IR-056). */
 export const NOT_RUN_OF_RECORD_LINE = 'NOT A RUN OF RECORD: framework checkout dirty or changed during the run';
 
+/** The first line of the filing instructions of a package that retains the training module's
+ * privileged inspection capture (IR-453; accura-training-module README, "Training evidence in
+ * the existing inspection copy": it includes retained material and assessment answer keys). */
+export const RESTRICTED_FILING_LINE = 'RESTRICTED: this package holds the training module\'s privileged inspection capture, with assessment answer keys (inputs/training-evidence.json, evidence/training/). Keep it where only holders of training inspection authority read it, and never upload those files.';
+
+/** A package file that holds the training capture: --training-evidence retained as an input,
+ * or the copy generator 15 keeps under evidence/training/. */
+export function isTrainingCaptureFile(relative: string): boolean {
+  return relative === 'inputs/training-evidence.json' || relative.startsWith('evidence/training/');
+}
+
 /** The eTMF policy requirement to propose when the platform policy has none. The
  * eTMF has no default catalog, so a person proposes it and another approves it. */
 export const VALIDATION_PACKAGE_REQUIREMENT = {
@@ -28,6 +39,8 @@ export interface TmfFilingFacts {
   synthetic: boolean;
   /** The framework checkout was dirty, unreadable or changed during the run. */
   notRunOfRecord?: boolean;
+  /** The package retains the training module's privileged inspection capture. */
+  restricted?: boolean;
 }
 
 /** The filing instructions: static text plus the package ID, version and synthetic
@@ -37,6 +50,7 @@ export interface TmfFilingFacts {
 export function tmfFilingText(facts: TmfFilingFacts): string {
   const requirement = VALIDATION_PACKAGE_REQUIREMENT;
   const lines: string[] = [
+    ...(facts.restricted ? [RESTRICTED_FILING_LINE, ''] : []),
     ...(facts.notRunOfRecord ? [NOT_RUN_OF_RECORD_LINE, ''] : []),
     ...(facts.synthetic ? [SYNTHETIC_FILING_LINE, ''] : []),
     ...evidenceNoticeLines({ synthetic: facts.synthetic, retained: true }),
@@ -78,6 +92,8 @@ export function tmfFilingText(facts: TmfFilingFacts): string {
       ['12-validation-summary.md', 'For reading'],
       ['22-platform-validation-summary.md', 'For reading, when this package holds it'],
     ]),
+    ...(facts.restricted ? ['Upload no other file of this package: inputs/training-evidence.json and the files under '
+      + 'evidence/training/ hold the privileged training capture and stay with the package.', ''] : []),
     '**Do not start an extraction run on these documents.** A run started on a REGULATORY document dispatches the '
       + 'reference extraction families.',
     '',

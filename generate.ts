@@ -412,6 +412,7 @@ function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): v
   try {
     const sealed = sealPackage(evidencePackage, { baseUrl: !args.docsOnly && liveRunnerSelected(args) ? args.baseUrl : undefined });
     console.log('=== Retained Evidence Package ===');
+    if (sealed.restricted) console.log(`  ${sealed.restricted}`);
     if (sealed.notRunOfRecord) console.log(`  ${sealed.notRunOfRecord}`);
     console.log(`  Package:      ${sealed.dir}`);
     console.log(`  Files:        ${sealed.files}, read-only, listed in ${path.basename(sealed.manifestPath)}`);

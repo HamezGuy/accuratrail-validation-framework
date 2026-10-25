@@ -20,6 +20,7 @@ if (!directory || rest.length) {
   if (result.ok && result.manifest && result.manifestSha256) {
     const { manifest } = result;
     console.log(`Package verified: ${result.dir}`);
+    if (result.restricted) console.log(`  ${result.restricted}`);
     if (result.notRunOfRecord) console.log(`  ${result.notRunOfRecord}`);
     console.log(`  Package ID:   ${manifest.packageId} (${manifest.version})`);
     console.log(`  Synthetic:    ${manifest.synthetic ? `yes (${manifest.syntheticBasis.join(', ')})` : 'no'}`);

@@ -15,7 +15,7 @@ import {
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
 import {
-  tmfFilingText, NOT_RUN_OF_RECORD_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE, VALIDATION_PACKAGE_REQUIREMENT,
+  tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE, VALIDATION_PACKAGE_REQUIREMENT,
 } from '../generators/helpers/tmf-filing';
 import { generateAllDocuments, temporaryCheckout, temporaryDirectory } from './generated-documents';
 
@@ -377,6 +377,51 @@ test('unmarked evidence keeps its record and summary shape; outcome codes and ma
   assert.throws(() => saveEvidence(directory, 'pq', [record('PQ-001', { synthetic: true })]), /is marked synthetic, which this run is not/);
   assert.throws(() => saveEvidence(directory, 'pq', [record('PQ-001', { retention: DEVELOPMENT_RUN_NOTICE })]),
     /is marked not retained, which this run is not/);
+});
+
+test('a package that retains the training capture opens its filing RESTRICTED and uploads none of it; others do not (IR-453)', t => {
+  const { home } = markedRoot(t);
+  const sources = temporaryDirectory(t, 'accura-package-training-');
+  const capture = path.join(sources, 'training.json');
+  fs.writeFileSync(capture, '{"schemaVersion":"training-inspection-evidence/1","authorityHash":"a"}');
+  const upload = (text: string) => text.slice(text.indexOf('## 2. Upload the documents'), text.indexOf('## 3. File them at platform scope'));
+  const never = 'Upload no other file of this package: inputs/training-evidence.json and the files under evidence/training/';
+
+  // As an input, and as the copy generator 15 keeps under evidence/training/.
+  const asInput = createPackage(syntheticPackage(home, { version: 'training-input-v1', inputs: [{ role: 'training-evidence', file: capture }] }));
+  const asCopy = createPackage(syntheticPackage(home, { version: 'training-copy-v1' }));
+  fs.mkdirSync(path.join(asCopy.dir, 'evidence', 'training'), { recursive: true });
+  fs.copyFileSync(capture, path.join(asCopy.dir, 'evidence', 'training', 'training-inspection-evidence.json'));
+  for (const evidencePackage of [asInput, asCopy]) {
+    assert.equal(sealPackage(evidencePackage).restricted, RESTRICTED_FILING_LINE);
+    const filing = read(evidencePackage.dir, TMF_FILING_FILE);
+    assert.ok(filing.startsWith(`${RESTRICTED_FILING_LINE}\n\n${SYNTHETIC_FILING_LINE}\n`), filing.slice(0, 400));
+    assert.ok(upload(filing).includes(never));
+    // The eTMF filing stays the manifest and the summaries.
+    assert.match(upload(filing), /\| package-manifest\.json \|[\s\S]*\| 12-validation-summary\.md \|[\s\S]*\| 22-platform-validation-summary\.md \|/);
+    assert.doesNotMatch(upload(filing), /\| (inputs|evidence)\//);
+    const verified = verifyPackage(evidencePackage.dir);
+    assert.deepEqual([verified.ok, verified.restricted, verified.notRunOfRecord], [true, RESTRICTED_FILING_LINE, undefined]);
+  }
+  assert.match(RESTRICTED_FILING_LINE, /^RESTRICTED: .*privileged inspection capture, with assessment answer keys .*only holders of training inspection authority read it, and never upload those files\.$/);
+  assert.doesNotMatch(RESTRICTED_FILING_LINE, /[\u2013\u2014]/);
+
+  // Not a run of record as well: the restricted notice opens the filing and verification still finds the line.
+  const dirty = temporaryCheckout(t, 'accura-package-training-dirty-');
+  fs.writeFileSync(path.join(dirty, 'scratch.txt'), 'untracked\n');
+  const both = createPackage(syntheticPackage(home, { version: 'training-dirty-v1', frameworkCheckout: dirty, allowDirtyFramework: true,
+    inputs: [{ role: 'training-evidence', file: capture }] }));
+  const sealedBoth = sealPackage(both);
+  assert.deepEqual([sealedBoth.restricted, sealedBoth.notRunOfRecord], [RESTRICTED_FILING_LINE, NOT_RUN_OF_RECORD_LINE]);
+  assert.ok(read(both.dir, TMF_FILING_FILE).startsWith(`${RESTRICTED_FILING_LINE}\n\n${NOT_RUN_OF_RECORD_LINE}\n\n${SYNTHETIC_FILING_LINE}\n`));
+
+  // Without a capture: no notice, no line in the upload step.
+  const plain = createPackage(syntheticPackage(home, { version: 'training-none-v1' }));
+  assert.equal(sealPackage(plain).restricted, undefined);
+  const filing = read(plain.dir, TMF_FILING_FILE);
+  assert.ok(filing.startsWith(`${SYNTHETIC_FILING_LINE}\n`));
+  assert.ok(!filing.includes('RESTRICTED') && !filing.includes(never));
+  assert.equal(verifyPackage(plain.dir).restricted, undefined);
 });
 
 test('the filing instructions name the requirement, the bytes check and the people, without provenance or a signature', () => {

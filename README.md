@@ -130,7 +130,14 @@ REGULATORY documents, file them at platform scope, a different person accepts
 them in QC review, and a QA lead approves the governance `document` assignment
 to the "Computerised system validation package" requirement with the TMF
 decision signature, without `provenance`. A synthetic package is filed, if at
-all, only in an IL project on a test stack to show the mechanics.
+all, only in an IL project on a test stack to show the mechanics. A package
+that retains the training module's privileged inspection capture
+(`inputs/training-evidence.json` or `evidence/training/`, which hold
+assessment answer keys) opens its `TMF-FILING.md` with "RESTRICTED: this
+package holds the training module's privileged inspection capture, ...": it is
+kept where only holders of training inspection authority read it, and those
+files are never uploaded, so IL viewers of the filing retrieve no evidence
+content (IR-453). The run and `npm run verify:package` print that line too.
 
 ### Target system
 
