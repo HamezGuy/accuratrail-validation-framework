@@ -208,12 +208,15 @@ that throws records each of its cases not executed (`CONTRACT`,
 `IQ_CHECK_ERROR`).
 
 Every file system record that read the libreclinicaapi checkout is bound to
-`--release-api` after the checks. When the release is a Git commit and the
-checkout's HEAD is another commit, or git cannot read it, the record fails
-`SOURCE_NOT_RELEASE_UNDER_TEST`; a read path with uncommitted or untracked
-changes fails `SOURCE_FILE_MODIFIED`; an image ID cannot be compared with a
-checkout, so the record states its binding unverified. Each bound record holds
-`responseBody.sourceBinding`. IQ against a checkout that is not the release
+`--release-api` after the checks. A record lists every file or folder it read
+(`responseBody.path` and `responseBody.readPaths`), and is bound when any lies
+in the checkout. When the release is a Git commit and the checkout's HEAD is
+another commit, git cannot read it, or the API folder is not the top level of
+its git checkout, the record fails `SOURCE_NOT_RELEASE_UNDER_TEST`; any read
+path with uncommitted or untracked changes fails `SOURCE_FILE_MODIFIED`; an
+image ID cannot be compared with a checkout, so the record states its binding
+unverified. Each bound record holds `responseBody.sourceBinding`, and a passed
+record the binding fails gets `responseStatus` 409. IQ against a checkout that is not the release
 under test therefore fails those cases: check out the release before `--iq`.
 
 Document 13 (SOP gap analysis) lists only the SOPs the collector read from the

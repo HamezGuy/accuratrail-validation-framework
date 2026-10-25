@@ -703,6 +703,96 @@ test('a checkout git cannot read fails every API record against a commit release
   assert.match(image[0].notes, /binding unverified/);
 });
 
+test('a record is bound on every path it read: IQ-034 a modified src file, IQ-035 a modified lockfile, IQ-033 another commit (IR-265)', t => {
+  const { workspace, apiRoot, file } = configuration(t, DECLARED);
+  const ui = path.join(workspace, 'EDCProjectCompliant');
+  write(path.join(ui, 'docker-compose.production.yml'), ['services:', '  core-api:', '    environment:', '      NODE_ENV: production', ''].join('\n'));
+  const archive = 'SYNTHETIC vendored archive alpha; not a real package.\n';
+  const bytes = Buffer.from(archive);
+  const environment = 'export const read = [process.env.NODE_ENV, process.env.ENABLE_DOMAIN_EVENTS, process.env.ENABLE_M2M_API_KEYS];\n';
+  const lockfile = `${JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/@accura-trial/alpha': { integrity: sha512(bytes) } } }, null, 2)}\n`;
+  commitCheckout(apiRoot, {
+    [PRODUCTION_EXAMPLE]: PRODUCTION,
+    'src/config/environment.ts': environment,
+    'package.json': `${JSON.stringify({ name: 'synthetic-api', version: '0.0.1', dependencies: { '@accura-trial/alpha': 'file:vendor/alpha.tgz' } })}\n`,
+    'package-lock.json': lockfile,
+    'vendor/alpha.tgz': archive,
+    'vendor/alpha.tgz.json': `${JSON.stringify({ contract: 'accura-local-package-release/1', packageName: '@accura-trial/alpha', version: '0.1.0',
+      filename: 'alpha.tgz', byteLength: bytes.length, sha256: sha256(bytes), integrity: sha512(bytes) })}\n`,
+  });
+  const first = checkoutState(apiRoot).commit!;
+  commitCheckout(apiRoot, { 'later.txt': 'a later synthetic commit\n' });
+  const head = checkoutState(apiRoot).commit!;
+  const records = (identity: string) => {
+    const results = [checkDeadSettings(apiRoot, ui, workspace), checkVendoredReceipts(apiRoot), checkConfigurationUnderTest(file, TARGET, apiRoot)];
+    bindApiSourceToRelease(results, apiRoot, { identity, kind: 'git-commit', source: 'operator-input' });
+    return results;
+  };
+  const outcome = (results: EvidenceResult[], id: string) => [byId(results, id).passed, byId(results, id).outcomeCode ?? null, byId(results, id).responseStatus];
+
+  const equal = records(head);
+  for (const id of ['IQ-033', 'IQ-034', 'IQ-035']) {
+    assert.deepEqual(outcome(equal, id), [true, null, 200], `${id}: ${byId(equal, id).notes}`);
+    assert.equal((byId(equal, id).responseBody as { sourceBinding: { verified: boolean } }).sourceBinding.verified, true, id);
+  }
+
+  // IQ-033 names the declaration, outside the checkout; it read the production example of another commit.
+  const other = records(first);
+  for (const id of ['IQ-033', 'IQ-034', 'IQ-035']) assert.deepEqual(outcome(other, id), [false, 'SOURCE_NOT_RELEASE_UNDER_TEST', 409], id);
+
+  // IQ-034 names the production example and scanned src; a modified src file fails it, and no other.
+  fs.writeFileSync(path.join(apiRoot, 'src', 'config', 'environment.ts'), `${environment}// SYNTHETIC uncommitted edit\n`);
+  const source = records(head);
+  assert.deepEqual(outcome(source, 'IQ-034'), [false, 'SOURCE_FILE_MODIFIED', 409]);
+  assert.deepEqual((byId(source, 'IQ-034').responseBody as { sourceBinding: { modified: string[] } }).sourceBinding.modified,
+    [path.join(apiRoot, 'src', 'config', 'environment.ts')]);
+  assert.deepEqual([outcome(source, 'IQ-033'), outcome(source, 'IQ-035')], [[true, null, 200], [true, null, 200]]);
+  fs.writeFileSync(path.join(apiRoot, 'src', 'config', 'environment.ts'), environment);
+
+  // IQ-035 names package.json; the same lockfile content, reformatted, still is not the release's file.
+  fs.writeFileSync(path.join(apiRoot, 'package-lock.json'), lockfile.replace(/\n {2}/g, '\n    '));
+  const lock = records(head);
+  assert.deepEqual(outcome(lock, 'IQ-035'), [false, 'SOURCE_FILE_MODIFIED', 409]);
+  assert.match(byId(lock, 'IQ-035').notes, /package-lock\.json has uncommitted changes in the API checkout/);
+  assert.deepEqual([outcome(lock, 'IQ-033'), outcome(lock, 'IQ-034')], [[true, null, 200], [true, null, 200]]);
+});
+
+test('an API folder inside another repository is not shown to be the release: the enclosing HEAD is not its own (IR-265)', t => {
+  const outer = temporaryDirectory(t, 'accura-iq-binding-nested-');
+  commitCheckout(outer, { 'libreclinica-api/src/config/database.ts': '// SYNTHETIC: new Pool({})\n' });
+  const apiRoot = path.join(outer, 'libreclinica-api');
+  const enclosing = checkoutState(outer).commit!;
+  const record = (): EvidenceResult => ({
+    testCaseId: 'IQ-009', timestamp: '2026-10-24T00:00:00Z', endpoint: 'File system check', method: 'FS', responseStatus: 200,
+    responseBody: { path: path.join(apiRoot, 'src', 'config', 'database.ts') }, passed: true, notes: 'PostgreSQL configured (synthetic)',
+  });
+  const commit = [record()];
+  bindApiSourceToRelease(commit, apiRoot, { identity: enclosing, kind: 'git-commit', source: 'operator-input' });
+  assert.deepEqual([commit[0].passed, commit[0].outcomeCode], [false, 'SOURCE_NOT_RELEASE_UNDER_TEST']);
+  assert.match(commit[0].notes, /is not the top level of a git checkout \(git reads .*\), so it is not shown to be the API release under test/);
+  assert.equal((commit[0].responseBody as { sourceBinding: { checkoutCommit: unknown } }).sourceBinding.checkoutCommit, null);
+  const image = [record()];
+  bindApiSourceToRelease(image, apiRoot, { identity: `sha256:${'d'.repeat(64)}`, kind: 'image-id', source: 'operator-input' });
+  assert.deepEqual([image[0].passed, image[0].outcomeCode], [true, undefined]);
+  assert.match(image[0].notes, /binding unverified: .*is not the top level of a git checkout/);
+});
+
+test('an API checkout reached through a junction still matches the changes git reports under its real top level (IR-265)', t => {
+  const base = temporaryDirectory(t, 'accura-iq-binding-junction-');
+  const real = path.join(base, 'real-api');
+  commitCheckout(real, { 'src/config/database.ts': '// SYNTHETIC: new Pool({})\n' });
+  const head = checkoutState(real).commit!;
+  const link = path.join(base, 'linked-api');
+  try { fs.symlinkSync(real, link, 'junction'); } catch (error) { t.skip(`no junction or symlink here (${String(error)})`); return; }
+  fs.writeFileSync(path.join(real, 'src', 'config', 'database.ts'), '// SYNTHETIC: an uncommitted edit\n');
+  const results: EvidenceResult[] = [{
+    testCaseId: 'IQ-009', timestamp: '2026-10-24T00:00:00Z', endpoint: 'File system check', method: 'FS', responseStatus: 200,
+    responseBody: { path: path.join(link, 'src', 'config', 'database.ts') }, passed: true, notes: 'PostgreSQL configured (synthetic)',
+  }];
+  bindApiSourceToRelease(results, link, { identity: head, kind: 'git-commit', source: 'operator-input' });
+  assert.deepEqual([results[0].passed, results[0].outcomeCode], [false, 'SOURCE_FILE_MODIFIED'], results[0].notes);
+});
+
 test('a check group that throws still leaves a row for each of its cases, not executed: IQ_CHECK_ERROR (IR-265)', async t => {
   const workspace = temporaryDirectory(t, 'accura-iq-throw-');
   const nodeModules = path.join(resolveLibreclinicaApiRoot(workspace), 'node_modules');

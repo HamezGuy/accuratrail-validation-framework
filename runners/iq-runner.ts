@@ -62,6 +62,8 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 /** JSON text without a leading byte order mark, which JSON.parse refuses. */
 const withoutBom = (text: string) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
 
+/** A file system record. `filePath` is the file the record names; a check that reads more files
+ * (or a directory) lists every one it read in `extra.readPaths`, so bindApiSourceToRelease checks each. */
 function fileResult(
   id: string,
   label: string,
@@ -223,6 +225,9 @@ export function checkVendoredReceipts(apiRoot: string): EvidenceResult {
       : `${failing.length} of ${archives.length} vendored archives fail: `
         + failing.map(archive => `${archive.packageName}: ${archive.problems.join('; ')}`).join('; '),
     packageFile, {
+      // readVendoredArchive reads an archive and its receipt only for a vendored selector.
+      readPaths: [packageFile, lockFile, ...archives.filter(archive => VENDORED_SELECTOR.test(archive.selector))
+        .flatMap(archive => [archive.archive, archive.receiptPath])],
       archives: archives.map(archive => ({
         packageName: archive.packageName, selector: archive.selector, archive: archive.archive, receipt: archive.receiptPath,
         receiptContract: typeof archive.receipt?.contract === 'string' ? archive.receipt.contract : null,
@@ -323,7 +328,7 @@ export function checkDeadSettings(apiRoot: string, frontendRoot: string, workspa
         ? `${deadKeys.length} of ${setIn.size} settings set in the production example and the production compose file have no reader in ${shown(srcRoot)}: ${listed.join('; ')}`
         : `every one of ${setIn.size} settings set in the production example and the production compose file has a reader in ${shown(srcRoot)} (${read.files} files) or the runtime`,
     ].join('; '),
-    exampleFile, { sources, srcRoot, srcFilesScanned: read.files, deadKeys });
+    exampleFile, { readPaths: [srcRoot, exampleFile, composeFile], sources, srcRoot, srcFilesScanned: read.files, deadKeys });
 }
 
 /** The files a refusal of the EDC's verifier concerns, by its message, relative to
@@ -415,7 +420,10 @@ export function checkSharedTypesInstallation(
       ? `${installs.length} consumers verified by the EDC's verifyPinnedStudyContract (builds ${builds}; different builds per consumer `
         + `are recorded, not failed); the ${sameBuild.consumer} archive is the ${sameBuild.reference} build`
       : problems.join('; '),
-    verifierFile, { verifier: verifierFile, consumers: installs, sameBuild: { ...sameBuild, consumerSha256: consumerSha, referenceSha256: referenceSha } });
+    verifierFile, {
+      readPaths: [verifierFile, ...installs.flatMap(install => [path.join(install.root, 'package.json'), path.join(install.root, 'package-lock.json'),
+        ...(VENDORED_SELECTOR.test(install.selector) ? [install.archive, `${install.archive}.json`] : [])])],
+      verifier: verifierFile, consumers: installs, sameBuild: { ...sameBuild, consumerSha256: consumerSha, referenceSha256: referenceSha } });
 }
 
 /** The environment a declaration's source file sets: a compose file's core-api service,
@@ -562,6 +570,8 @@ export function checkConfigurationUnderTest(declarationFile: string | undefined,
       contract: configuration.contract, sha256: declared.sha256, target: configuration.target,
       declaredBy: configuration.declaredBy, declaredAt: configuration.declaredAt, flags: configuration.flags,
       source, productionExample: { path: examplePath, delta: productionDelta }, liveProduction: LIVE_PRODUCTION_STATEMENT,
+      // The declaration lies outside the API checkout; the example and a source inside it are bound.
+      readPaths: [declared.file, configuration.source.path, examplePath],
     });
 }
 
@@ -794,6 +804,7 @@ function checkConfiguration(apiRoot: string): EvidenceResult[] {
     const envPath = path.join(cfgDir, 'environment.ts');
     let found = false;
     let source = authMwPath;
+    const readPaths = [authMwPath];
 
     const authContent = safeReadFile(authMwPath);
     if (authContent && /process\.env\.JWT_SECRET|process\.env\[['"]JWT_SECRET['"]\]/i.test(authContent)) {
@@ -801,6 +812,7 @@ function checkConfiguration(apiRoot: string): EvidenceResult[] {
       source = authMwPath;
     }
     if (!found) {
+      readPaths.push(envPath);
       const envContent = safeReadFile(envPath);
       if (envContent && /JWT_SECRET/i.test(envContent)) {
         found = true;
@@ -810,7 +822,7 @@ function checkConfiguration(apiRoot: string): EvidenceResult[] {
 
     results.push(fileResult('IQ-020', 'JWT_SECRET from environment', found,
       found ? `JWT_SECRET referenced in ${path.basename(source)}` : 'JWT_SECRET environment reference NOT found',
-      source));
+      source, { readPaths }));
   }
 
   // IQ-021: Rate limiter middleware
@@ -826,8 +838,10 @@ function checkConfiguration(apiRoot: string): EvidenceResult[] {
     const candidates = ['server.ts', 'app.ts', 'index.ts'].map(f => path.join(srcDir, f));
     let found = false;
     let foundFile = candidates[0];
+    const readPaths: string[] = [];
 
     for (const fp of candidates) {
+      readPaths.push(fp);
       const content = safeReadFile(fp);
       if (content && /cors/i.test(content)) {
         found = true;
@@ -838,7 +852,7 @@ function checkConfiguration(apiRoot: string): EvidenceResult[] {
 
     results.push(fileResult('IQ-022', 'CORS configured', found,
       found ? `cors referenced in ${path.basename(foundFile)}` : 'cors reference NOT found in server.ts/app.ts/index.ts',
-      foundFile));
+      foundFile, { readPaths }));
   }
 
   // IQ-023: environment.ts exists and references database configuration
@@ -936,7 +950,7 @@ function checkSecurityAndBackup(_workspaceRoot: string, apiRoot: string): Eviden
 
     results.push(fileResult('IQ-030', 'UTC timezone reference', found,
       found ? `UTC/timezone referenced in ${path.basename(source)}` : 'No UTC/timezone reference found in database.ts or environment.ts',
-      source));
+      source, { readPaths: [dbPath, envPath] }));
   }
 
   // IQ-032: Password complexity validation in auth service
@@ -965,48 +979,83 @@ function checkSecurityAndBackup(_workspaceRoot: string, apiRoot: string): Eviden
 // Source binding: the API checkout read is the API release under test (IR-265)
 // ---------------------------------------------------------------------------
 
-/** True when `inner` is `outer` or lies under it (case-insensitive on Windows, as path.relative is). */
+/** The path with every part that exists resolved as the file system holds it (a junction, a subst
+ * drive, an 8.3 short name), so it compares with the paths git reports under its real top level;
+ * a part that does not exist (a deleted file) is kept as written under its resolved parent. */
+function realPath(file: string): string {
+  const resolved = path.resolve(file);
+  try { return fs.realpathSync.native(resolved); } catch {
+    const parent = path.dirname(resolved);
+    return parent === resolved ? resolved : path.join(realPath(parent), path.basename(resolved));
+  }
+}
+
+/** True when `inner` is `outer` or lies under it (case-insensitive on Windows, as path.relative is).
+ * Both are real paths (realPath). */
 function within(outer: string, inner: string): boolean {
-  const relative = path.relative(path.resolve(outer), path.resolve(inner));
+  const relative = path.relative(outer, inner);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-/** Binds every file system record that read the API checkout to the API release under test. With a
- * Git commit as the release, a checkout whose HEAD is another commit (or cannot be read) fails the
- * record (SOURCE_NOT_RELEASE_UNDER_TEST); with any release, a read path with uncommitted or untracked
- * changes fails it (SOURCE_FILE_MODIFIED); an image ID cannot be compared with a checkout, so the
- * record states its binding unverified. A record that already failed with a code keeps that code.
- * Without a release identity (a runner called outside the CLI) records are left unchanged. */
+/** Every path a file system record read: the path it names and each one its check lists in
+ * `readPaths` (a check that reads more files, or a directory), as real paths. */
+function recordReadPaths(body: Record<string, unknown>): string[] {
+  const listed = Array.isArray(body.readPaths) ? body.readPaths : [];
+  return [...new Set([body.path, ...listed].filter((file): file is string => typeof file === 'string' && file.length > 0).map(realPath))];
+}
+
+/** Binds every file system record that read the API checkout to the API release under test. A
+ * record is bound when its path, or any path in its `readPaths`, lies in the API checkout. With a
+ * Git commit as the release, a checkout whose HEAD is another commit (or cannot be read, or whose git
+ * top level is not the API folder itself, as for a folder inside another repository) fails the record
+ * (SOURCE_NOT_RELEASE_UNDER_TEST); with any release, any read path in the checkout with uncommitted or
+ * untracked changes fails it (SOURCE_FILE_MODIFIED); an image ID cannot be compared with a checkout,
+ * so the record states its binding unverified. A record that already failed with a code keeps that
+ * code; a passed record the binding fails gets responseStatus 409 (fileResult's 200 is the file
+ * check's). Without a release identity (a runner called outside the CLI) records are left unchanged. */
 export function bindApiSourceToRelease(
   results: EvidenceResult[], apiRoot: string, release: ReleaseComponent | undefined,
   state: () => CheckoutState = () => checkoutState(apiRoot),
 ): void {
   if (!release) return;
-  const bound = results.filter(result => result.method === 'FS' && isRecord(result.responseBody)
-    && typeof result.responseBody.path === 'string' && within(apiRoot, result.responseBody.path));
+  const api = realPath(apiRoot);
+  const bound = results.flatMap(result => {
+    if (result.method !== 'FS' || !isRecord(result.responseBody)) return [];
+    const reads = recordReadPaths(result.responseBody).filter(file => within(api, file));
+    return reads.length ? [{ result, reads }] : [];
+  });
   if (!bound.length) return;
-  const checkout = state();
+  const read = state();
+  const root = read.root === undefined ? undefined : realPath(read.root);
+  // git reads the enclosing repository for a plain folder inside one: its HEAD is not the API's.
+  const nested = root !== undefined && path.relative(root, api) !== '';
+  const checkout: CheckoutState = nested ? {} : read;
+  const changed = checkout.changed?.map(realPath) ?? [];
   const releaseText = `${release.kind} ${release.identity}`;
-  for (const result of bound) {
+  const unread = nested
+    ? `the API folder ${apiRoot} is not the top level of a git checkout (git reads ${read.root})`
+    : `the HEAD of the API checkout ${apiRoot} cannot be read`;
+  for (const { result, reads } of bound) {
     const body = result.responseBody as Record<string, unknown>;
-    const read = body.path as string;
-    const modified = checkout.changed?.filter(changed => within(changed, read) || within(read, changed)) ?? [];
+    const modified = changed.filter(file => reads.some(readPath => within(file, readPath) || within(readPath, file)));
     let code: string | undefined;
     let statement: string;
     if (release.kind === 'git-commit' && checkout.commit !== release.identity) {
       code = 'SOURCE_NOT_RELEASE_UNDER_TEST';
       statement = checkout.commit
         ? `the API checkout ${apiRoot} is at ${checkout.commit}, not the API release under test ${release.identity}`
-        : `the HEAD of the API checkout ${apiRoot} cannot be read, so it is not shown to be the API release under test ${release.identity}`;
-      if (modified.length) statement += `, and ${read} has uncommitted changes`;
+        : `${unread}, so it is not shown to be the API release under test ${release.identity}`;
+      if (modified.length) statement += `, and ${modified.join(', ')} ${modified.length === 1 ? 'has' : 'have'} uncommitted changes`;
     } else if (modified.length) {
       code = 'SOURCE_FILE_MODIFIED';
-      statement = `${read} has uncommitted changes in the API checkout ${apiRoot}, so it is not the file of the API release under test ${releaseText}`;
+      statement = `${modified.join(', ')} ${modified.length === 1 ? 'has' : 'have'} uncommitted changes in the API checkout ${apiRoot}, so the record did not read the files `
+        + `of the API release under test ${releaseText}`;
     } else if (release.kind === 'git-commit') {
-      statement = `the API checkout is at the API release under test ${release.identity} and ${path.basename(read)} has no uncommitted change`;
+      statement = `the API checkout is at the API release under test ${release.identity} and no path the record read in it `
+        + `(${reads.map(file => path.relative(api, file) || '.').join(', ')}) has an uncommitted change`;
     } else {
       statement = `binding unverified: the API release under test is ${releaseText}, which a checkout cannot be compared with`
-        + `${checkout.commit ? ` (checkout at ${checkout.commit})` : ''}`;
+        + `${checkout.commit ? ` (checkout at ${checkout.commit})` : nested ? ` (${unread})` : ''}`;
     }
     result.responseBody = {
       ...body,
@@ -1016,6 +1065,7 @@ export function bindApiSourceToRelease(
       },
     };
     if (code) {
+      if (result.passed && result.responseStatus === 200) result.responseStatus = 409;
       result.passed = false;
       result.outcomeCode ??= code;
       result.notes += `; source binding failed: ${statement}`;

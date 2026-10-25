@@ -33,8 +33,9 @@ const YEAR = new Date().getFullYear();
  * bindApiSourceToRelease, IR-265). */
 export const IQ_SOURCE_BINDING_STATEMENT = `**Source binding:** every file system case that reads the ${SYSTEM_INFO.projectPaths.backend} `
   + 'checkout is bound to the API release under test (--release-api) after its check. When the release is a Git commit and the '
-  + 'checkout\'s HEAD is another commit, or cannot be read, the case fails with SOURCE_NOT_RELEASE_UNDER_TEST; a file the case '
-  + 'reads that has uncommitted or untracked changes fails it with SOURCE_FILE_MODIFIED; when the release is a container image ID, '
+  + 'checkout\'s HEAD is another commit, cannot be read, or is not the top level of the API folder\'s own git checkout, the case '
+  + 'fails with SOURCE_NOT_RELEASE_UNDER_TEST; any file or folder of the checkout the case reads (each one its record lists) that '
+  + 'has uncommitted or untracked changes fails it with SOURCE_FILE_MODIFIED; when the release is a container image ID, '
   + 'the case states that its binding is unverified, since a checkout cannot be compared with an image. A check group that fails '
   + 'before recording its cases records each of them not executed (IQ_CHECK_ERROR), so every case from IQ-001 to IQ-035 has a result.';
 const DOC_ID = `IQ-${YEAR}-001`;
