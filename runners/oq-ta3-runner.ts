@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { canonicalJson, captureApiCall, isRecord, redactEvidenceSecrets, type EvidenceResult } from './evidence-capture';
+import { captureApiCall, isRecord, redactEvidenceSecrets, type EvidenceResult } from './evidence-capture';
 import { authHeaders, login, tokenClaims } from './auth';
 import { reviewed } from './pq-runner';
 import { OQ_SUITES, TA3_OQ_SUITES, oqSuiteCaseIds } from '../config/oq-case-registry';
@@ -167,21 +167,19 @@ const isArmMemberName = (key: string): boolean =>
 export const ARM_GROUPED_WITHHELD = 'arm-grouped content (D-25)';
 
 /** The copy of a reply that retained evidence keeps (IR-453): every subtree armGroupedContent
- * or armMembers lists becomes {withheld, sha256}, the SHA-256 of its canonical JSON (null
- * when canonical JSON refuses it), so an unblinded reply's allocation counts, per-arm
+ * or armMembers lists becomes {withheld}, so an unblinded reply's allocation counts, per-arm
  * dates and arm members never reach the package while its ids, contentHash and member
- * names stay. The case itself checks the reply as received; the value is never changed. */
+ * names stay. The marker holds no hash of what it replaces: those values are few (small
+ * counts, arm ids, null), so any digest of them could be looked up. The record's contentHash
+ * and an exact read's SHA-256 bind the whole document. The case itself checks the reply as
+ * received; the value is never changed. */
 export function withholdArmGroupedContent(value: unknown, parentKey = ''): unknown {
   if (Array.isArray(value)) return value.map(item => withholdArmGroupedContent(item, parentKey));
   if (!isRecord(value)) return value;
-  const withheld = (subtree: unknown) => {
-    let digest: string | null;
-    try { digest = sha256(canonicalJson(subtree, 'Withheld arm-grouped content')); } catch { digest = null; }
-    return { withheld: ARM_GROUPED_WITHHELD, sha256: digest };
-  };
-  if (isArmWindow(value)) return withheld(value);
+  const withheld = () => ({ withheld: ARM_GROUPED_WITHHELD });
+  if (isArmWindow(value)) return withheld();
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-    isArmGroupedMember(key, item, parentKey) || isArmMemberName(key) ? withheld(item) : withholdArmGroupedContent(item, key)]));
+    isArmGroupedMember(key, item, parentKey) || isArmMemberName(key) ? withheld() : withholdArmGroupedContent(item, key)]));
 }
 
 /** The required top-level members of edc-ta3-ledger/1 (spec P01 3.2). Once M-2 lands,

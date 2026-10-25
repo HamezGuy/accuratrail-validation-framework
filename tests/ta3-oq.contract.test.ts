@@ -317,7 +317,8 @@ test('a blinded reader that receives arm-grouped content fails OQ-236', async t 
   assert.match(row('OQ-237').notes, /a blinded reader received arm-grouped content/);
 });
 
-const withheldMarker = (value: unknown) => ({ withheld: ARM_GROUPED_WITHHELD, sha256: sha256(canonicalJson(value, 'test')) });
+// The marker that replaces arm-grouped content: it holds no hash of what it replaces.
+const MARKER = { withheld: ARM_GROUPED_WITHHELD };
 
 test('the retained exchanges of an unblinded document withhold its arm-grouped content, and the case still checks the reply (IR-453)', async t => {
   const { row } = await runAgainst(t, {}, { selection: [17] });
@@ -332,10 +333,10 @@ test('the retained exchanges of an unblinded document withhold its arm-grouped c
     assert.equal(data.measurement.contentHash, facts.sha256);
     assert.equal(data.measurement.armGrouping, 'included');
     assert.equal(data.document.schemaVersion, 'edc-milestone-measurement/1');
-    assert.deepEqual(data.document.byArm, withheldMarker({ 1: { allocated: 3 } }));
-    assert.deepEqual(data.document.milestones.derived.armRecruitment, [{ armId: withheldMarker(1), plannedCount: 5, allocated: withheldMarker(3), targetReachedAt: withheldMarker(null) }]);
-    assert.deepEqual(data.document.milestones.derived.firstDosed.arms, withheldMarker([{ armId: 1, firstDosed: null }]));
-    assert.deepEqual(data.document.intervals, [withheldMarker({ metric: 'arm-may-proceed-to-first-dosed', scope: { studyId: data.document.studyId, armId: 1 }, status: 'measured' })]);
+    assert.deepEqual(data.document.byArm, MARKER);
+    assert.deepEqual(data.document.milestones.derived.armRecruitment, [{ armId: MARKER, plannedCount: 5, allocated: MARKER, targetReachedAt: MARKER }]);
+    assert.deepEqual(data.document.milestones.derived.firstDosed.arms, MARKER);
+    assert.deepEqual(data.document.intervals, [MARKER]);
   }
   // No retained OQ-233 or OQ-235 exchange holds an allocation count or a byArm value.
   for (const id of ['OQ-233', 'OQ-235']) {
@@ -349,6 +350,8 @@ test('the retained exchanges of an unblinded document withhold its arm-grouped c
     };
     walk((row(id).relatedEvidence ?? []).map(exchange => exchange.responseBody));
     assert.doesNotMatch(JSON.stringify(row(id).relatedEvidence), /"allocated":3/);
+    // Nor a digest of the count, which a reader could look up (sha256("3")).
+    assert.ok(!JSON.stringify(row(id).relatedEvidence).includes(sha256('3')), `${id}: digest of the allocation count`);
   }
 });
 
@@ -360,12 +363,27 @@ test('withholdArmGroupedContent replaces exactly the subtrees the arm checks lis
   const copy = withholdArmGroupedContent(reply) as typeof reply & { data: { document: Record<string, unknown> } };
   assert.equal(JSON.stringify(reply), before, 'the reply the case checks is not changed');
   assert.deepEqual(copy.data.measurement, reply.data.measurement);
-  assert.deepEqual(copy.data.document, { studyId: 1, latency: { byArm: withheldMarker({ 2: { p50: 3 } }) }, deviation: { deviationId: 9, treatmentArm: withheldMarker('A') },
-    arm: withheldMarker(null), windows: [{ metric: 'arm-may-proceed-to-first-dosed', status: 'withheld' }, withheldMarker({ metric: 'arm-may-proceed-to-first-dosed', status: 'closed' })] });
+  assert.deepEqual(copy.data.document, { studyId: 1, latency: { byArm: MARKER }, deviation: { deviationId: 9, treatmentArm: MARKER },
+    arm: MARKER, windows: [{ metric: 'arm-may-proceed-to-first-dosed', status: 'withheld' }, MARKER] });
   assert.deepEqual(armGroupedContent(copy).filter(at => !/\.(byArm|arm)$/.test(at)), [], 'only the member names stay');
   for (const value of [null, 'text', 7, [1, 2]]) assert.deepEqual(withholdArmGroupedContent(value), value);
-  // A subtree canonical JSON refuses is still withheld, without a hash.
-  assert.deepEqual(withholdArmGroupedContent({ allocated: 2 ** 60 }), { allocated: { withheld: ARM_GROUPED_WITHHELD, sha256: null } });
+  // A subtree canonical JSON would refuse is withheld the same way.
+  assert.deepEqual(withholdArmGroupedContent({ allocated: 2 ** 60 }), { allocated: MARKER });
+});
+
+test('the withheld marker of a small value cannot be found by hashing candidate values (IR-453)', () => {
+  // Allocation counts, arm ids and labels are few, so a digest of one could be looked up.
+  const candidates: unknown[] = [null, true, false, 'withheld', ...'ABCDEFGH'];
+  for (let n = 0; n <= 1000; n += 1) candidates.push(n, String(n));
+  const digests = new Set(candidates.flatMap(value => [sha256(canonicalJson(value, 'test')), sha256(JSON.stringify(value)), sha256(String(value))]));
+  const markers = [3, 4, 1, 'A', 'B', null, { 1: { allocated: 3 } }, { 1: { allocated: 4 } }]
+    .map(value => JSON.stringify(withholdArmGroupedContent({ allocated: value, armId: value, byArm: value })));
+  // Every value gives the same retained bytes, and no candidate's digest appears in them.
+  assert.equal(new Set(markers).size, 1, 'the marker does not depend on the value');
+  for (const marker of markers) {
+    assert.doesNotMatch(marker, /[0-9a-f]{32,}/, 'the marker holds no digest');
+    for (const digest of digests) assert.ok(!marker.includes(digest));
+  }
 });
 
 test('without a plan every TA3 case records NO_TA3_PLAN and no request is made', async t => {

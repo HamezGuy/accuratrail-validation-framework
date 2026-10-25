@@ -318,9 +318,11 @@ JSON reply, every value `armGroupedContent` lists (allocation counts, `byArm`,
 per-arm target dates and first dosing, an arm, a window ending at per-arm first
 dosing that is not withheld) and every member named as an arm (`armId`,
 `treatmentArm`, `studyGroupId` and the like) becomes `{"withheld":
-"arm-grouped content (D-25)", "sha256": ...}`, the SHA-256 of its canonical
-JSON. Record ids, `contentHash` and member names stay, and each case checks the
-reply as the EDC sent it; an exact-bytes read keeps only its digest, as before.
+"arm-grouped content (D-25)"}`. The marker holds no hash of the value: counts,
+arm ids and labels are so few that a reader could look a digest up. Record
+ids and `contentHash` bind the whole document, member names stay, and each case
+checks the reply as the EDC sent it; an exact-bytes read keeps only its digest,
+as before.
 
 A plan needs `--oq`, `--synthetic-qualification` (the suites write owned
 records, as the owned fixture does) and `--release-training` (the training
