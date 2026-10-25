@@ -14,6 +14,9 @@ import { APPROVAL_STATEMENT, approvalBlock, e6r3StatusRow, masterEvidenceIndexHe
 import { recordedTargetUrl, systemVersionText } from '../generators/helpers/version-stamper';
 import { E6_R3_SECTION_STATUS, ICH_E6_R3 } from '../config/regulatory-scope';
 import { releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
+import { setEvidenceMarking } from '../runners/evidence-capture';
+import { createScratchRun } from '../runners/evidence-package';
+import { SCRATCH_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 import { generateAllDocuments, temporaryDirectory } from './generated-documents';
 
 const root = path.resolve(__dirname, '..');
@@ -95,6 +98,24 @@ test('every approval block states that approval is recorded in the eTMF and carr
     assert.doesNotMatch(content, SIGNATURE_LINE, file);
     if (file.startsWith('templates/')) assert.ok(content.replace(/\r?\n/g, ' ').includes(APPROVAL_STATEMENT), file);
   }
+});
+
+test('the file every approval block names exists in the output, and in scratch says it is never filed or approved (RF-013)', t => {
+  setEvidenceMarking(undefined);
+  const named = /\(([A-Za-z0-9-]+\.md)\)/.exec(APPROVAL_STATEMENT)?.[1];
+  assert.equal(named, TMF_FILING_FILE);
+  // A documents run that retains nothing writes into a scratch folder of its own (IR-034).
+  const scratch = createScratchRun({ outputRoot: path.join(temporaryDirectory(t, 'accura-approval-scratch-'), 'output'), version: 'v1.0' });
+  const documents = generateAllDocuments(scratch.dir);
+  let blocks = 0;
+  for (const [name, content] of documents) {
+    if (!content.includes('\n## Approval Signatures\n')) continue;
+    blocks++;
+    assert.ok(content.includes(`(${named})`), `${name} names ${named}`);
+  }
+  assert.ok(blocks >= 20, `${blocks} documents carry an approval block`);
+  assert.ok(fs.existsSync(path.join(scratch.dir, named)), `${named} exists beside the documents that name it`);
+  assert.ok(fs.readFileSync(path.join(scratch.dir, named), 'utf8').startsWith(`${SCRATCH_FILING_LINE}\n`));
 });
 
 test('a failed version endpoint is stated as such, never as an observed target (RF-012)', t => {

@@ -322,12 +322,19 @@ export function saveEvidence(
   }
   const evidenceDir = path.join(outputDir, 'evidence', category);
   fs.mkdirSync(evidenceDir, { recursive: true });
+  // Written first and exclusively: a category's results are saved once per folder, so a later
+  // save never replaces them or leaves an earlier save's cases beside its own (IR-034).
+  const filePath = path.join(evidenceDir, `${category}-results.json`);
+  try { fs.writeFileSync(filePath, JSON.stringify(results, null, 2), { encoding: 'utf-8', flag: 'wx' }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error(`${category.toUpperCase()} evidence is already saved in ${evidenceDir}; evidence is never overwritten.`);
+    }
+    throw error;
+  }
   if (identity) {
     fs.writeFileSync(path.join(evidenceDir, 'release-identity.json'), JSON.stringify(identity, null, 2), 'utf-8');
   }
-
-  const filePath = path.join(evidenceDir, `${category}-results.json`);
-  fs.writeFileSync(filePath, JSON.stringify(results, null, 2), 'utf-8');
 
   for (const result of results) {
     const individualPath = path.join(evidenceDir, `${result.testCaseId}.json`);

@@ -1,8 +1,12 @@
-import { evidenceNoticeLines } from '../../runners/evidence-capture';
+import { evidenceNoticeLines, type EvidenceMarking } from '../../runners/evidence-capture';
 import { markdownTable } from './markdown-writer';
 
-/** Written into every retained evidence package before it is sealed (spec P20 3.2, VD-4). */
+/** Written into every retained evidence package before it is sealed (spec P20 3.2, VD-4), and
+ * into every scratch run folder as scratchFilingText (IR-034, RF-013). */
 export const TMF_FILING_FILE = 'TMF-FILING.md';
+
+/** The first line of the TMF-FILING.md of a scratch run folder. */
+export const SCRATCH_FILING_LINE = 'SCRATCH: not a validation evidence package; never filed in the eTMF and never approved.';
 
 /** The first line of the filing instructions of a synthetic package. */
 export const SYNTHETIC_FILING_LINE = 'SYNTHETIC: file only in an IL project on a test stack to show the mechanics; never in a production TMF.';
@@ -145,6 +149,41 @@ export function tmfFilingText(facts: TmfFilingFacts): string {
       ['Validation lead', 'Verifies the package, uploads and files the documents, proposes the assignment'],
       ['QA lead (a different person, IL REVIEWER role)', 'Accepts the filing in QC review, rechecks the hash, approves the assignment with signature'],
     ]),
+  ];
+  return `${lines.join('\n').trimEnd()}\n`;
+}
+
+export interface ScratchFilingFacts {
+  /** The scratch folder's name, <yyyymmddTHHMMSSZ>-<version>-<id8>. */
+  folder: string;
+  runId: string;
+  version: string;
+  /** The run's evidence marking, when it is a development run. */
+  marking?: EvidenceMarking;
+}
+
+/** The TMF-FILING.md of a scratch run folder: every approval block of its documents names
+ * this file, and here it says that the folder is never filed or approved (RF-013). */
+export function scratchFilingText(facts: ScratchFilingFacts): string {
+  const lines: string[] = [
+    SCRATCH_FILING_LINE,
+    '',
+    ...(facts.marking ? evidenceNoticeLines(facts.marking) : []),
+    `# Scratch Output ${facts.folder}`,
+    '',
+    markdownTable(['Field', 'Value'], [
+      ['Run ID', facts.runId],
+      ['Version', facts.version],
+      ['Validation evidence package', 'no'],
+    ]),
+    'This folder is scratch output of the validation framework: a documents run, a --no-retain run or an evidence '
+      + 'import given neither --retain-root nor --no-retain. It is not a validation evidence package. It holds no '
+      + 'package-manifest.json, its files are neither hashed nor read-only, and it is never filed in the eTMF and never '
+      + 'approved. Where a document here says that its approval is recorded on the filing of its package, no such '
+      + 'filing exists for this folder.',
+    '',
+    'Only a run with --retain-root <directory> makes a validation evidence package; its own TMF-FILING.md gives the '
+      + 'filing and approval steps. To file what this folder holds, run again with --retain-root.',
   ];
   return `${lines.join('\n').trimEnd()}\n`;
 }

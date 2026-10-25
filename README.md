@@ -105,10 +105,10 @@ refuses the run and leaves nothing behind. A member name ending in `Env` names
 the environment variable and is not a credential.
 
 Live runners refuse to start without `--retain-root` or `--no-retain`.
-`--no-retain` writes `output/<date>_<version>` scratch and stamps every record
+`--no-retain` writes a new scratch folder (see "Output") and stamps every record
 (`retention`), category summary and document "Development run: not retained,
 not validation evidence". An evidence import given neither flag runs as before
-into that stamped scratch and says that nothing was retained; the import is
+into such stamped scratch and says that nothing was retained; the import is
 offline and repeatable from its retained run directory. A documents-only run
 without either flag is plain scratch; with `--retain-root` it is a documents
 package (`executed: false`).
@@ -553,11 +553,25 @@ is. `tests/requirements.contract.test.ts` checks all of it.
 ## Output
 
 A run with `--retain-root` writes a retained package (see "Retained evidence
-packages"). Any other run writes git-ignored scratch, a versioned folder under
-`output/` that a same-day rerun with the same version overwrites:
+packages"). Any other run (a documents run, `--no-retain`, or an evidence
+import given neither flag) writes git-ignored scratch into a new folder of its
+own, `output/<yyyymmddTHHMMSSZ>-<version>-<first 8 hex of a run UUID>/`
+(`--version` defaults to `v1.0`). The folder is created exclusively, as a
+package is: an existing one is refused, never reused, so a rerun, the same day
+and with the same version included, never replaces an earlier run's results or
+mixes its leftover cases and categories into the master evidence index, and a
+documents run reads no earlier run's evidence. Within a folder each category's
+evidence is saved once: `saveEvidence` refuses an existing
+`<category>-results.json`. `output/latest` points to the newest scratch folder
+(a symbolic link, or a file holding its path on Windows). Every scratch folder
+holds a `TMF-FILING.md` that opens with "SCRATCH: not a validation evidence
+package; never filed in the eTMF and never approved.", since the approval block
+of every document names that file: the folder is not a validation evidence
+package, is never filed or approved, and only a `--retain-root` run makes one.
 
 ```
-output/2026-05-02_v1.0/
+output/20260502T091500Z-v1.0-1a2b3c4d/
+  TMF-FILING.md                 scratch: never filed or approved
   00-cover.md
   01-applicability-assessment.md
   02-validation-plan.md

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  canonicalJson, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking, strictObject,
+  canonicalJson, currentEvidenceMarking, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking, strictObject,
   DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceCategory, type EvidenceResult,
 } from './evidence-capture';
 import {
@@ -19,7 +19,9 @@ import {
   type PlatformEvidenceEntry, type PlatformEvidencePlan,
 } from './platform-evidence-plan';
 import { PLATFORM_SYSTEMS, type EvidenceAdmission, type PlatformSystemId } from '../config/platform-inventory';
-import { isTrainingCaptureFile, tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
+import {
+  isTrainingCaptureFile, scratchFilingText, tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, TMF_FILING_FILE,
+} from '../generators/helpers/tmf-filing';
 
 // Retained evidence packages (TA3 plan VAL-1, spec P20 VD-3, 3.2). A package is
 // one exclusively created directory holding everything a run writes, sealed at
@@ -343,6 +345,25 @@ function writeInput(evidencePackage: EvidencePackage, input: PreparedInput): Pac
   return entry;
 }
 
+function checkVersionLabel(what: string, version: string): void {
+  packageCheck(VERSION_LABEL.test(version), `${what} needs a --version of 1 to 64 letters, digits, dots, `
+    + `underscores or hyphens, starting with a letter or digit; got ${JSON.stringify(version)}.`);
+}
+
+/** Creates <root>/<yyyymmddTHHMMSSZ>-<version>-<first 8 hex of the ID>/ exclusively: the
+ * leaf is never created recursively, so an existing one is refused, never reused. */
+function createRunDirectory(root: string, version: string, id: string, createdAt: string, existsMessage: (dir: string) => string): string {
+  const stamp = `${createdAt.slice(0, 19).replace(/[-:]/g, '')}Z`;
+  const dir = path.join(root, `${stamp}-${version}-${id.slice(0, 8)}`);
+  fs.mkdirSync(root, { recursive: true });
+  try { fs.mkdirSync(dir); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(existsMessage(dir));
+    throw error;
+  }
+  return dir;
+}
+
 /** Creates <retainRoot>/<yyyymmddTHHMMSSZ>-<version>-<first 8 hex of the package ID>/
  * exclusively (the leaf is never created recursively, so an existing one is
  * refused, never reused) and copies the inputs into it. The inputs are read and
@@ -350,8 +371,7 @@ function writeInput(evidencePackage: EvidencePackage, input: PreparedInput): Pac
  * package is sealed, saveEvidence and the document helpers mark what the run
  * writes as this package's evidence. */
 export function createPackage(options: PackageOptions): EvidencePackage {
-  packageCheck(VERSION_LABEL.test(options.version), 'A retained package needs a --version of 1 to 64 letters, digits, dots, '
-    + `underscores or hyphens, starting with a letter or digit; got ${JSON.stringify(options.version)}.`);
+  checkVersionLabel('A retained package', options.version);
   packageCheck(options.syntheticBasis.every(basis => (SYNTHETIC_BASES as readonly string[]).includes(basis)), 'Unknown synthetic basis.');
   const basis = SYNTHETIC_BASES.filter(item => options.syntheticBasis.includes(item));
   const synthetic = basis.length > 0;
@@ -370,14 +390,8 @@ export function createPackage(options: PackageOptions): EvidencePackage {
   const packageId = options.packageId ?? randomUUID();
   packageCheck(UUID_V4.test(packageId), `Package ID ${JSON.stringify(packageId)} is not a UUID v4.`);
   const createdAt = (options.now ?? new Date()).toISOString();
-  const stamp = `${createdAt.slice(0, 19).replace(/[-:]/g, '')}Z`;
-  const dir = path.join(root, `${stamp}-${options.version}-${packageId.slice(0, 8)}`);
-  fs.mkdirSync(root, { recursive: true });
-  try { fs.mkdirSync(dir); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`Retained package ${dir} already exists; a retained package is never overwritten.`);
-    throw error;
-  }
+  const dir = createRunDirectory(root, options.version, packageId, createdAt,
+    existing => `Retained package ${existing} already exists; a retained package is never overwritten.`);
   const evidencePackage: EvidencePackage = {
     dir, packageId, version: options.version, createdAt, executed: options.executed, synthetic, syntheticBasis: basis, inputs: [],
     ...(options.frameworkCheckout ? { frameworkCheckout: options.frameworkCheckout } : {}), frameworkAtStart, sealed: false,
@@ -385,6 +399,41 @@ export function createPackage(options: PackageOptions): EvidencePackage {
   for (const input of prepared) writeInput(evidencePackage, input);
   setEvidenceMarking({ synthetic, retained: true });
   return evidencePackage;
+}
+
+export interface ScratchRunOptions {
+  /** The git-ignored output/ folder of the framework checkout. */
+  outputRoot: string;
+  /** The --version label; part of the folder name. */
+  version: string;
+  /** A fixed clock and run ID, for tests only. */
+  now?: Date;
+  runId?: string;
+}
+
+export interface ScratchRun {
+  readonly dir: string;
+  readonly runId: string;
+  readonly createdAt: string;
+}
+
+/** Creates the scratch folder of a run that retains nothing (a documents run, --no-retain, or an
+ * evidence import given neither flag): <outputRoot>/<yyyymmddTHHMMSSZ>-<version>-<first 8 hex of
+ * the run ID>/, exclusively as createPackage does, so a rerun never replaces an earlier run's
+ * results or mixes its leftover cases and categories in (IR-034). It writes the scratch
+ * TMF-FILING.md the documents' approval blocks name, which says the folder is never filed or
+ * approved (RF-013). Call it after the run's evidence marking is set, so the file carries it. */
+export function createScratchRun(options: ScratchRunOptions): ScratchRun {
+  checkVersionLabel('A run', options.version);
+  const runId = options.runId ?? randomUUID();
+  packageCheck(UUID_V4.test(runId), `Run ID ${JSON.stringify(runId)} is not a UUID v4.`);
+  const createdAt = (options.now ?? new Date()).toISOString();
+  const dir = createRunDirectory(options.outputRoot, options.version, runId, createdAt,
+    existing => `Scratch folder ${existing} already exists; a run never writes into an earlier run's folder.`);
+  fs.writeFileSync(path.join(dir, TMF_FILING_FILE), scratchFilingText({
+    folder: path.basename(dir), runId, version: options.version, marking: currentEvidenceMarking(),
+  }), { flag: 'wx' });
+  return { dir, runId, createdAt };
 }
 
 /** Copies and hashes one more plan or declaration into inputs/<role>.json. */

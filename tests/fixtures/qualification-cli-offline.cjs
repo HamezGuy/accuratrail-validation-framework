@@ -1,7 +1,7 @@
 // Preload only for the CLI contract tests. No collector, generator, live runner,
 // configured endpoint, credentials, or output filesystem is used; only the
 // evidence package module touches the real filesystem, under a test's own
-// temporary --retain-root.
+// temporary --retain-root or scratch output root.
 const Module = require('node:module');
 const path = require('node:path');
 const originalLoad = Module._load;
@@ -50,10 +50,19 @@ Module._load = function (request, parent, isMain) {
     // temporary --retain-root creates, seals and verifies a real package there.
     // A scenario may name the framework checkout the package reads (a temporary git checkout),
     // so the dirty-framework refusal does not depend on this checkout's state.
+    // A scratch run's folder is created under the test's own output root, never this checkout's output/.
     if (request === './runners/evidence-package') {
       const real = originalLoad.call(this, request, parent, isMain);
       const frameworkCheckout = process.env.QUALIFICATION_CLI_TEST_FRAMEWORK_CHECKOUT;
-      return frameworkCheckout ? { ...real, createPackage: options => real.createPackage({ ...options, frameworkCheckout }) } : real;
+      const outputRoot = process.env.QUALIFICATION_CLI_TEST_OUTPUT_ROOT;
+      return {
+        ...real,
+        ...(frameworkCheckout ? { createPackage: options => real.createPackage({ ...options, frameworkCheckout }) } : {}),
+        createScratchRun(options) {
+          if (!outputRoot) throw new Error('Offline CLI test names no QUALIFICATION_CLI_TEST_OUTPUT_ROOT');
+          return real.createScratchRun({ ...options, outputRoot });
+        },
+      };
     }
     if (request.startsWith('./runners/')) {
       if (request === './runners/benchmark-evidence') return {

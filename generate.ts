@@ -8,7 +8,7 @@ import {
 } from './runners/release-identity';
 import { approvalBlock, masterEvidenceIndexHeader, registryCasesText } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, markDevelopmentRun,
+  benchmarkRunInputs, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
   sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
 import { ALL_OQ_SUITES, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
@@ -330,8 +330,9 @@ function createLatestPointer(outputDir: string): void {
 }
 
 /** Where a run's output goes (spec P20 VD-3): a retained package sealed at the
- * end; output/ scratch marked as a development run (--no-retain, or an evidence
- * import given neither flag); or plain output/ scratch for documents. */
+ * end; a new output/ scratch folder marked as a development run (--no-retain, or
+ * an evidence import given neither flag); or a new plain output/ scratch folder for
+ * documents (createScratchRun). */
 type Retention =
   | { kind: 'package'; evidencePackage: EvidencePackage }
   | { kind: 'not-retained' }
@@ -397,15 +398,12 @@ async function main(): Promise<void> {
     }
     return;
   }
-  const date = new Date().toISOString().split('T')[0];
-  const outputDir = path.join(__dirname, 'output', `${date}_${version}`);
   // Scratch that summarises synthetic evidence says so, and that it is not retained (D-22).
-  if (args.noRetain || executed || platformEvidenceSynthetic) {
-    markDevelopmentRun(basis.length > 0);
-    await generateInto(args, outputDir, { kind: 'not-retained' });
-  } else {
-    await generateInto(args, outputDir, { kind: 'scratch' });
-  }
+  const notRetained = args.noRetain || executed || platformEvidenceSynthetic;
+  if (notRetained) markDevelopmentRun(basis.length > 0);
+  // Every scratch run writes into a new folder of its own, with a scratch TMF-FILING.md (IR-034, RF-013).
+  const scratch = createScratchRun({ outputRoot: path.join(__dirname, 'output'), version });
+  await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' });
 }
 
 function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): void {

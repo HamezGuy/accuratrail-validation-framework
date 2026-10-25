@@ -8,14 +8,15 @@ import {
   DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceResult,
 } from '../runners/evidence-capture';
 import {
-  createPackage, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
+  createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
   APPROVAL_RECORDED_IN, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_REQUIRED, MANIFEST_OPTIONAL, MANIFEST_REQUIRED,
   QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, type PackageOptions,
 } from '../runners/evidence-package';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
 import {
-  tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE, VALIDATION_PACKAGE_REQUIREMENT,
+  tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, SCRATCH_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE,
+  VALIDATION_PACKAGE_REQUIREMENT,
 } from '../generators/helpers/tmf-filing';
 import { generateAllDocuments, temporaryCheckout, temporaryDirectory } from './generated-documents';
 
@@ -72,6 +73,42 @@ test('a package directory is created exclusively under its UTC time, version and
   assert.deepEqual(fs.readdirSync(home), [path.basename(first.dir)]);
   assert.throws(() => createPackage(syntheticPackage(home, { version: '../escape' })), /needs a --version of 1 to 64 letters/);
   assert.throws(() => createPackage(syntheticPackage(home, { packageId: 'not-a-uuid' })), /is not a UUID v4/);
+});
+
+test('a scratch folder is created exclusively under its UTC time, version and run ID, with the scratch filing (IR-034, RF-013)', t => {
+  const outputRoot = path.join(temporaryDirectory(t, 'accura-scratch-'), 'output');
+  t.after(() => setEvidenceMarking(undefined));
+  const fixed = { now: new Date('2026-10-24T01:02:03.456Z'), runId: '89abcdef-1111-4222-8333-444455556666' };
+  setEvidenceMarking(undefined);
+  const first = createScratchRun({ outputRoot, version: 'v1.0', ...fixed });
+  assert.equal(path.basename(first.dir), '20261024T010203Z-v1.0-89abcdef');
+  assert.deepEqual([first.runId, first.createdAt], [fixed.runId, '2026-10-24T01:02:03.456Z']);
+  assert.deepEqual(fs.readdirSync(first.dir), [TMF_FILING_FILE]);
+  const filing = read(first.dir, TMF_FILING_FILE);
+  assert.ok(filing.startsWith(`${SCRATCH_FILING_LINE}\n\n# Scratch Output 20261024T010203Z-v1.0-89abcdef\n`), filing);
+  assert.match(filing, new RegExp(`\\| Run ID \\| ${fixed.runId} \\|`));
+  assert.match(filing, /It is not a validation evidence package\. It holds no package-manifest\.json/);
+  assert.throws(() => createScratchRun({ outputRoot, version: 'v1.0', ...fixed }), /already exists; a run never writes into an earlier run's folder/);
+  assert.throws(() => createScratchRun({ outputRoot, version: '../escape' }), /A run needs a --version of 1 to 64 letters/);
+  assert.throws(() => createScratchRun({ outputRoot, version: 'v1.0', runId: 'not-a-uuid' }), /is not a UUID v4/);
+  assert.deepEqual(fs.readdirSync(outputRoot), [path.basename(first.dir)]);
+  // A development run's scratch filing carries the run's notices.
+  markDevelopmentRun(true);
+  const marked = createScratchRun({ outputRoot, version: 'v1.0' });
+  assert.ok(read(marked.dir, TMF_FILING_FILE).startsWith(`${SCRATCH_FILING_LINE}\n\n${SYNTHETIC_LINE}\n>\n> **${DEVELOPMENT_RUN_NOTICE}**\n\n# Scratch Output `));
+});
+
+test('evidence of a category is saved once per folder and never overwritten (IR-034)', t => {
+  const directory = temporaryDirectory(t, 'accura-evidence-once-');
+  setEvidenceMarking(undefined);
+  saveEvidence(directory, 'oq', [record('OQ-001', { passed: false }), record('OQ-002')]);
+  const before = read(directory, 'evidence/oq/oq-results.json');
+  assert.throws(() => saveEvidence(directory, 'oq', [record('OQ-001')]), /OQ evidence is already saved in .*; evidence is never overwritten/);
+  assert.equal(read(directory, 'evidence/oq/oq-results.json'), before, 'the failing run is not replaced');
+  assert.equal(loadEvidence(directory, 'oq')[0].passed, false);
+  // Another category of the same folder is saved as before.
+  saveEvidence(directory, 'pq', [record('PQ-001')]);
+  assert.equal(loadEvidence(directory, 'pq').length, 1);
 });
 
 test('a dirty or unreadable framework checkout is refused before anything is created (IR-056)', t => {

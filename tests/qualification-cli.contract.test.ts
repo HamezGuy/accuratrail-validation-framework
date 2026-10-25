@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { verifyPackage, DEVELOPMENT_RUN_NOTICE, MANIFEST_FILE, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
-import { NOT_RUN_OF_RECORD_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
+import { NOT_RUN_OF_RECORD_LINE, SCRATCH_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE } from '../generators/helpers/tmf-filing';
 import { temporaryCheckout, temporaryDirectory } from './generated-documents';
 import { ta3PlanJson } from './ta3-plan-fixture';
 
@@ -17,9 +18,19 @@ const LIVE_RUNNER_FLAGS = ['--all', '--iq', '--oq', '--pq', '--security', '--dr'
 const defaultRetention = (flags: string[]) => !flags.includes('--docs-only') && flags.some(flag => LIVE_RUNNER_FLAGS.includes(flag))
   && !flags.includes('--retain-root') && !flags.includes('--no-retain') ? ['--no-retain'] : [];
 /** framework: the flags about the framework checkout; by default --allow-dirty-framework, so a scenario
- * does not depend on this checkout's state. frameworkCheckout: the checkout a package reads instead of this one. */
+ * does not depend on this checkout's state. frameworkCheckout: the checkout a package reads instead of this one.
+ * outputRoot: where a scratch run creates its folder; by default a temporary directory removed after the run,
+ * never this checkout's output/. */
 function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'https://qualification.invalid', release = RELEASE,
-  retention = defaultRetention(flags), { framework = ['--allow-dirty-framework'], frameworkCheckout }: { framework?: string[]; frameworkCheckout?: string } = {}) {
+  retention = defaultRetention(flags),
+  { framework = ['--allow-dirty-framework'], frameworkCheckout, outputRoot }: { framework?: string[]; frameworkCheckout?: string; outputRoot?: string } = {}) {
+  const scratchRoot = outputRoot ?? fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'accura-cli-output-'));
+  try { return spawnCli(scenario, flags, baseUrl, release, retention, framework, frameworkCheckout, scratchRoot); }
+  finally { if (!outputRoot) fs.rmSync(scratchRoot, { recursive: true, force: true }); }
+}
+
+function spawnCli(scenario: string, flags: string[], baseUrl: string | null, release: string[], retention: string[], framework: string[],
+  frameworkCheckout: string | undefined, outputRoot: string) {
   const result = spawnSync(process.execPath, [
     '-r', require.resolve('ts-node/register'),
     '-r', path.join(__dirname, 'fixtures', 'qualification-cli-offline.cjs'),
@@ -29,6 +40,7 @@ function runCli(scenario: string, flags = ['--all'], baseUrl: string | null = 'h
     cwd: root,
     env: {
       ...process.env, QUALIFICATION_CLI_TEST_SCENARIO: scenario, QUALIFICATION_CLI_TEST_TARGET: baseUrl ?? '',
+      QUALIFICATION_CLI_TEST_OUTPUT_ROOT: outputRoot,
       ...(frameworkCheckout ? { QUALIFICATION_CLI_TEST_FRAMEWORK_CHECKOUT: frameworkCheckout } : {}),
     },
     encoding: 'utf8',
@@ -254,6 +266,63 @@ test('an evidence import given neither flag still runs into scratch and states t
   const documents = runCli('pass', ['--docs-only'], null, []);
   assert.equal(documents.status, 0, documents.output);
   assert.doesNotMatch(documents.output, /Retention:/, 'a documents run without retention flags is plain scratch');
+});
+
+/** The folder a scratch run printed as its output. */
+function outputFolder(output: string): string {
+  const folder = /^Output: (.+)$/m.exec(output)?.[1]?.trim();
+  assert.ok(folder, output);
+  return folder;
+}
+
+test('every scratch run creates a new folder of its own, so a same-day rerun holds nothing of an earlier run (IR-034)', t => {
+  const outputRoot = temporaryDirectory(t, 'accura-cli-scratch-');
+  const first = runCli('pass', ['--docs-only', '--version', 'scratch-rerun'], null, [], [], { outputRoot });
+  assert.equal(first.status, 0, first.output);
+  const firstDir = outputFolder(first.output);
+  // An earlier run's cases and category, left in its folder.
+  fs.mkdirSync(path.join(firstDir, 'evidence', 'iq'), { recursive: true });
+  fs.writeFileSync(path.join(firstDir, 'evidence', 'iq', 'iq-results.json'), '[]\n');
+  fs.writeFileSync(path.join(firstDir, 'evidence', 'iq', 'IQ-999.json'), '{}\n');
+  const second = runCli('pass', ['--docs-only', '--version', 'scratch-rerun'], null, [], [], { outputRoot });
+  assert.equal(second.status, 0, second.output);
+  const secondDir = outputFolder(second.output);
+  assert.notEqual(secondDir, firstDir);
+  const folders = fs.readdirSync(outputRoot).sort();
+  assert.deepEqual(folders, [path.basename(firstDir), path.basename(secondDir)].sort());
+  for (const folder of folders) assert.match(folder, /^\d{8}T\d{6}Z-scratch-rerun-[0-9a-f]{8}$/);
+  assert.equal(path.dirname(secondDir), outputRoot);
+  // The offline generators write nothing, so the new folder holds its scratch filing alone.
+  assert.deepEqual(fs.readdirSync(secondDir), [TMF_FILING_FILE]);
+  assert.ok(fs.existsSync(path.join(firstDir, 'evidence', 'iq', 'IQ-999.json')), 'the earlier run is left as it was');
+  // A version label is a segment of the folder name, so one that is not a label is refused.
+  const traversal = runCli('pass', ['--docs-only', '--version', '../escape'], null, [], [], { outputRoot });
+  assert.equal(traversal.status, 1, traversal.output);
+  assert.match(traversal.output, /A run needs a --version of 1 to 64 letters/);
+  assert.deepEqual(fs.readdirSync(outputRoot).sort(), folders);
+});
+
+test('documents, --no-retain and import scratch hold a scratch TMF-FILING.md that says it is never filed or approved (RF-013)', t => {
+  const outputRoot = temporaryDirectory(t, 'accura-cli-filing-');
+  const filing = (output: string) => fs.readFileSync(path.join(outputFolder(output), TMF_FILING_FILE), 'utf8');
+  const documents = runCli('pass', ['--docs-only'], null, [], [], { outputRoot });
+  assert.equal(documents.status, 0, documents.output);
+  const plain = filing(documents.output);
+  assert.ok(plain.startsWith(`${SCRATCH_FILING_LINE}\n\n# Scratch Output `), plain);
+  assert.match(plain, /\| Validation evidence package \| no \|/);
+  assert.match(plain, /never filed in the eTMF and never approved/);
+  assert.match(plain, /Only a run with --retain-root <directory> makes a validation evidence package/);
+  assert.ok(!plain.includes(DEVELOPMENT_RUN_NOTICE), 'plain documents scratch is not a development run');
+  const live = runCli('pass', ['--iq'], undefined, undefined, ['--no-retain'], { outputRoot });
+  const imported = runCli('pass', ['--benchmark-run', 'offline-fixture'], null, [], [], { outputRoot });
+  for (const result of [live, imported]) {
+    assert.equal(result.status, 0, result.output);
+    const text = filing(result.output);
+    assert.ok(text.startsWith(`${SCRATCH_FILING_LINE}\n\n`), text);
+    assert.ok(text.includes(DEVELOPMENT_RUN_NOTICE), 'development-run scratch says so in its filing');
+    assert.equal(fs.existsSync(path.join(outputFolder(result.output), MANIFEST_FILE)), false);
+  }
+  assert.equal(fs.readdirSync(outputRoot).length, 3);
 });
 
 test('a synthetic package is refused outside a marked data root, and a package that is not synthetic inside one', t => {
