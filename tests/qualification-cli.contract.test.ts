@@ -379,13 +379,13 @@ test('--retain-root under a marked data root creates, seals and verifies a packa
   assert.equal(manifest.executor, undefined);
 });
 
-test('a runner that throws or a SIGINT keeps the cases the runner journaled, records the rest RUN_INTERRUPTED and seals the package (IR-166)', t => {
-  for (const [scenario, status] of [['journal-throw', 1], ['interrupt', 130]] as const) {
+test('a runner that throws, a SIGINT or a SIGTERM keeps the cases the runner journaled, records the rest RUN_INTERRUPTED and seals the package (IR-166)', t => {
+  for (const [scenario, status, signal] of [['journal-throw', 1, ''], ['interrupt', 130, 'SIGINT'], ['terminate', 143, 'SIGTERM']] as const) {
     const home = markedRoot(t);
     const result = runCli(scenario, ['--iq', '--synthetic-qualification', '--version', `cli-${scenario}`], undefined, undefined,
       ['--retain-root', home], { frameworkCheckout: temporaryCheckout(t, 'accura-cli-framework-') });
     assert.equal(result.status, status, result.output);
-    assert.match(result.output, scenario === 'interrupt' ? /\[FAIL\] Run interrupted by SIGINT\./
+    assert.match(result.output, signal ? new RegExp(`\\[FAIL\\] Run interrupted by ${signal}\\.`)
       : /\[FAIL\] IQ Runner: Synthetic runner stopped after a journaled case/);
     assert.match(result.output, /\[FAIL\] IQ evidence recovered from its case journal \(.*\): 3 records, 1 registry case\(s\) not executed\./);
     const dir = path.join(home, fs.readdirSync(home)[0]);

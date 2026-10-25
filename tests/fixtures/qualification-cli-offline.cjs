@@ -112,13 +112,14 @@ Module._load = function (request, parent, isMain) {
             if (scenario === 'undefined') return undefined;
             if (scenario === 'empty') return [];
             if (scenario === 'malformed') return [{ testCaseId: 'IQ-001', passed: 'true' }];
-            // IR-166: IQ-001 is journaled, then the runner throws, or the run receives SIGINT and never returns.
-            if (scenario === 'journal-throw' || scenario === 'interrupt') {
+            // IR-166: IQ-001 is journaled, then the runner throws, or the run receives SIGINT or SIGTERM and never returns.
+            if (scenario === 'journal-throw' || scenario === 'interrupt' || scenario === 'terminate') {
               const { appendCaseJournal } = require(path.resolve(__dirname, '../../runners/evidence-capture'));
               appendCaseJournal(outputDir, 'iq', [{ testCaseId: 'IQ-001', timestamp: '2026-09-09T00:00:00.000Z', endpoint: '/offline-test', method: 'GET',
                 responseStatus: 200, responseBody: { synthetic: true }, passed: true, notes: 'Synthetic journaled case; no system qualification claim.' }]);
               if (scenario === 'journal-throw') throw new Error('Synthetic runner stopped after a journaled case');
-              setImmediate(() => process.emit('SIGINT', 'SIGINT'));
+              const signal = scenario === 'terminate' ? 'SIGTERM' : 'SIGINT';
+              setImmediate(() => process.emit(signal, signal));
               return new Promise(() => undefined);
             }
           }
