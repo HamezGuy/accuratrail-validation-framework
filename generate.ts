@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { EvidenceResult } from './runners/evidence-capture';
+import { recoverJournaledCategories, type EvidenceCategory, type EvidenceResult } from './runners/evidence-capture';
 import { SYSTEM_INFO } from './config/system-info';
 import {
   observeTargetVersion, releaseIdentityFromInputs, releaseIndexSections, releaseSummary, requireInstalledSharedTypes,
@@ -12,7 +12,7 @@ import {
   benchmarkRunInputs, checkExecutorName, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
   sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
-import { ALL_OQ_SUITES, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
+import { ALL_OQ_SUITES, OQ_CASE_IDS, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -403,10 +403,13 @@ async function main(): Promise<void> {
       ...(args.allowDirtyFramework ? { allowDirtyFramework: true } : {}),
       ...(args.executor !== undefined ? { executor: args.executor } : {}),
     });
+    const stopOnSignal = onInterrupt(evidencePackage.dir, () => sealRetainedPackage(evidencePackage, args));
     try {
       await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage });
     } finally {
-      // Sealed whatever the outcome, so a failed run is retained too.
+      stopOnSignal();
+      // Sealed whatever the outcome, so a failed run is retained too, with every category it journaled.
+      recoverInterruptedEvidence(evidencePackage.dir, 'the run ended before it saved this category');
       sealRetainedPackage(evidencePackage, args);
     }
     return;
@@ -421,7 +424,38 @@ async function main(): Promise<void> {
   if (notRetained) markDevelopmentRun(basis.length > 0, args.executor);
   // Every scratch run writes into a new folder of its own, with a scratch TMF-FILING.md (IR-034, RF-013).
   const scratch = createScratchRun({ outputRoot: path.join(__dirname, 'output'), version });
-  await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' });
+  const stopOnSignal = onInterrupt(scratch.dir);
+  try { await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' }); }
+  finally { stopOnSignal(); }
+}
+
+/** The registry of each category a runner journals, read only when a journal is recovered. */
+function journaledRegistry(category: EvidenceCategory): readonly string[] {
+  if (category === 'iq') return (require('./runners/iq-runner') as typeof import('./runners/iq-runner')).IQ_CASE_IDS;
+  if (category === 'oq') return OQ_CASE_IDS;
+  if (category === 'pq') return (require('./runners/pq-runner') as typeof import('./runners/pq-runner')).PQ_CASE_IDS;
+  return [];
+}
+
+/** Saves each category a runner journaled and did not save: its journaled records, and every other
+ * registry case not executed (RUN_INTERRUPTED), so an interrupted run keeps its evidence (IR-166). */
+function recoverInterruptedEvidence(outputDir: string, reason: string): void {
+  recoverJournaledCategories(outputDir, journaledRegistry, reason);
+}
+
+/** Until the returned function is called, SIGINT or SIGTERM recovers every journaled category the run
+ * left without results, runs `seal` (a retained package is sealed) and exits 130 or 143. */
+function onInterrupt(outputDir: string, seal: () => void = () => undefined): () => void {
+  const handler = (signal: NodeJS.Signals) => {
+    console.error('');
+    console.error(`  [FAIL] Run interrupted by ${signal}.`);
+    recoverInterruptedEvidence(outputDir, `the run received ${signal}`);
+    seal();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGINT', handler);
+  process.once('SIGTERM', handler);
+  return () => { process.removeListener('SIGINT', handler); process.removeListener('SIGTERM', handler); };
 }
 
 function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): void {
@@ -643,6 +677,8 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
         runnersFailed++;
         const message = err instanceof Error ? err.message : String(err);
         console.error(`  [FAIL] ${runner.name}: ${message}`);
+        // What the runner journaled before it stopped is saved, so the documents below read it (IR-166).
+        recoverInterruptedEvidence(outputDir, `the ${runner.name} stopped: ${message}`);
       }
     }
 

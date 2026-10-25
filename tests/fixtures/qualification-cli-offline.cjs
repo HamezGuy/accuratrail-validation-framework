@@ -84,6 +84,8 @@ Module._load = function (request, parent, isMain) {
         },
       };
     }
+    // The evidence module recovers what a runner journaled (IR-166) into the package or scratch folder.
+    if (request === './runners/evidence-capture') return originalLoad.call(this, request, parent, isMain);
     if (request.startsWith('./runners/')) {
       if (request === './runners/benchmark-evidence') return {
         async importP13BenchmarkEvidence(_outputDir, options) {
@@ -96,7 +98,9 @@ Module._load = function (request, parent, isMain) {
         },
       };
       return {
-        async run(_outputDir, baseUrl, _workspaceRoot, flags, options) {
+        // A synthetic two-case IQ registry, for the recovery of an interrupted IQ run.
+        ...(request.endsWith('/iq-runner') ? { IQ_CASE_IDS: ['IQ-001', 'IQ-002'] } : {}),
+        async run(outputDir, baseUrl, _workspaceRoot, flags, options) {
           if (!['https://qualification.invalid', process.env.QUALIFICATION_CLI_TEST_TARGET].includes(baseUrl)) throw new Error('Unexpected test target');
           console.log(`OFFLINE_RUNNER ${request}`);
           console.log(`OFFLINE_TARGET ${baseUrl}`);
@@ -108,6 +112,15 @@ Module._load = function (request, parent, isMain) {
             if (scenario === 'undefined') return undefined;
             if (scenario === 'empty') return [];
             if (scenario === 'malformed') return [{ testCaseId: 'IQ-001', passed: 'true' }];
+            // IR-166: IQ-001 is journaled, then the runner throws, or the run receives SIGINT and never returns.
+            if (scenario === 'journal-throw' || scenario === 'interrupt') {
+              const { appendCaseJournal } = require(path.resolve(__dirname, '../../runners/evidence-capture'));
+              appendCaseJournal(outputDir, 'iq', [{ testCaseId: 'IQ-001', timestamp: '2026-09-09T00:00:00.000Z', endpoint: '/offline-test', method: 'GET',
+                responseStatus: 200, responseBody: { synthetic: true }, passed: true, notes: 'Synthetic journaled case; no system qualification claim.' }]);
+              if (scenario === 'journal-throw') throw new Error('Synthetic runner stopped after a journaled case');
+              setImmediate(() => process.emit('SIGINT', 'SIGINT'));
+              return new Promise(() => undefined);
+            }
           }
           return [{
             testCaseId: `${request}-001`,

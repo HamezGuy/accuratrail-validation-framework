@@ -379,6 +379,26 @@ test('--retain-root under a marked data root creates, seals and verifies a packa
   assert.equal(manifest.executor, undefined);
 });
 
+test('a runner that throws or a SIGINT keeps the cases the runner journaled, records the rest RUN_INTERRUPTED and seals the package (IR-166)', t => {
+  for (const [scenario, status] of [['journal-throw', 1], ['interrupt', 130]] as const) {
+    const home = markedRoot(t);
+    const result = runCli(scenario, ['--iq', '--synthetic-qualification', '--version', `cli-${scenario}`], undefined, undefined,
+      ['--retain-root', home], { frameworkCheckout: temporaryCheckout(t, 'accura-cli-framework-') });
+    assert.equal(result.status, status, result.output);
+    assert.match(result.output, scenario === 'interrupt' ? /\[FAIL\] Run interrupted by SIGINT\./
+      : /\[FAIL\] IQ Runner: Synthetic runner stopped after a journaled case/);
+    assert.match(result.output, /\[FAIL\] IQ evidence recovered from its case journal \(.*\): 3 records, 1 registry case\(s\) not executed\./);
+    const dir = path.join(home, fs.readdirSync(home)[0]);
+    const verified = verifyPackage(dir);
+    assert.deepEqual(verified.problems, [], scenario);
+    const iq = JSON.parse(fs.readFileSync(path.join(dir, 'evidence', 'iq', 'iq-results.json'), 'utf8')) as Array<{ testCaseId: string; outcomeCode?: string; synthetic?: true }>;
+    assert.deepEqual(iq.map(row => [row.testCaseId, row.outcomeCode ?? null, row.synthetic]),
+      [['IQ-001', null, true], ['IQ-002', 'RUN_INTERRUPTED', true], ['IQ-RUN-INTERRUPTED', 'RUN_INTERRUPTED', true]], scenario);
+    assert.equal(fs.existsSync(path.join(dir, 'evidence', 'iq', 'iq-journal.jsonl')), false, scenario);
+    assert.equal(verified.manifest!.categories.find(category => category.category === 'iq')?.notExecuted, 2, scenario);
+  }
+});
+
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
 /** A synthetic checkout whose package.json installs shared types (with a receipt naming `manifestSha256`)

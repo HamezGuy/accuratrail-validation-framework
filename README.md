@@ -596,6 +596,19 @@ package; never filed in the eTMF and never approved.", since the approval block
 of every document names that file: the folder is not a validation evidence
 package, is never filed or approved, and only a `--retain-root` run makes one.
 
+An interrupted run keeps the cases it completed. The IQ runner after each
+check group, the OQ runner after each of suites 1 to 12 and each TA3 suite,
+and the PQ runner after each step group append their records, redacted and
+stamped as they are saved, to `evidence/<category>/<category>-journal.jsonl`.
+The category's save deletes the journal, so a run that completes writes the
+same files as before. When a runner throws, or the run receives SIGINT or
+SIGTERM, `generate.ts` saves each category that has a journal and no results:
+every journaled record (a case's last line), every other registry case not
+executed (`CONTRACT`, `RUN_INTERRUPTED`) and a `<CATEGORY>-RUN-INTERRUPTED`
+row stating the interruption. Then it seals the package; on a signal it exits
+130 (SIGINT) or 143 (SIGTERM). A signal skips the refresh of the
+evidence-dependent documents and the master evidence index.
+
 ```
 output/20260502T091500Z-v1.0-1a2b3c4d/
   TMF-FILING.md                 scratch: never filed or approved
