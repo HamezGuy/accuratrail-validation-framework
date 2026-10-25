@@ -244,7 +244,8 @@ export async function startFakeEdc(options: FakeEdcOptions): Promise<FakeEdc> {
       return { schemaVersion: 'edc-milestone-measurement/1', studyId: root, armGrouping, milestones: { derived: {
         firstDosed: { platform: null, arms: included ? [{ armId: 1, firstDosed: null }] : 'withheld' },
         armRecruitment: [{ armId: 1, plannedCount: 5, ...(included || leak ? { allocated: 3, targetReachedAt: null } : { targetReachedAt: 'withheld', status: 'withheld' }) }] } },
-      intervals: [{ metric: 'arm-may-proceed-to-first-dosed', scope: { studyId: root, armId: 1 }, status: included ? 'measured' : 'withheld' }] };
+      intervals: [{ metric: 'arm-may-proceed-to-first-dosed', scope: { studyId: root, armId: 1 }, status: included ? 'measured' : 'withheld' }],
+      ...(included ? { byArm: { 1: { allocated: 3 } } } : {}) };
     }
     if (kind === 'effort') return { schemaVersion: 'edc-effort-ledger/1', studyId: root, armGrouping, windows: [{ metric: 'arm-may-proceed-to-first-dosed', scope: { armId: 1 }, status: included ? 'closed' : 'withheld' }] };
     if (kind === 'latency') return { schemaVersion: 'edc-latency-measurement/1', studyId: root, armGrouping, ...(included || leak ? { byArm: { 1: {} } } : {}) };

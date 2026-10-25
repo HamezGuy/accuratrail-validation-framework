@@ -306,6 +306,14 @@ variables hold the same username, trimmed as the EDC's login trims it, are
 refused before any request, suite 1 included. Two accounts the EDC answers
 with one user id at login are one person too: the cases of the suite that
 finds it record `ACCOUNTS_NOT_DISTINCT`, and its `OQ-TA3-SUITE-<n>` row fails.
+A retained TA3 exchange keeps no arm-grouped content (IR-453, D-25): in each
+JSON reply, every value `armGroupedContent` lists (allocation counts, `byArm`,
+per-arm target dates and first dosing, an arm, a window ending at per-arm first
+dosing that is not withheld) and every member named as an arm (`armId`,
+`treatmentArm`, `studyGroupId` and the like) becomes `{"withheld":
+"arm-grouped content (D-25)", "sha256": ...}`, the SHA-256 of its canonical
+JSON. Record ids, `contentHash` and member names stay, and each case checks the
+reply as the EDC sent it; an exact-bytes read keeps only its digest, as before.
 
 A plan needs `--oq`, `--synthetic-qualification` (the suites write owned
 records, as the owned fixture does) and `--release-training` (the training

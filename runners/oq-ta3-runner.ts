@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { captureApiCall, isRecord, redactEvidenceSecrets, type EvidenceResult } from './evidence-capture';
+import { canonicalJson, captureApiCall, isRecord, redactEvidenceSecrets, type EvidenceResult } from './evidence-capture';
 import { authHeaders, login, tokenClaims } from './auth';
 import { reviewed } from './pq-runner';
 import { OQ_SUITES, TA3_OQ_SUITES, oqSuiteCaseIds } from '../config/oq-case-registry';
@@ -135,20 +135,53 @@ export function armGroupedContent(document: unknown): string[] {
   const walk = (value: unknown, at: string, parentKey: string) => {
     if (Array.isArray(value)) { value.forEach((item, index) => walk(item, `${at}[${index}]`, parentKey)); return; }
     if (!isRecord(value)) return;
-    if (value.metric === 'arm-may-proceed-to-first-dosed' && !['withheld', 'unknown'].includes(String(value.status))) {
-      found.push(`${at} (a window ending at per-arm first dosing, status ${String(value.status)})`);
-    }
+    if (isArmWindow(value)) found.push(`${at} (a window ending at per-arm first dosing, status ${String(value.status)})`);
     for (const [key, item] of Object.entries(value)) {
       const where = `${at}.${key}`;
-      if (key === 'byArm' || key === 'allocated') found.push(where);
-      else if (key === 'arm' && item !== null && item !== undefined) found.push(where);
-      else if (key === 'targetReachedAt' && item !== 'withheld') found.push(where);
-      else if (key === 'arms' && parentKey === 'firstDosed' && item !== 'withheld') found.push(where);
+      if (isArmGroupedMember(key, item, parentKey)) found.push(where);
       walk(item, where, key);
     }
   };
   walk(document, '$', '');
   return found;
+}
+
+/** A window ending at per-arm first dosing that is not withheld (armGroupedContent). */
+function isArmWindow(value: Record<string, unknown>): boolean {
+  return value.metric === 'arm-may-proceed-to-first-dosed' && !['withheld', 'unknown'].includes(String(value.status));
+}
+
+/** A member whose value armGroupedContent lists as arm-grouped content. */
+function isArmGroupedMember(key: string, item: unknown, parentKey: string): boolean {
+  if (key === 'byArm' || key === 'allocated') return true;
+  if (key === 'arm') return item !== null && item !== undefined;
+  if (key === 'targetReachedAt') return item !== 'withheld';
+  return key === 'arms' && parentKey === 'firstDosed' && item !== 'withheld';
+}
+
+/** Member names that would carry a treatment arm (armMembers, D-25). */
+const isArmMemberName = (key: string): boolean =>
+  /^(arm|arms|armid|armids|armname|treatment|treatmentarm|studygroup|studygroupid|studygroupids)$/i.test(key.replace(/[-_]/g, ''));
+
+/** What replaces arm-grouped content in a retained reply (IR-453). */
+export const ARM_GROUPED_WITHHELD = 'arm-grouped content (D-25)';
+
+/** The copy of a reply that retained evidence keeps (IR-453): every subtree armGroupedContent
+ * or armMembers lists becomes {withheld, sha256}, the SHA-256 of its canonical JSON (null
+ * when canonical JSON refuses it), so an unblinded reply's allocation counts, per-arm
+ * dates and arm members never reach the package while its ids, contentHash and member
+ * names stay. The case itself checks the reply as received; the value is never changed. */
+export function withholdArmGroupedContent(value: unknown, parentKey = ''): unknown {
+  if (Array.isArray(value)) return value.map(item => withholdArmGroupedContent(item, parentKey));
+  if (!isRecord(value)) return value;
+  const withheld = (subtree: unknown) => {
+    let digest: string | null;
+    try { digest = sha256(canonicalJson(subtree, 'Withheld arm-grouped content')); } catch { digest = null; }
+    return { withheld: ARM_GROUPED_WITHHELD, sha256: digest };
+  };
+  if (isArmWindow(value)) return withheld(value);
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+    isArmGroupedMember(key, item, parentKey) || isArmMemberName(key) ? withheld(item) : withholdArmGroupedContent(item, key)]));
 }
 
 /** The required top-level members of edc-ta3-ledger/1 (spec P01 3.2). Once M-2 lands,
@@ -419,7 +452,8 @@ class CaseRun {
       raw.responseBody = digest;
       try { parsed = JSON.parse(bytes.toString('utf8')); } catch { parsed = undefined; }
     }
-    // Retained evidence never holds a credential or a session token.
+    // Retained evidence never holds a credential or a session token, nor arm-grouped content (IR-453, D-25).
+    raw.responseBody = withholdArmGroupedContent(raw.responseBody);
     raw.requestHeaders = { ...raw.requestHeaders, Authorization: '[redacted]' };
     raw.requestBody = redactEvidenceSecrets(raw.requestBody);
     raw.notes = `${session.account}: ${raw.notes}`;
@@ -1571,7 +1605,7 @@ function armMembers(value: unknown, at = '$'): string[] {
   if (Array.isArray(value)) return value.flatMap((item, index) => armMembers(item, `${at}[${index}]`));
   if (!isRecord(value)) return [];
   return Object.entries(value).flatMap(([key, item]) => [
-    ...(/^(arm|arms|armid|armids|armname|treatment|treatmentarm|studygroup|studygroupid|studygroupids)$/i.test(key.replace(/[-_]/g, '')) ? [`${at}.${key}`] : []),
+    ...(isArmMemberName(key) ? [`${at}.${key}`] : []),
     ...armMembers(item, `${at}.${key}`),
   ]);
 }

@@ -6,11 +6,12 @@ import * as path from 'node:path';
 import { ALL_OQ_SUITES, OQ_CASE_IDS } from '../config/oq-case-registry';
 import { TA3_OQ_CASES } from '../config/ta3-oq-cases';
 import {
-  armGroupedContent, refusalCode, retainedDocumentProblems, runTa3Suites, ta3LedgerProblems, TA3_LEDGER_REQUIRED, TA3_OUTCOME, TA3_SUITE_ORDER,
+  ARM_GROUPED_WITHHELD, armGroupedContent, refusalCode, retainedDocumentProblems, runTa3Suites, ta3LedgerProblems, TA3_LEDGER_REQUIRED, TA3_OUTCOME, TA3_SUITE_ORDER,
+  withholdArmGroupedContent,
 } from '../runners/oq-ta3-runner';
 import { loadTa3OqPlan, parseTa3OqPlan, TA3_OQ_PLAN_MEMBERS, TA3_OQ_PLAN_REQUIRED, type Ta3OqPlan } from '../runners/ta3-oq-plan';
 import { configurationMismatches, type DeclaredFlags } from '../runners/target-configuration';
-import { saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
+import { canonicalJson, saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import { fakeClock, startFakeEdc, type FakeEdcOptions, type FakeUser } from './fixtures/ta3-fake-edc';
 import { temporaryDirectory } from './generated-documents';
 import { workspace } from './study-contract-fixtures';
@@ -314,6 +315,57 @@ test('a blinded reader that receives arm-grouped content fails OQ-236', async t 
   assert.deepEqual(outcome(row('OQ-236')), [false, false, null]);
   assert.match(row('OQ-236').notes, /A blinded reader received arm-level content: .*arm-grouped content at \$\.milestones\.derived\.armRecruitment\[0\]\.allocated/);
   assert.match(row('OQ-237').notes, /a blinded reader received arm-grouped content/);
+});
+
+const withheldMarker = (value: unknown) => ({ withheld: ARM_GROUPED_WITHHELD, sha256: sha256(canonicalJson(value, 'test')) });
+
+test('the retained exchanges of an unblinded document withhold its arm-grouped content, and the case still checks the reply (IR-453)', async t => {
+  const { row } = await runAgainst(t, {}, { selection: [17] });
+  for (const id of ['OQ-233', 'OQ-235', 'OQ-236']) assert.equal(row(id).passed, true, `${id}: ${row(id).notes}`);
+  const retained = row('OQ-233').relatedEvidence ?? [], facts = row('OQ-233').responseBody as { id: number; sha256: string };
+  const recorded = retained.filter(exchange => exchange.method === 'POST' && exchange.endpoint.endsWith('/milestone-measurements'));
+  assert.equal(recorded.length, 2, 'the request and its replay');
+  for (const exchange of recorded) {
+    const data = (exchange.responseBody as { data: { measurement: Record<string, unknown>; document: Record<string, any> } }).data;
+    // The record's id, contentHash and armGrouping stay; the document's allocation counts and byArm do not.
+    assert.equal(data.measurement.documentId, facts.id);
+    assert.equal(data.measurement.contentHash, facts.sha256);
+    assert.equal(data.measurement.armGrouping, 'included');
+    assert.equal(data.document.schemaVersion, 'edc-milestone-measurement/1');
+    assert.deepEqual(data.document.byArm, withheldMarker({ 1: { allocated: 3 } }));
+    assert.deepEqual(data.document.milestones.derived.armRecruitment, [{ armId: withheldMarker(1), plannedCount: 5, allocated: withheldMarker(3), targetReachedAt: withheldMarker(null) }]);
+    assert.deepEqual(data.document.milestones.derived.firstDosed.arms, withheldMarker([{ armId: 1, firstDosed: null }]));
+    assert.deepEqual(data.document.intervals, [withheldMarker({ metric: 'arm-may-proceed-to-first-dosed', scope: { studyId: data.document.studyId, armId: 1 }, status: 'measured' })]);
+  }
+  // No retained OQ-233 or OQ-235 exchange holds an allocation count or a byArm value.
+  for (const id of ['OQ-233', 'OQ-235']) {
+    const walk = (value: unknown): void => {
+      if (Array.isArray(value)) { value.forEach(walk); return; }
+      if (!value || typeof value !== 'object') return;
+      for (const [key, item] of Object.entries(value)) {
+        if (key === 'allocated' || key === 'byArm') assert.equal((item as { withheld?: unknown }).withheld, ARM_GROUPED_WITHHELD, `${id}: ${key}`);
+        else walk(item);
+      }
+    };
+    walk((row(id).relatedEvidence ?? []).map(exchange => exchange.responseBody));
+    assert.doesNotMatch(JSON.stringify(row(id).relatedEvidence), /"allocated":3/);
+  }
+});
+
+test('withholdArmGroupedContent replaces exactly the subtrees the arm checks list and leaves the reply unchanged', () => {
+  const reply = { success: true, data: { measurement: { documentId: 4, contentHash: 'c'.repeat(64), armGrouping: 'included' },
+    document: { studyId: 1, latency: { byArm: { 2: { p50: 3 } } }, deviation: { deviationId: 9, treatmentArm: 'A' }, arm: null,
+      windows: [{ metric: 'arm-may-proceed-to-first-dosed', status: 'withheld' }, { metric: 'arm-may-proceed-to-first-dosed', status: 'closed' }] } } };
+  const before = JSON.stringify(reply);
+  const copy = withholdArmGroupedContent(reply) as typeof reply & { data: { document: Record<string, unknown> } };
+  assert.equal(JSON.stringify(reply), before, 'the reply the case checks is not changed');
+  assert.deepEqual(copy.data.measurement, reply.data.measurement);
+  assert.deepEqual(copy.data.document, { studyId: 1, latency: { byArm: withheldMarker({ 2: { p50: 3 } }) }, deviation: { deviationId: 9, treatmentArm: withheldMarker('A') },
+    arm: withheldMarker(null), windows: [{ metric: 'arm-may-proceed-to-first-dosed', status: 'withheld' }, withheldMarker({ metric: 'arm-may-proceed-to-first-dosed', status: 'closed' })] });
+  assert.deepEqual(armGroupedContent(copy).filter(at => !/\.(byArm|arm)$/.test(at)), [], 'only the member names stay');
+  for (const value of [null, 'text', 7, [1, 2]]) assert.deepEqual(withholdArmGroupedContent(value), value);
+  // A subtree canonical JSON refuses is still withheld, without a hash.
+  assert.deepEqual(withholdArmGroupedContent({ allocated: 2 ** 60 }), { allocated: { withheld: ARM_GROUPED_WITHHELD, sha256: null } });
 });
 
 test('without a plan every TA3 case records NO_TA3_PLAN and no request is made', async t => {
