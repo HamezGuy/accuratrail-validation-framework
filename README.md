@@ -600,6 +600,10 @@ An interrupted run keeps the cases it completed. The IQ runner after each
 check group, the OQ runner after each of suites 1 to 12 and each TA3 suite,
 and the PQ runner after each step group append their records, redacted and
 stamped as they are saved, to `evidence/<category>/<category>-journal.jsonl`.
+Before its first request the OQ runner journals the cases no execution
+decides (unselected suites, the cases not automated), so a recovered run
+records them as a complete run does. A TA3 suite that finished before a later
+one threw keeps its records in the saved OQ evidence.
 The category's save deletes the journal, so a run that completes writes the
 same files as before. When a runner throws, or the run receives SIGINT or
 SIGTERM, `generate.ts` saves each category that has a journal and no results:

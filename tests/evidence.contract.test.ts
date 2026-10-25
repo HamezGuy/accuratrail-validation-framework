@@ -12,7 +12,7 @@ import {
 import { createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
 import { currentReleaseIdentity, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { IQ_CASE_IDS, run as runIq } from '../runners/iq-runner';
-import { OQ_CASE_IDS } from '../config/oq-case-registry';
+import { OQ_CASE_IDS, OQ_NOT_AUTOMATED, oqSuiteOf } from '../config/oq-case-registry';
 import { commitCheckout, temporaryCheckout } from './generated-documents';
 import { loadRunnerEvidence, tryLoadEvidence } from '../generators/helpers/evidence-linker';
 import { generate as generateExecutionRecords } from '../generators/20-test-execution-records';
@@ -715,19 +715,73 @@ test('the PQ runner journals each step group before the next one starts, and a c
 
 test('the OQ runner journals each TA3 suite as it completes, and keeps them when the TA3 run then throws (IR-166)', async t => {
   const ta3 = require('../runners/oq-ta3-runner');
-  const output = workspace(t);
+  const output = workspace(t), copy = workspace(t);
   const journal = caseJournalPath(output, 'oq');
   let journaledBeforeThrow: string[] = [];
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('No request may be made'); });
+  const suite13 = [result({ testCaseId: 'OQ-206', notes: 'Synthetic suite 13 case' }),
+    result({ testCaseId: 'OQ-TA3-SUITE-13', notes: 'Synthetic suite 13 session row', responseBody: { owned: ['synthetic-record'] } })];
+  const suite14 = [result({ testCaseId: 'OQ-215', notes: 'Synthetic suite 14 case' }), result({ testCaseId: 'OQ-TA3-SUITE-14', notes: 'Synthetic suite 14 session row' })];
   t.mock.method(ta3, 'runTa3Suites', async (_url: string, _plan: unknown, _selection: number[], options: { onSuiteComplete?: (rows: EvidenceResult[]) => void }) => {
-    options.onSuiteComplete?.([result({ testCaseId: 'OQ-206' }), result({ testCaseId: 'OQ-TA3-SUITE-13' })]);
-    options.onSuiteComplete?.([result({ testCaseId: 'OQ-212' }), result({ testCaseId: 'OQ-TA3-SUITE-14' })]);
+    options.onSuiteComplete?.(suite13);
+    options.onSuiteComplete?.(suite14);
     journaledBeforeThrow = journalLines(journal).map(line => line.record.testCaseId);
+    fs.mkdirSync(path.dirname(caseJournalPath(copy, 'oq')), { recursive: true });
+    fs.copyFileSync(journal, caseJournalPath(copy, 'oq'));
+    // A later suite's session.open throws outside the per-suite try.
     throw new Error('Synthetic TA3 interruption');
   });
   const results: EvidenceResult[] = await runOq(output, 'http://127.0.0.1:9', undefined, [], { suites: { base: false, ta3: [13, 14] } });
-  assert.deepEqual(journaledBeforeThrow, ['OQ-206', 'OQ-TA3-SUITE-13', 'OQ-212', 'OQ-TA3-SUITE-14']);
-  // An uninterrupted runner saves as before (the stopped TA3 records) and spends the journal.
-  assert.equal(results.find(row => row.testCaseId === 'OQ-206')!.outcomeCode, 'PREREQUISITE_MISSING');
+  const suiteOf = (id: string) => oqSuiteOf(id)?.suite;
+  const baseIds = OQ_CASE_IDS.filter(id => suiteOf(id)! <= 12);
+  const unselectedTa3 = OQ_CASE_IDS.filter(id => [15, 16, 17, 18].includes(suiteOf(id)!));
+  // Before any suite ran, the cases no execution decides were journaled; then each suite as it completed.
+  assert.deepEqual(journaledBeforeThrow, [...baseIds, ...unselectedTa3, 'OQ-206', 'OQ-TA3-SUITE-13', 'OQ-215', 'OQ-TA3-SUITE-14']);
+  // The finished suites' rows are kept; only the cases no suite recorded are not executed.
+  const byCase = new Map(results.map(row => [row.testCaseId, row]));
+  for (const row of [...suite13, ...suite14]) assert.deepEqual(byCase.get(row.testCaseId), row, row.testCaseId);
+  for (const id of OQ_CASE_IDS.filter(id => [13, 14].includes(suiteOf(id)!) && !['OQ-206', 'OQ-215'].includes(id))) {
+    assert.equal(byCase.get(id)!.outcomeCode, 'PREREQUISITE_MISSING', id);
+  }
+  assert.equal(byCase.get('OQ-TA3-EXECUTION')!.passed, false);
+  const saved = new Map(loadEvidence(output, 'oq').map(row => [row.testCaseId, row]));
+  assert.deepEqual([saved.get('OQ-206')!.notes, saved.get('OQ-206')!.outcomeCode, saved.get('OQ-TA3-SUITE-13')!.responseBody],
+    ['Synthetic suite 13 case', undefined, { owned: ['synthetic-record'] }]);
+  assert.equal(saved.get('OQ-215')!.notes, 'Synthetic suite 14 case');
+  assert.equal(fs.existsSync(journal), false);
+  // Had the run been interrupted there, recovery keeps the complete run's outcome for the cases that were never to run.
+  const recovered = new Map(recoverFromJournal(copy, 'oq', OQ_CASE_IDS, 'a synthetic interruption')!.map(row => [row.testCaseId, row]));
+  for (const id of [...baseIds, ...unselectedTa3]) assert.equal(recovered.get(id)!.outcomeCode, 'OQ_SUITE_NOT_SELECTED', id);
+  assert.equal(recovered.get('OQ-207')!.outcomeCode, RUN_INTERRUPTED);
+  assert.equal(recovered.get('OQ-206')!.notes, 'Synthetic suite 13 case');
+});
+
+test('the OQ runner journals each base suite as it completes, after the cases not automated (IR-166)', async t => {
+  const auth = require('../runners/auth');
+  const names = ['OQ_USERNAME', 'OQ_PASSWORD'] as const;
+  const savedEnv = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, index) => { if (savedEnv[index] === undefined) delete process.env[name]; else process.env[name] = savedEnv[index]; }));
+  Object.assign(process.env, { OQ_USERNAME: 'synthetic-oq-operator', OQ_PASSWORD: 'synthetic-oq-secret' });
+  const output = workspace(t);
+  const journal = caseJournalPath(output, 'oq');
+  t.mock.method(auth, 'login', async (_url: string, _username: string, _password: string, testCaseId = 'OQ-LOGIN') =>
+    ({ evidence: result({ testCaseId, endpoint: '/api/auth/login', method: 'POST' }), session: { token: 'synthetic-session', userId: 7, orgId: 8 } }));
+  const atRequest: Array<Set<string>> = [];
+  t.mock.method(globalThis, 'fetch', async () => {
+    atRequest.push(new Set(fs.existsSync(journal) ? journalLines(journal).map(line => line.record.testCaseId) : []));
+    return new Response(JSON.stringify({ success: false }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+  });
+  const results: EvidenceResult[] = await runOq(output, 'http://127.0.0.1:9', undefined, [], { suites: { base: true, ta3: [] } });
+  // The cases a suite recorded (not the registry backfill).
+  const ran = (suite: number) => results.filter(row => oqSuiteOf(row.testCaseId)?.suite === suite && row.notes !== 'This OQ case did not execute.'
+    && !OQ_NOT_AUTOMATED.has(row.testCaseId)).map(row => row.testCaseId);
+  // OQ-008 is the login quota probe, which runs after suites 13 to 18.
+  const [suite1, suite2, suite12] = [ran(1).filter(id => id !== 'OQ-008'), ran(2), ran(12)];
+  assert.ok(suite1.length && suite2.length && suite12.length);
+  // The first request saw only the cases no execution decides: the cases not automated and the unselected TA3 suites.
+  assert.deepEqual([...atRequest[0]].filter(id => oqSuiteOf(id)!.suite <= 12), [...OQ_NOT_AUTOMATED]);
+  // A request during suite 2 saw suite 1 journaled, and one before the run's logout saw suite 12 journaled.
+  assert.ok(atRequest.some(ids => suite1.every(id => ids.has(id)) && !suite2.some(id => ids.has(id))), 'suite 1 journaled before suite 2 ended');
+  assert.ok(atRequest.some(ids => suite12.every(id => ids.has(id)) && !ids.has('OQ-RUN-LOGOUT')), 'suite 12 journaled before the logout');
   assert.equal(fs.existsSync(journal), false);
 });

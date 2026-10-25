@@ -1,7 +1,7 @@
 import { SIGNATURE_MEANINGS } from '@accura-trial/shared-types';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ALL_OQ_SUITES, OQ_CASE_IDS, OQ_NOT_AUTOMATED, type OqSuiteSelection } from '../config/oq-case-registry';
-import { loadTa3OqPlan, runTa3Suites, ta3AccountUsernames, ta3StoppedRecords } from './oq-ta3-runner';
+import { loadTa3OqPlan, runTa3Suites, ta3AccountUsernames, ta3CaseIds, ta3StoppedRecords } from './oq-ta3-runner';
 import { readTargetConfiguration } from './target-configuration';
 /**
  * OQ Runner — Operational Qualification test execution.
@@ -2438,17 +2438,23 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   const allResults: EvidenceResult[] = [];
   // Each base suite's and each TA3 suite's records are journaled as they complete, so an interrupted run keeps them (IR-166).
   const journal = (rows: EvidenceResult[]) => appendCaseJournal(outputDir, 'oq', rows);
+  // First the cases no execution decides (unselected suites, the cases not automated), so an
+  // interruption records them as a complete run does, not as interrupted.
+  const ta3Ids = new Set(ta3CaseIds());
+  journal([...OQ_CASE_IDS.filter(id => !ta3Ids.has(id) && (!selection.base || OQ_NOT_AUTOMATED.has(id))).map(id => backfillRecord(id, selection)),
+    ...ta3StoppedRecords(selection.ta3, 'not selected').filter(row => row.outcomeCode === 'OQ_SUITE_NOT_SELECTED')]);
   if (selection.base) await runBaseSuites(allResults, baseUrl, qualificationFlags, journal);
 
   let ta3Results: EvidenceResult[] = [];
-  const ta3Journaled = new Set<string>();
-  const onSuiteComplete = (rows: EvidenceResult[]) => { journal(rows); for (const row of rows) ta3Journaled.add(row.testCaseId); };
+  // The rows each finished TA3 suite journaled, by case: kept if a later suite throws.
+  const ta3Journaled = new Map<string, EvidenceResult>();
+  const onSuiteComplete = (rows: EvidenceResult[]) => { journal(rows); for (const row of rows) ta3Journaled.set(row.testCaseId, row); };
   try { ta3Results = await runTa3Suites(baseUrl, ta3Plan, selection.ta3, { declaredFlags, onSuiteComplete }); }
   catch (error) {
-    // A last resort (each suite records its own failures): the base suites' evidence is still saved,
-    // and every TA3 case is recorded not executed, naming the exception.
+    // A last resort (each suite records its own failures): the base suites' and the finished TA3 suites'
+    // evidence is still saved, and every other TA3 case is recorded not executed, naming the exception.
     const reason = error instanceof Error ? error.message : String(error);
-    ta3Results = [...ta3StoppedRecords(selection.ta3, reason),
+    ta3Results = [...ta3Journaled.values(), ...ta3StoppedRecords(selection.ta3, reason).filter(row => !ta3Journaled.has(row.testCaseId)),
       { ...manualResult('OQ-TA3-EXECUTION', `Unexpected TA3 suite exception: ${reason}`), method: 'CONTRACT' }];
   }
   allResults.push(...ta3Results);
@@ -2465,10 +2471,7 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   // Every registry case has a result; the OQ protocol lists the same registry.
   for (const testCaseId of OQ_CASE_IDS) {
     if (allResults.some(row => row.testCaseId === testCaseId)) continue;
-    allResults.push(!selection.base
-      ? { ...manualResult(testCaseId, ''), method: 'CONTRACT', outcomeCode: 'OQ_SUITE_NOT_SELECTED',
-        notes: 'Suites 1 to 12 were not selected (--oq-suites); no request was made.' }
-      : { ...manualResult(testCaseId, OQ_NOT_AUTOMATED.has(testCaseId) ? 'This OQ case is not automated; separate execution evidence is required.' : 'This OQ case did not execute.'), method: 'CONTRACT' });
+    allResults.push(backfillRecord(testCaseId, selection));
   }
   allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
 
@@ -2480,6 +2483,14 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   const evidencePath = saveEvidence(outputDir, 'oq', allResults);
   console.log(`  Evidence saved: ${evidencePath}`);
   return allResults;
+}
+
+/** The record of a registry case no suite recorded. */
+function backfillRecord(testCaseId: string, selection: OqSuiteSelection): EvidenceResult {
+  return !selection.base
+    ? { ...manualResult(testCaseId, ''), method: 'CONTRACT', outcomeCode: 'OQ_SUITE_NOT_SELECTED',
+      notes: 'Suites 1 to 12 were not selected (--oq-suites); no request was made.' }
+    : { ...manualResult(testCaseId, OQ_NOT_AUTOMATED.has(testCaseId) ? 'This OQ case is not automated; separate execution evidence is required.' : 'This OQ case did not execute.'), method: 'CONTRACT' };
 }
 
 /** Suites 1 to 12 under the operator session and, with the synthetic qualification flags, the owned fixture. */
