@@ -4,7 +4,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
 import {
-  commitFiles, declaredDependency, readVendoredArchive, safeParseJson, sha256, withoutBom, workingTreeFiles, type CheckoutFileReader,
+  commitFiles, declaredDependency, readVendoredArchive, safeParseJson, sha256, withoutBom, workingTreeFiles, VENDORED_SELECTOR,
+  type CheckoutFileReader,
 } from './vendored-archive';
 
 /** The release a validation run qualifies. Evidence without it cannot be tied
@@ -188,7 +189,9 @@ function vendoredBuild(root: string, packageName: string, files: CheckoutFileRea
   try { pkg = safeParseJson(withoutBom(files(path.join(root, 'package.json')).toString('utf-8'))); }
   catch { pkg = null; }
   const selector = declaredDependency(pkg, packageName) || null;
-  if (!selector || !selector.startsWith('file:')) {
+  // Only file:vendor/<archive>.tgz names a vendored archive; file:../shared-types or a nested
+  // vendor/ path names none, and is recorded as its selector alone.
+  if (!selector || !VENDORED_SELECTOR.test(selector)) {
     return { selector, archive: null, archiveSha256: null, receiptSha256: NO_RECEIPT, receipt: null };
   }
   const vendored = readVendoredArchive(root, packageName, selector, files);
@@ -467,4 +470,40 @@ export function contractBuildRows(identity: ReleaseIdentity | undefined): Array<
   };
   const texts = [frameworkText, apiText('sharedTypes'), apiText('interop')];
   return labels.map((label, index): [string, string] => [label, texts[index].replace(/[|\s]+/g, ' ').trim()]);
+}
+
+/** The master evidence index's Release Under Test and Contract Builds sections: for each category
+ * under `evidenceBase` that holds its summary, the release identity it recorded (release-identity.json)
+ * and the contract builds that identity names, outside its identity hash (IR-272). A category with no
+ * identity reads "not recorded", and one whose identity cannot be read reads "unreadable". */
+export function releaseIndexSections(evidenceBase: string, categories: readonly string[]): string[] {
+  const lines = ['## Release Under Test', '', '| Category | Release Identity | API | UI | Core | Training |', '| --- | --- | --- | --- | --- | --- |'];
+  const identities = new Set<string>();
+  const buildLines: string[] = [];
+  for (const cat of categories) {
+    const identityPath = path.join(evidenceBase, cat, 'release-identity.json');
+    if (!fs.existsSync(path.join(evidenceBase, cat, `${cat}-summary.json`))) continue;
+    if (!fs.existsSync(identityPath)) {
+      lines.push(`| ${cat.toUpperCase()} | not recorded | | | | |`);
+      buildLines.push(`| ${cat.toUpperCase()} | not recorded | | |`);
+      continue;
+    }
+    try {
+      // Version 1 or 2; a version 1 identity's training cell reads "not recorded".
+      const identity = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as ReleaseIdentity;
+      const cells = releaseIndexCells(identity);
+      const builds = contractBuildRows(identity).map(([, text]) => text);
+      identities.add(identity.identityHash);
+      lines.push(`| ${cat.toUpperCase()} | ${cells.join(' | ')} |`);
+      buildLines.push(`| ${cat.toUpperCase()} | ${builds.join(' | ')} |`);
+    } catch {
+      lines.push(`| ${cat.toUpperCase()} | unreadable | | | | |`);
+      buildLines.push(`| ${cat.toUpperCase()} | unreadable | | |`);
+    }
+  }
+  if (identities.size > 1) {
+    lines.push('', '**The categories above were produced against different releases; they do not qualify one release together.**');
+  }
+  return [...lines, '', '## Contract Builds', '', `| Category | ${contractBuildRows(undefined).map(([label]) => label).join(' | ')} |`,
+    '| --- | --- | --- | --- |', ...buildLines];
 }

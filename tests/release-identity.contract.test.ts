@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { loadEvidence, saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import {
   contractBuildRows, frameworkCommit, frameworkSharedTypes, frameworkState, isReleaseStamp, observeTargetVersion, parseReleaseComponent,
-  releaseIdentityFromInputs, releaseIndexCells, releaseStamp, releaseSummary, requireInstalledSharedTypes, requireTrainingRelease,
+  releaseIdentityFromInputs, releaseIndexCells, releaseIndexSections, releaseStamp, releaseSummary, requireInstalledSharedTypes, requireTrainingRelease,
   setReleaseIdentity, NO_RECEIPT, RELEASE_CONTRACT_V2, type ReleaseIdentity,
 } from '../runners/release-identity';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
@@ -321,6 +321,33 @@ test('the API contract builds are read at the --release-api commit, never at the
     `${first.interop} (archive SHA-256 ${sha256(first.files[first.interop])}; no receipt) at API commit ${released}`);
 });
 
+/** A synthetic package.json at an API commit naming shared types from a sibling folder and interop
+ * from a nested vendor/ path: neither names a vendored archive (VENDORED_SELECTOR). */
+const NON_VENDORED_FILES: Record<string, string> = {
+  'package.json': JSON.stringify({ name: 'synthetic', dependencies: {
+    '@accura-trial/shared-types': 'file:../shared-types', '@accura-trial/interop-middleware': 'file:vendor/sub/x.tgz' } }),
+  'vendor/sub/x.tgz': 'synthetic nested interop archive\n',
+};
+
+test('a file: selector that is not file:vendor/<archive>.tgz records no archive, at the API commit and in the framework', t => {
+  const api = temporaryDirectory(t, 'accura-api-non-vendored-');
+  commitCheckout(api, NON_VENDORED_FILES);
+  const commit = frameworkCommit(api).commit!;
+  const identity = releaseIdentityFromInputs({ api: commit, ui: UI, core: CORE }, { apiCheckout: api });
+  assert.deepEqual(identity.apiContracts, {
+    status: 'resolved', commit,
+    sharedTypes: { selector: 'file:../shared-types', archive: null, archiveSha256: null, receiptSha256: NO_RECEIPT },
+    interop: { selector: 'file:vendor/sub/x.tgz', archive: null, archiveSha256: null, receiptSha256: NO_RECEIPT },
+  });
+  const rows = new Map(contractBuildRows(identity));
+  assert.equal(rows.get('API shared types'), `file:../shared-types (not a vendored archive) at API commit ${commit}`);
+  assert.equal(rows.get('API interop'), `file:vendor/sub/x.tgz (not a vendored archive) at API commit ${commit}`);
+  // The framework's own build reads the same way, and a live run refuses it: there is no receipt to match.
+  const framework = frameworkSharedTypes(api)!;
+  assert.deepEqual([framework.archive, framework.archiveSha256, framework.receiptManifestSha256], [null, null, null]);
+  assert.throws(() => requireInstalledSharedTypes(framework), /is not the vendored build file:\.\.\/shared-types: /);
+});
+
 test('an absent commit, an image ID or a folder git does not read as its own records the API builds not resolved, with the hash unchanged', t => {
   const api = temporaryDirectory(t, 'accura-api-unresolved-');
   commitCheckout(api, vendoredCheckout('3333333333333333').files);
@@ -382,6 +409,32 @@ test('the framework records its shared-types build and installed build outside t
   const pinned = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).dependencies['@accura-trial/shared-types'];
   assert.equal(identity.framework.sharedTypes?.selector, pinned);
   assert.equal(identity.identityHash, V1_HASH);
+});
+
+test('the master evidence index names the release and contract builds of each category, or not recorded or unreadable (IR-272)', t => {
+  const evidence = temporaryDirectory(t, 'accura-master-index-');
+  const write = (file: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(evidence, file)), { recursive: true });
+    fs.writeFileSync(path.join(evidence, file), text);
+  };
+  // IQ recorded its identity before IR-272: no shared-types build and no API contract builds.
+  const { sharedTypes: _sharedTypes, ...framework } = releaseIdentityFromInputs({ api: API, ui: UI, core: CORE }).framework;
+  write('iq/iq-summary.json', '{}');
+  write('iq/release-identity.json', JSON.stringify({ ...releaseIdentityFromInputs({ api: API, ui: UI, core: CORE }), framework }));
+  write('oq/oq-summary.json', '{}');
+  write('pq/pq-summary.json', '{}');
+  write('pq/release-identity.json', '{');
+  // A category without its summary is left out of both tables.
+  write('dr/release-identity.json', '{');
+  const lines = releaseIndexSections(evidence, ['iq', 'oq', 'pq', 'security', 'dr']);
+  const builds = lines.slice(lines.indexOf('## Contract Builds'));
+  assert.deepEqual(builds, ['## Contract Builds', '',
+    '| Category | Framework shared types | API shared types | API interop |', '| --- | --- | --- | --- |',
+    '| IQ | not recorded | not recorded | not recorded |', '| OQ | not recorded | | |', '| PQ | unreadable | | |']);
+  for (const row of builds.slice(2)) assert.equal(row.split('|').length - 2, 4, row);
+  assert.deepEqual(lines.slice(0, lines.indexOf('## Contract Builds')), ['## Release Under Test', '',
+    '| Category | Release Identity | API | UI | Core | Training |', '| --- | --- | --- | --- | --- | --- |',
+    `| IQ | ${V1_HASH} | ${API} | ${UI} | ${CORE} | not recorded |`, '| OQ | not recorded | | | | |', '| PQ | unreadable | | | | |', '']);
 });
 
 test('the validation summary and the execution records name the contract builds of the release identity (IR-272)', t => {

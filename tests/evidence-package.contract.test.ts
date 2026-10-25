@@ -14,7 +14,7 @@ import {
   MANIFEST_OPTIONAL, MANIFEST_REQUIRED, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED,
   type PackageOptions,
 } from '../runners/evidence-package';
-import { frameworkSharedTypes, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
+import { frameworkCommit, frameworkSharedTypes, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
 import {
@@ -835,4 +835,24 @@ test('the manifest records the contract builds of the framework and the API rele
   assert.match(rewriteManifest(dir, () => ({ ...manifest, framework: { ...manifest.framework, installed: true } })),
     /framework has unknown member installed/);
   assert.equal(rewriteManifest(dir, () => manifest), '');
+});
+
+test('a package sealed with API builds that name no vendored archive verifies (IR-272)', t => {
+  const { home } = markedRoot(t);
+  // At this API commit package.json names shared types from a sibling folder and interop from a nested vendor/ path.
+  const api = temporaryDirectory(t, 'accura-package-api-non-vendored-');
+  commitCheckout(api, {
+    'package.json': JSON.stringify({ dependencies: {
+      '@accura-trial/shared-types': 'file:../shared-types', '@accura-trial/interop-middleware': 'file:vendor/sub/x.tgz' } }),
+    'vendor/sub/x.tgz': 'synthetic nested interop archive\n',
+  });
+  const commit = frameworkCommit(api).commit!;
+  t.after(() => setReleaseIdentity(undefined));
+  setReleaseIdentity(releaseIdentityFromInputs({ api: commit, ui: 'none', core: 'none', training: 'none' }, { apiCheckout: api }));
+  const evidencePackage = createPackage(syntheticPackage(home));
+  saveEvidence(evidencePackage.dir, 'iq', [record('IQ-001')]);
+  const manifest = JSON.parse(fs.readFileSync(sealPackage(evidencePackage).manifestPath, 'utf8'));
+  assert.equal(manifest.releaseUnderTest.apiContracts.status, 'resolved');
+  assert.deepEqual([manifest.releaseUnderTest.apiContracts.sharedTypes.archive, manifest.releaseUnderTest.apiContracts.interop.archive], [null, null]);
+  assert.deepEqual(verifyPackage(evidencePackage.dir).problems, []);
 });
