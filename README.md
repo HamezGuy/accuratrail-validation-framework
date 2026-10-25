@@ -88,6 +88,18 @@ every record carries `synthetic: true`, each category summary carries the
 synthetic notice and every document opens with "SYNTHETIC ENGINEERING EVIDENCE.
 Synthetic data on a test stack. Not a real trial, not an approval."
 
+`--executor <name>` names the person running the CLI (1 to 200 printable
+characters, not starting or ending with a space). It is not the account the
+runners sign in with (`OQ_USERNAME`). When given, every record carries
+`executedBy` with the name, each category summary and execution report shows
+it, documents 19 and 20 print it (otherwise "not recorded"), and a package's
+`package-manifest.json` gains `executor` with the name and the operating system
+account the run was started from; `npm run verify:package` refuses a package
+whose records name anyone else. Without it nothing changes, except that an
+executed package that is not synthetic is refused, as is a documents run
+without `--retain-root` that names one. It is attribution only: nothing is
+signed for the person.
+
 Inputs are copied byte for byte into `inputs/<role>.json` with their SHA-256
 and original path: `--p13-plan` (`p13-plan`), `--training-evidence`
 (`training-evidence`), `--target-config` (`target-configuration`, read strictly

@@ -1254,7 +1254,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     ['Screenshots/recordings', 'PNG/MP4 (where applicable)', '15 years', 'validation-framework/evidence/'],
     ['API response captures', 'JSON response bodies with timestamps', '15 years', 'validation-framework/evidence/'],
     ['Error logs (if failure)', 'Full stack trace and system state', '15 years', 'validation-framework/evidence/'],
-    ['Tester identity', 'Authenticated user who executed test', '15 years', 'validation-framework/output/20-test-execution-records.md'],
+    ['Tester identity', 'The person who ran the CLI (--executor), on every record as executedBy and in the package manifest as executor (attribution only, not a signature)', '15 years', 'evidence/<category>/<category>-results.json and package-manifest.json of the retained package'],
     ['Reviewer approval', 'E-signature or documented review', '15 years', 'validation-framework/output/20-test-execution-records.md'],
   ]);
   c += '\n';

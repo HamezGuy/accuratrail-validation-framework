@@ -6,6 +6,7 @@ import { e6r3 } from '../config/regulatory-scope';
 import {
   loadRunnerEvidence, mappedCaseState, runnerCaseCheck, type MappedCaseState, type RunnerResult,
 } from './helpers/evidence-linker';
+import { executorText } from '../runners/evidence-capture';
 import { documentHeader, markdownTable, section, approvalBlock, tableOfContents, hr, riskBadge } from './helpers/markdown-writer';
 
 /** A planned assurance activity. It cites runner cases only where the case's actual
@@ -1083,6 +1084,12 @@ function testDate(rows: RunnerResult[]): string {
   return `${first === last ? first : `${first} to ${last}`} (UTC, from retained evidence timestamps)`;
 }
 
+/** Who executed the mapped records: the run's --executor on each record (IR-090), or not recorded. */
+function testedBy(rows: RunnerResult[]): string {
+  const executor = executorText(rows);
+  return executor === 'not recorded' ? 'Not recorded in retained evidence' : `${executor} (attribution only, not a signature)`;
+}
+
 function observedOrigin(endpoint: string): string | undefined {
   try {
     const url = new URL(endpoint);
@@ -1150,7 +1157,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += 'actual executed check, shown beside it, verifies the feature\'s stated control; an activity without such a case ';
   content += `is listed as "${GAP_STATUS}". Status, test date and test environment come only from the retained evidence in `;
   content += 'this output directory (`evidence/<category>/<category>-results.json`): an absent result is reported as not ';
-  content += 'executed, a manual-verification record never counts as a pass, and the evidence records no tester identity. ';
+  content += 'executed, a manual-verification record never counts as a pass, and Tested By is the person the run\'s --executor ';
+  content += 'named on each record (executedBy; attribution only, not a signature), or not recorded when the run named none. ';
   content += 'Each conclusion is derived from the mapped evidence; acceptance and approval require the signature blocks.\n\n';
   content += hr();
 
@@ -1218,7 +1226,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     content += markdownTable(
       ['Field', 'Value'],
       [
-        ['Tested By', 'Not recorded in retained evidence'],
+        ['Tested By', testedBy(rows)],
         ['Test Date', testDate(rows)],
         ['Test Environment', testEnvironment(rows)],
         ['Approved By', 'Recorded in the eTMF with the package approval (see Approval Signatures)'],

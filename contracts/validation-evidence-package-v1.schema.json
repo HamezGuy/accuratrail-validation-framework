@@ -56,6 +56,7 @@
       "description": "Present exactly when the package is synthetic. Every record of a synthetic package carries synthetic: true and every document opens with this notice.",
       "const": "SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval."
     },
+    "executor": { "$ref": "#/definitions/executor" },
     "framework": { "$ref": "#/definitions/framework" },
     "releaseUnderTest": {
       "description": "The release identity the run recorded (validation-release-identity/1 or /2), or null.",
@@ -107,6 +108,16 @@
       "properties": {
         "commit": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{40}$" }] },
         "dirty": { "description": "Whether tracked files differed from the commit.", "type": ["boolean", "null"] }
+      }
+    },
+    "executor": {
+      "description": "The person who ran the CLI (generate.ts --executor), present only when the run named one; required for an executed package that is not synthetic. Every evidence record of the package then carries executedBy equal to name. Attribution only: the package carries no signature.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "osAccount"],
+      "properties": {
+        "name": { "description": "1 to 200 printable characters, not starting or ending with a space. Not the account the runners sign in with.", "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^\\S(.*\\S)?$" },
+        "osAccount": { "description": "The operating system account the run was started from (os.userInfo), or null when it cannot be read.", "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }] }
       }
     },
     "releaseIdentity": {

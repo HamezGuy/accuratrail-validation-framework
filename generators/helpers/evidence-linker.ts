@@ -1,11 +1,13 @@
 import { EVIDENCE_CATEGORIES, loadEvidence, type EvidenceCategory, type EvidenceResult } from '../../runners/evidence-capture';
 
 /** The saved evidence fields generators read. Every value is the one `saveEvidence`
- * wrote; no tester identity or environment name exists in the evidence, so
- * generators must leave those unknown. `method === 'MANUAL'` marks a manual
- * verification row, which the evidence contract never lets pass. */
+ * wrote. Who executed a record is `executedBy`, the person the run's --executor named
+ * (IR-090), kept on each record in `${category}-results.json` and in the package
+ * manifest's `executor`; a record without it is "not recorded". No environment name
+ * exists in the evidence, so generators leave it unknown. `method === 'MANUAL'` marks
+ * a manual verification row, which the evidence contract never lets pass. */
 export type RunnerResult = Pick<EvidenceResult,
-  'testCaseId' | 'passed' | 'notes' | 'timestamp' | 'method' | 'endpoint' | 'testDescription' | 'captureError' | 'outcomeCode'>;
+  'testCaseId' | 'passed' | 'notes' | 'timestamp' | 'method' | 'endpoint' | 'testDescription' | 'captureError' | 'outcomeCode' | 'executedBy'>;
 
 /** Every runner result keyed by test case ID, read from each category's
  * `${category}-results.json` as written by `saveEvidence`. */

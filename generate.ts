@@ -8,7 +8,7 @@ import {
 } from './runners/release-identity';
 import { approvalBlock, masterEvidenceIndexHeader, registryCasesText } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
+  benchmarkRunInputs, checkExecutorName, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
   sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
 import { ALL_OQ_SUITES, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
@@ -40,6 +40,9 @@ interface CliArgs {
   noRetain: boolean;
   /** Retain a package from a dirty or unreadable framework checkout, marked not a run of record. */
   allowDirtyFramework: boolean;
+  /** `--executor`: the person running the CLI, recorded on every record and in the package manifest
+   * (IR-090); not the account the runners sign in with (OQ_USERNAME). Attribution only (D-21). */
+  executor?: string;
   /** The validation-target-configuration/1 declaration of the live runners' target (IQ-033). */
   targetConfig?: string;
   /** The ta3-oq-plan/1 the OQ suites 13 to 18 run from. */
@@ -177,6 +180,12 @@ function parseArgs(): CliArgs {
       case '--allow-dirty-framework':
         args.allowDirtyFramework = true;
         break;
+      case '--executor': {
+        const value = argv[++i];
+        if (value === undefined || value.startsWith('--')) throw new Error('--executor requires the name of the person running the CLI');
+        args.executor = checkExecutorName(value);
+        break;
+      }
       default:
         console.warn(`  [WARN] Unknown argument: ${arg}`);
     }
@@ -389,6 +398,7 @@ async function main(): Promise<void> {
     const evidencePackage = createPackage({
       retainRoot: args.retainRoot, version, executed, syntheticBasis: basis, inputs: packageInputs(args),
       ...(args.allowDirtyFramework ? { allowDirtyFramework: true } : {}),
+      ...(args.executor !== undefined ? { executor: args.executor } : {}),
     });
     try {
       await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage });
@@ -400,7 +410,12 @@ async function main(): Promise<void> {
   }
   // Scratch that summarises synthetic evidence says so, and that it is not retained (D-22).
   const notRetained = args.noRetain || executed || platformEvidenceSynthetic;
-  if (notRetained) markDevelopmentRun(basis.length > 0);
+  // Plain documents scratch carries no record and no marking, so it has nowhere to name an executor.
+  if (args.executor !== undefined && !notRetained) {
+    throw new Error('--executor names the person who ran a run, on its records and package manifest; a documents run without '
+      + '--retain-root records neither.');
+  }
+  if (notRetained) markDevelopmentRun(basis.length > 0, args.executor);
   // Every scratch run writes into a new folder of its own, with a scratch TMF-FILING.md (IR-034, RF-013).
   const scratch = createScratchRun({ outputRoot: path.join(__dirname, 'output'), version });
   await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' });
@@ -446,6 +461,10 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
   }
   if (args.releaseIdentity) {
     console.log(`Release under test: ${releaseSummary(args.releaseIdentity)} (${args.releaseIdentity.identityHash.slice(0, 12)})`);
+  }
+  if (args.executor !== undefined) {
+    const account = retention.kind === 'package' ? retention.evidencePackage.executor?.osAccount : undefined;
+    console.log(`Executor: ${args.executor}${account ? ` (OS account ${account})` : ''}; attribution only, nothing is signed`);
   }
   if (retention.kind === 'package') {
     console.log(`Retention: sealed evidence package${retention.evidencePackage.synthetic ? ' (synthetic engineering evidence)' : ''}`);

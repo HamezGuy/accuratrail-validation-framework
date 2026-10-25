@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  canonicalJson, currentEvidenceMarking, loadEvidence, saveEvidence, setEvidenceMarking,
+  canonicalJson, checkExecutorName, currentEvidenceMarking, executorText, loadEvidence, saveEvidence, setEvidenceMarking,
   DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceResult,
 } from '../runners/evidence-capture';
 import {
@@ -657,4 +658,119 @@ test('verification recomputes the configuration mismatches and binds the benchma
   assert.equal(bench('bench-same', sha256(summary)), '');
   assert.match(bench('bench-other', 'f'.repeat(64)),
     new RegExp(`benchmark record BENCHMARK-RECONSTRUCTION states summarySha256 f{64}, not the retained benchmark-run-summary input ${sha256(summary)}`));
+});
+
+/** Rewrites package-manifest.json with `change` applied and its package hash recomputed; returns the verification problems. */
+function rewriteManifest(dir: string, change: (manifest: Record<string, unknown>) => Record<string, unknown>): string {
+  const manifestPath = path.join(dir, MANIFEST_FILE);
+  const { packageHash: _hash, ...body } = change(JSON.parse(fs.readFileSync(manifestPath, 'utf8')));
+  fs.chmodSync(manifestPath, 0o644);
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...body, packageHash: manifestHash(body) }));
+  return verifyPackage(dir).problems.join('\n');
+}
+
+const OS_ACCOUNT = (() => { try { return os.userInfo().username; } catch { return null; } })();
+
+test('an executor name is 1 to 200 printable characters with no space at either end (IR-090)', () => {
+  for (const name of ['Synthetic Tester', 'Zoë Ó\'Brien-Ñúñez', 'x', 'a'.repeat(200), 'Tester | QA']) assert.equal(checkExecutorName(name), name);
+  for (const name of ['', ' ', ' Tester', 'Tester ', 'Line\nbreak', 'Bell\u0007', 'Tab\tbed', 'Zero\u200bwidth', 'a'.repeat(201), 42, null]) {
+    assert.throws(() => checkExecutorName(name), /--executor names the person who ran the run: 1 to 200 printable characters/, JSON.stringify(name));
+  }
+  assert.equal(executorText([]), 'not recorded');
+  assert.equal(executorText([{}, {}]), 'not recorded');
+  assert.equal(executorText([{ executedBy: 'Synthetic Tester' }, { executedBy: 'Synthetic Tester' }]), 'Synthetic Tester');
+  assert.equal(executorText([{ executedBy: 'Synthetic Tester' }, {}]), 'Synthetic Tester; 1 record(s) name no executor');
+});
+
+test('the executor is recorded in the manifest and on every record, and a record naming anyone else is refused (IR-090)', t => {
+  const { home } = markedRoot(t);
+  const evidencePackage = createPackage(syntheticPackage(home, { executor: 'Synthetic Tester' }));
+  assert.deepEqual(evidencePackage.executor, { name: 'Synthetic Tester', osAccount: OS_ACCOUNT });
+  assert.deepEqual(currentEvidenceMarking(), { synthetic: true, retained: true, executor: 'Synthetic Tester' });
+  // A record claiming another executor is refused before anything of its category is written.
+  assert.throws(() => saveEvidence(evidencePackage.dir, 'pq', [record('PQ-001', { executedBy: 'Someone Else' })]),
+    /Evidence PQ-001 names the executor "Someone Else", but this run was run by "Synthetic Tester"/);
+  assert.equal(fs.existsSync(path.join(evidencePackage.dir, 'evidence', 'pq')), false);
+  saveEvidence(evidencePackage.dir, 'iq', [record('IQ-001'), record('IQ-002', { executedBy: 'Synthetic Tester' })]);
+  assert.deepEqual(loadEvidence(evidencePackage.dir, 'iq').map(result => result.executedBy), ['Synthetic Tester', 'Synthetic Tester']);
+  assert.equal(JSON.parse(read(evidencePackage.dir, 'evidence/iq/IQ-001.json')).executedBy, 'Synthetic Tester');
+  assert.equal(JSON.parse(read(evidencePackage.dir, 'evidence/iq/iq-summary.json')).executedBy, 'Synthetic Tester');
+  assert.match(read(evidencePackage.dir, 'evidence/iq/iq-execution-report.md'), /^\| Executed By \| Synthetic Tester \(attribution only, not a signature\) \|$/m);
+  const sealed = sealPackage(evidencePackage);
+  const manifest = JSON.parse(fs.readFileSync(sealed.manifestPath, 'utf8'));
+  assert.deepEqual(manifest.executor, { name: 'Synthetic Tester', osAccount: OS_ACCOUNT });
+  assert.deepEqual(Object.keys(manifest), [...MANIFEST_REQUIRED.slice(0, 8), 'syntheticNotice', 'executor', ...MANIFEST_REQUIRED.slice(8)]);
+  assert.deepEqual(verifyPackage(evidencePackage.dir).problems, []);
+  assert.equal(verifyPackage(evidencePackage.dir).manifest?.executor?.name, 'Synthetic Tester');
+
+  // Verification requires every record's executedBy to equal the manifest's executor.
+  const dir = evidencePackage.dir;
+  assert.match(rewriteManifest(dir, value => ({ ...value, executor: { name: 'Someone Else', osAccount: OS_ACCOUNT } })),
+    /evidence category iq has records whose executedBy is not the package executor "Someone Else"/);
+  assert.match(rewriteManifest(dir, ({ executor: _executor, ...value }) => value),
+    /evidence category iq has records naming an executor the manifest does not record/);
+  // The manifest member is read strictly.
+  assert.match(rewriteManifest(dir, value => ({ ...value, executor: { name: 'Synthetic Tester' } })), /package-manifest\.json executor lacks osAccount/);
+  assert.match(rewriteManifest(dir, value => ({ ...value, executor: { name: 'Synthetic Tester', osAccount: null, email: 'x' } })),
+    /package-manifest\.json executor has unknown member email/);
+  assert.match(rewriteManifest(dir, value => ({ ...value, executor: { name: ' ', osAccount: null } })),
+    /package-manifest\.json executor\.name names the person who ran the run/);
+  assert.match(rewriteManifest(dir, value => ({ ...value, executor: { name: 'Synthetic Tester', osAccount: '' } })),
+    /package-manifest\.json executor\.osAccount must be text/);
+  assert.equal(rewriteManifest(dir, value => ({ ...value, executor: { name: 'Synthetic Tester', osAccount: null } })), '');
+
+  // A malformed executedBy is refused on write and on read.
+  const loose = temporaryDirectory(t, 'accura-executor-malformed-');
+  setEvidenceMarking(undefined);
+  assert.throws(() => saveEvidence(loose, 'oq', [record('OQ-001', { executedBy: '' })]), /malformed executedBy at index 0/);
+  fs.mkdirSync(path.join(loose, 'evidence', 'oq'), { recursive: true });
+  fs.writeFileSync(path.join(loose, 'evidence', 'oq', 'oq-results.json'), JSON.stringify([record('OQ-001', { executedBy: 'Tab\tbed' })]));
+  assert.throws(() => loadEvidence(loose, 'oq'), /malformed executedBy at index 0/);
+});
+
+test('an executed package that is not synthetic is refused without an executor (IR-090)', t => {
+  const root = temporaryDirectory(t, 'accura-package-qa-');
+  t.after(() => setEvidenceMarking(undefined));
+  fs.writeFileSync(path.join(root, QA_RETENTION_ROOT_MARKER), 'Retention root for a contract test.\n');
+  const options: PackageOptions = { retainRoot: root, version: 'real-v1', executed: true, syntheticBasis: [], frameworkCheckout: FRAMEWORK };
+  assert.throws(() => createPackage(options), /An executed package that is not synthetic names the person running the CLI: pass --executor <name>\./);
+  assert.deepEqual(fs.readdirSync(root), [QA_RETENTION_ROOT_MARKER], 'a refusal creates nothing');
+  assert.equal(currentEvidenceMarking(), undefined, 'and marks nothing');
+  assert.throws(() => createPackage({ ...options, executor: ' ' }), /--executor names the person who ran the run/);
+  const evidencePackage = createPackage({ ...options, executor: 'Synthetic Tester' });
+  saveEvidence(evidencePackage.dir, 'iq', [record('IQ-001')]);
+  sealPackage(evidencePackage);
+  assert.deepEqual(verifyPackage(evidencePackage.dir).problems, []);
+  assert.match(rewriteManifest(evidencePackage.dir, ({ executor: _executor, ...value }) => value),
+    /an executed package that is not synthetic names no executor/);
+});
+
+test('a run that names no executor leaves the manifest, records, summaries and reports as they were (IR-090)', t => {
+  const { home } = markedRoot(t);
+  const evidencePackage = createPackage(syntheticPackage(home));
+  assert.equal('executor' in evidencePackage, false);
+  assert.deepEqual(currentEvidenceMarking(), { synthetic: true, retained: true });
+  saveEvidence(evidencePackage.dir, 'iq', [record('IQ-001')]);
+  assert.deepEqual(Object.keys(loadEvidence(evidencePackage.dir, 'iq')[0]), [...Object.keys(record('IQ-001')), 'synthetic']);
+  assert.deepEqual(Object.keys(JSON.parse(read(evidencePackage.dir, 'evidence/iq/iq-summary.json'))), [
+    'category', 'executedAt', 'executionEnvironment', 'releaseUnderTest', 'total', 'passed', 'failed', 'manual', 'passRate', 'results',
+    'synthetic', 'syntheticNotice',
+  ]);
+  assert.doesNotMatch(read(evidencePackage.dir, 'evidence/iq/iq-execution-report.md'), /Executed By/);
+  const sealed = sealPackage(evidencePackage);
+  const bytes = fs.readFileSync(sealed.manifestPath, 'utf8');
+  const manifest = JSON.parse(bytes);
+  assert.deepEqual(Object.keys(manifest), [...MANIFEST_REQUIRED.slice(0, 8), 'syntheticNotice', ...MANIFEST_REQUIRED.slice(8)]);
+  assert.doesNotMatch(bytes, /executor|executedBy/);
+  // The bytes are the manifest without the member, hashed as before.
+  const { packageHash, ...body } = manifest;
+  assert.equal(bytes, `${JSON.stringify({ ...body, packageHash: manifestHash(body) }, null, 2)}\n`);
+  assert.equal(packageHash, sealed.packageHash);
+  assert.deepEqual(verifyPackage(evidencePackage.dir).problems, []);
+  // A development run naming no executor is marked as before; one naming an executor stamps it.
+  markDevelopmentRun(false);
+  assert.deepEqual(currentEvidenceMarking(), { synthetic: false, retained: false });
+  markDevelopmentRun(false, 'Synthetic Tester');
+  assert.deepEqual(currentEvidenceMarking(), { synthetic: false, retained: false, executor: 'Synthetic Tester' });
+  assert.throws(() => markDevelopmentRun(false, ''), /--executor names the person who ran the run/);
 });

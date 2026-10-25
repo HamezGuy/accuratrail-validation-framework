@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  loadEvidence, saveEvidence, manualResult, captureWithExpectedStatus, captureWithValidator, registryCounts, registryCountsText,
+  loadEvidence, saveEvidence, manualResult, captureWithExpectedStatus, captureWithValidator, registryCounts, registryCountsText, setEvidenceMarking,
   REGISTRY_CASE_ID, type EvidenceResult,
 } from '../runners/evidence-capture';
 import { loadRunnerEvidence, tryLoadEvidence } from '../generators/helpers/evidence-linker';
@@ -357,6 +357,30 @@ test('CSA conclusion for fully passing mapped evidence cites the observed run wi
   assert.match(tableRow(exported, 'Test Date'), /2026-09-21 to 2026-09-22/);
   assert.match(tableRow(exported, 'Test Environment'), /Observed endpoint origin: http:\/\/qualification\.invalid:3100/);
   assert.match(tableRow(exported, 'Tested By'), /Not recorded in retained evidence/);
+});
+
+test('the CSA records and the execution records name the executor the run recorded, or say it is not recorded (IR-090)', t => {
+  const named = workspace(t);
+  t.after(() => setEvidenceMarking(undefined));
+  setEvidenceMarking({ synthetic: true, retained: true, executor: 'Synthetic Tester' });
+  saveEvidence(named, 'oq', [observed('OQ-032'), observed('OQ-193')]);
+  setEvidenceMarking(undefined);
+  assert.match(tableRow(featureRecord(csaRecord(named), 'FEAT-013'), 'Tested By'), /\| Synthetic Tester \(attribution only, not a signature\) \|/);
+  generateExecutionRecords(named, named);
+  const records = fs.readFileSync(path.join(named, '20-test-execution-records.md'), 'utf8');
+  assert.match(records, /- \*\*Executed By:\*\* Synthetic Tester\n/);
+  assert.match(records, /\| Executed By \| Synthetic Tester \(attribution only, not a signature\) \|\n/);
+
+  const unnamed = workspace(t);
+  saveEvidence(unnamed, 'oq', [observed('OQ-032')]);
+  assert.match(csaRecord(unnamed), /Tested By is the person the run's --executor named on each record/);
+  generateExecutionRecords(unnamed, unnamed);
+  const plain = fs.readFileSync(path.join(unnamed, '20-test-execution-records.md'), 'utf8');
+  assert.match(plain, /- \*\*Executed By:\*\* not recorded\n/);
+  assert.match(plain, /\| Executed By \| not recorded \|\n/);
+  generateRegulatoryMap(unnamed, unnamed);
+  const map = fs.readFileSync(path.join(unnamed, '18-regulatory-requirements-map.md'), 'utf8');
+  assert.match(map, /\| Tester identity \| The person who ran the CLI \(--executor\), on every record as executedBy and in the package manifest as executor/);
 });
 
 test('a failed mapped check makes the feature not acceptable and lists the retained failure', t => {

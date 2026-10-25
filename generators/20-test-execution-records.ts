@@ -20,6 +20,7 @@ import { RECORDED_AT_EXECUTION, recordedTargetUrl, systemVersionText } from './h
 import {
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
   executionPeriod,
+  executorText,
   loadEvidence as loadCategoryResults,
   redactEvidenceSecrets,
   registryCounts,
@@ -117,6 +118,7 @@ function renderExecutionRecord(record: EvidenceRecord, category: EvidenceCategor
   block += `| Description | ${(record.testDescription || 'N/A').replace(/\|/g, '\\|')} |\n`;
   block += `| Acceptance Criteria | ${(record.acceptanceCriteria || 'N/A').replace(/\|/g, '\\|')} |\n`;
   block += `| Test Date | ${record.timestamp || 'N/A'} |\n`;
+  block += `| Executed By | ${record.executedBy ? `${record.executedBy.replace(/\|/g, '\\|')} (attribution only, not a signature)` : 'not recorded'} |\n`;
   block += `| Duration | ${formatDuration(record.durationMs)} |\n`;
   block += '\n';
 
@@ -273,6 +275,8 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += `- **Frontend URL:** ${RECORDED_AT_EXECUTION}\n`;
   content += `- **Database:** ${RECORDED_AT_EXECUTION}\n`;
   content += `- **Test Execution Date:** ${period}\n`;
+  // The person the run's --executor named, on every record (IR-090); attribution only, nothing is signed (D-21).
+  content += `- **Executed By:** ${executorText(allRecords)}\n`;
   content += `- **System Version:** ${systemVersionText()}\n\n`;
 
   content += section(3, 'Test Execution Approach');

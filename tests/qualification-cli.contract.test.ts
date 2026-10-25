@@ -365,6 +365,48 @@ test('--retain-root under a marked data root creates, seals and verifies a packa
   assert.deepEqual({ ...manifest.target, observedAt: typeof manifest.target?.observedAt },
     { baseUrl: 'https://qualification.invalid', observedAt: 'string', reportedVersion: null });
   assert.ok(fs.readFileSync(path.join(dir, TMF_FILING_FILE), 'utf8').startsWith(SYNTHETIC_FILING_LINE));
+  // A run naming no executor prints none and its manifest records none (IR-090).
+  assert.doesNotMatch(result.output, /^Executor: /m);
+  assert.equal(manifest.executor, undefined);
+});
+
+test('--executor is parsed and recorded in the package manifest with the OS account, and in a development run (IR-090)', t => {
+  const home = markedRoot(t);
+  const result = runCli('pass', ['--iq', '--synthetic-qualification', '--version', 'cli-executor', '--executor', 'Synthetic Tester'],
+    undefined, undefined, ['--retain-root', home], { frameworkCheckout: temporaryCheckout(t, 'accura-cli-framework-') });
+  assert.equal(result.status, 0, result.output);
+  const account = (() => { try { return os.userInfo().username; } catch { return null; } })();
+  assert.ok(result.output.includes(`Executor: Synthetic Tester${account ? ` (OS account ${account})` : ''}; attribution only, nothing is signed`), result.output);
+  const [created] = fs.readdirSync(home);
+  const verified = verifyPackage(path.join(home, created));
+  assert.deepEqual(verified.problems, []);
+  assert.deepEqual(verified.manifest?.executor, { name: 'Synthetic Tester', osAccount: account });
+  const live = runCli('pass', ['--iq', '--executor', 'Synthetic Tester'], undefined, undefined, ['--no-retain']);
+  assert.equal(live.status, 0, live.output);
+  assert.match(live.output, /^Executor: Synthetic Tester; attribution only, nothing is signed$/m);
+});
+
+test('an empty, padded or missing --executor, or one on a documents run without --retain-root, is refused before any runner starts (IR-090)', t => {
+  for (const [value, expected] of [
+    ['', /--executor names the person who ran the run: 1 to 200 printable characters, not starting or ending with a space; got ""/],
+    [' Synthetic Tester', /--executor names the person who ran the run/],
+    ['a'.repeat(201), /--executor names the person who ran the run/],
+  ] as const) {
+    const refused = runCli('pass', ['--iq', '--executor', value], undefined, undefined, ['--no-retain']);
+    assert.equal(refused.status, 1, refused.output);
+    assert.match(refused.output, expected);
+    assert.doesNotMatch(refused.output, /OFFLINE_RUNNER /);
+  }
+  // The next argument is a flag, so the name is missing.
+  const missing = runCli('pass', ['--iq', '--executor'], undefined, undefined, ['--no-retain']);
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(missing.output, /--executor requires the name of the person running the CLI/);
+  assert.doesNotMatch(missing.output, /OFFLINE_RUNNER /);
+  const outputRoot = temporaryDirectory(t, 'accura-cli-executor-docs-');
+  const documents = runCli('pass', ['--docs-only', '--executor', 'Synthetic Tester'], null, [], [], { outputRoot });
+  assert.equal(documents.status, 1, documents.output);
+  assert.match(documents.output, /a documents run without --retain-root records neither/);
+  assert.deepEqual(fs.readdirSync(outputRoot), [], 'nothing is created');
 });
 
 test('a dirty framework checkout refuses --retain-root before any runner starts, and --allow-dirty-framework marks the package', t => {

@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  canonicalJson, currentEvidenceMarking, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking, strictObject,
+  canonicalJson, checkExecutorName, currentEvidenceMarking, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking, strictObject,
   DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceCategory, type EvidenceResult,
 } from './evidence-capture';
 import {
@@ -30,11 +31,11 @@ import {
 // call packaging needs: generate.ts calls it and makes none of its own, so the
 // offline CLI fixture passes this module through to the real filesystem.
 
-// generate.ts reaches the evidence marking, the configuration declaration check, the
-// TA3 OQ plan check and the platform evidence plan check (checkPlatformEvidencePlan,
-// below) through this module, because the offline CLI fixture replaces every other
-// runner module it requires.
-export { DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE, evidenceNoticeLines } from './evidence-capture';
+// generate.ts reaches the evidence marking, the executor name check, the configuration
+// declaration check, the TA3 OQ plan check and the platform evidence plan check
+// (checkPlatformEvidencePlan, below) through this module, because the offline CLI
+// fixture replaces every other runner module it requires.
+export { DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE, checkExecutorName, evidenceNoticeLines } from './evidence-capture';
 export { checkTargetConfiguration } from './target-configuration';
 export { loadTa3OqPlan as checkTa3OqPlan } from './ta3-oq-plan';
 
@@ -71,9 +72,10 @@ export const MANIFEST_REQUIRED = [
   'framework', 'releaseUnderTest', 'target', 'configurationUnderTest', 'inputs', 'categories', 'files',
   'approval', 'packageHash',
 ] as const;
-export const MANIFEST_OPTIONAL = ['syntheticNotice'] as const;
+export const MANIFEST_OPTIONAL = ['syntheticNotice', 'executor'] as const;
 export const MANIFEST_MEMBER_REQUIRED = {
   framework: ['commit', 'dirty'],
+  executor: ['name', 'osAccount'],
   target: ['baseUrl', 'observedAt', 'reportedVersion'],
   input: ['role', 'path', 'sha256', 'originalPath'],
   category: ['category', 'total', 'passed', 'failed', 'manual', 'notExecuted'],
@@ -95,6 +97,9 @@ export interface PackageCategory {
   notExecuted: number;
 }
 export interface PackageFile { path: string; bytes: number; sha256: string }
+/** Who ran the CLI (IR-090): the --executor name and the operating system account the run was
+ * started from (os.userInfo, null when it cannot be read). Attribution only: nothing is signed (D-21). */
+export interface PackageExecutor { name: string; osAccount: string | null }
 export interface PackageTarget { baseUrl: string; observedAt: string | null; reportedVersion: string | null }
 
 export interface PackageManifest {
@@ -107,6 +112,8 @@ export interface PackageManifest {
   synthetic: boolean;
   syntheticBasis: SyntheticBasis[];
   syntheticNotice?: typeof SYNTHETIC_NOTICE;
+  /** Present only when the run named its executor; every record then carries executedBy equal to its name. */
+  executor?: PackageExecutor;
   framework: { commit: string | null; dirty: boolean | null };
   releaseUnderTest: ReleaseIdentity | null;
   target: PackageTarget | null;
@@ -130,6 +137,8 @@ export interface EvidencePackage {
   readonly synthetic: boolean;
   readonly syntheticBasis: readonly SyntheticBasis[];
   readonly inputs: PackageInput[];
+  /** The person who ran the CLI, when --executor named one. */
+  readonly executor?: PackageExecutor;
   /** The framework checkout read when the package was created, and what it was then. */
   readonly frameworkCheckout?: string;
   readonly frameworkAtStart: { commit?: string; dirty?: boolean };
@@ -146,6 +155,9 @@ export interface PackageOptions {
   /** generate.ts --allow-dirty-framework: retain a run from a framework checkout that is
    * dirty or unreadable; its TMF-FILING.md then says it is not a run of record. */
   allowDirtyFramework?: boolean;
+  /** generate.ts --executor: the person running the CLI, recorded in the manifest and on every
+   * record. Required for an executed package that is not synthetic (IR-090). */
+  executor?: string;
   /** The framework checkout to read; this checkout when absent. For tests only. */
   frameworkCheckout?: string;
   /** A fixed clock and package ID, for tests only. */
@@ -204,9 +216,20 @@ export function benchmarkRunInputs(runDir: string): PackageInputSource[] {
   ];
 }
 
-/** Records and documents of a run that keeps its evidence in output/ scratch say so. */
-export function markDevelopmentRun(synthetic: boolean): void {
-  setEvidenceMarking({ synthetic, retained: false });
+/** Records and documents of a run that keeps its evidence in output/ scratch say so; its records
+ * name the executor when one is given. */
+export function markDevelopmentRun(synthetic: boolean, executor?: string): void {
+  setEvidenceMarking({ synthetic, retained: false, ...(executor !== undefined ? { executor: checkExecutorName(executor) } : {}) });
+}
+
+/** The operating system account the CLI runs under, or null when it cannot be read. */
+function osAccount(): string | null {
+  try {
+    const name = os.userInfo().username;
+    return typeof name === 'string' && name.length > 0 && name.length <= 4096 && !/[\x00-\x1f\x7f]/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
 }
 
 function isWithin(base: string, target: string): boolean {
@@ -375,7 +398,11 @@ export function createPackage(options: PackageOptions): EvidencePackage {
   packageCheck(options.syntheticBasis.every(basis => (SYNTHETIC_BASES as readonly string[]).includes(basis)), 'Unknown synthetic basis.');
   const basis = SYNTHETIC_BASES.filter(item => options.syntheticBasis.includes(item));
   const synthetic = basis.length > 0;
+  const executorName = options.executor === undefined ? undefined : checkExecutorName(options.executor);
   const root = retentionRoot(options.retainRoot, synthetic);
+  // Executed evidence that is not synthetic names the person who ran it (IR-090, Part 11 attribution).
+  packageCheck(executorName || !options.executed || synthetic, 'An executed package that is not synthetic names the person '
+    + 'running the CLI: pass --executor <name>.');
   // A retained package is executed evidence of one framework commit: an unknown or dirty
   // checkout is refused before anything is created, unless the operator allows it (IR-056).
   const frameworkAtStart = frameworkCommit(options.frameworkCheckout);
@@ -394,10 +421,11 @@ export function createPackage(options: PackageOptions): EvidencePackage {
     existing => `Retained package ${existing} already exists; a retained package is never overwritten.`);
   const evidencePackage: EvidencePackage = {
     dir, packageId, version: options.version, createdAt, executed: options.executed, synthetic, syntheticBasis: basis, inputs: [],
+    ...(executorName ? { executor: { name: executorName, osAccount: osAccount() } } : {}),
     ...(options.frameworkCheckout ? { frameworkCheckout: options.frameworkCheckout } : {}), frameworkAtStart, sealed: false,
   };
   for (const input of prepared) writeInput(evidencePackage, input);
-  setEvidenceMarking({ synthetic, retained: true });
+  setEvidenceMarking({ synthetic, retained: true, ...(executorName ? { executor: executorName } : {}) });
   return evidencePackage;
 }
 
@@ -539,6 +567,8 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
       synthetic: evidencePackage.synthetic,
       syntheticBasis: [...evidencePackage.syntheticBasis],
       ...(evidencePackage.synthetic ? { syntheticNotice: SYNTHETIC_NOTICE } : {}),
+      // Only when --executor named one, so a package naming none keeps its manifest bytes (IR-090).
+      ...(evidencePackage.executor ? { executor: { ...evidencePackage.executor } } : {}),
       framework: { commit: framework.commit ?? null, dirty: framework.dirty ?? null },
       // A plain JSON copy: the identity object may hold members JSON leaves out.
       releaseUnderTest: identity ? JSON.parse(JSON.stringify(identity)) as ReleaseIdentity : null,
@@ -626,6 +656,11 @@ export function parseManifest(value: unknown): PackageManifest {
   packageCheck(manifest.synthetic === basis.length > 0, `${at} synthetic must be true exactly when syntheticBasis names a basis`);
   packageCheck(manifest.synthetic ? manifest.syntheticNotice === SYNTHETIC_NOTICE : manifest.syntheticNotice === undefined,
     `${at} syntheticNotice must be the synthetic notice exactly when the package is synthetic`);
+  if (manifest.executor !== undefined) {
+    const executor = strictObject(manifest.executor, `${at} executor`, MANIFEST_MEMBER_REQUIRED.executor);
+    checkExecutorName(executor.name, `${at} executor.name`);
+    if (executor.osAccount !== null) manifestText(executor.osAccount, `${at} executor.osAccount`);
+  }
   const framework = strictObject(manifest.framework, `${at} framework`, MANIFEST_MEMBER_REQUIRED.framework);
   packageCheck(framework.commit === null || (typeof framework.commit === 'string' && GIT_COMMIT.test(framework.commit)), `${at} framework.commit is malformed`);
   packageCheck(framework.dirty === null || typeof framework.dirty === 'boolean', `${at} framework.dirty must be a boolean or null`);
@@ -774,6 +809,8 @@ export function verifyPackage(directory: string): PackageVerification {
       }
     }
   }
+  // Executed evidence that is not synthetic names who ran it (IR-090).
+  if (manifest.executed && !manifest.synthetic && !manifest.executor) problems.push('an executed package that is not synthetic names no executor');
   const counted = new Set(manifest.categories.map(entry => entry.category));
   for (const category of EVIDENCE_CATEGORIES) {
     if (listed.has(resultsFile(category)) && !counted.has(category)) problems.push(`evidence category ${category} is not counted`);
@@ -795,6 +832,12 @@ export function verifyPackage(directory: string): PackageVerification {
     }
     if (results.some(result => result.retention !== undefined)) {
       problems.push(`evidence category ${entry.category} has records marked as a development run`);
+    }
+    // Every record names the package's executor, and none names one when the package records none.
+    if (results.some(result => result.executedBy !== manifest.executor?.name)) {
+      problems.push(manifest.executor
+        ? `evidence category ${entry.category} has records whose executedBy is not the package executor ${JSON.stringify(manifest.executor.name)}`
+        : `evidence category ${entry.category} has records naming an executor the manifest does not record`);
     }
   }
   for (const [file, bytes] of contents) {

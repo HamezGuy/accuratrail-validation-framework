@@ -33,6 +33,9 @@ export interface EvidenceResult {
   synthetic?: true;
   /** Stamped by saveEvidence on every record of a run that is not retained (`--no-retain`). */
   retention?: typeof DEVELOPMENT_RUN_NOTICE;
+  /** The person who ran the CLI (generate.ts --executor), stamped by saveEvidence on every record
+   * of a run that names one (IR-090); absent otherwise. Attribution only: it signs nothing (D-21). */
+  executedBy?: string;
 }
 
 export const EVIDENCE_CATEGORIES = ['iq', 'oq', 'pq', 'security', 'dr', 'performance', 'benchmark', 'p13'] as const;
@@ -73,6 +76,27 @@ export function registryCountsText(counts: RegistryCounts): string {
     + (counts.bookkeeping ? `; ${counts.bookkeeping} bookkeeping rows (setup, sessions, cleanup, import steps), ${counts.bookkeepingNotPassed} not passed` : '');
 }
 
+/** The name of the person who ran the CLI (--executor): 1 to 200 printable characters, with no
+ * space at either end. It is not the account the runners sign in with (OQ_USERNAME). */
+export const EXECUTOR_NAME = /^(?=\S)[^\p{C}\p{Zl}\p{Zp}]{1,200}(?<=\S)$/u;
+
+/** The executor name, or a refusal naming `at`. */
+export function checkExecutorName(value: unknown, at = '--executor'): string {
+  if (typeof value !== 'string' || !EXECUTOR_NAME.test(value)) {
+    throw new Error(`${at} names the person who ran the run: 1 to 200 printable characters, not starting or ending `
+      + `with a space; got ${JSON.stringify(value)}.`);
+  }
+  return value;
+}
+
+/** Who executed the records, from their executedBy: the names, or "not recorded". */
+export function executorText(records: ReadonlyArray<{ executedBy?: string }>): string {
+  const names = [...new Set(records.flatMap(record => record.executedBy === undefined ? [] : [record.executedBy]))];
+  if (!names.length) return 'not recorded';
+  const unnamed = records.filter(record => record.executedBy === undefined).length;
+  return `${names.join(', ')}${unnamed ? `; ${unnamed} record(s) name no executor` : ''}`;
+}
+
 /** Opens every record, summary and document of a synthetic run (VD-3, D-22). */
 export const SYNTHETIC_NOTICE = 'SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval.';
 /** Stated on every record and document of a run that is not retained in a sealed package. */
@@ -86,6 +110,8 @@ export interface EvidenceMarking {
   synthetic: boolean;
   /** True inside a retained package; false for a development run. */
   retained: boolean;
+  /** The --executor name; when set, saveEvidence stamps it on every record as executedBy. */
+  executor?: string;
 }
 
 let marking: EvidenceMarking | undefined;
@@ -225,6 +251,9 @@ function requireEvidenceResults(value: unknown, source: string): asserts value i
       || (item.retention !== undefined && item.retention !== DEVELOPMENT_RUN_NOTICE)) {
       throw new Error(`Invalid evidence in ${source}: malformed outcome code or marking at index ${index}`);
     }
+    if (item.executedBy !== undefined && (typeof item.executedBy !== 'string' || !EXECUTOR_NAME.test(item.executedBy))) {
+      throw new Error(`Invalid evidence in ${source}: malformed executedBy at index ${index}`);
+    }
     if (seen.has(item.testCaseId)) throw new Error(`Invalid evidence in ${source}: duplicate test case ${item.testCaseId}`);
     seen.add(item.testCaseId);
   }
@@ -315,9 +344,15 @@ export function saveEvidence(
       if ((result.synthetic && !run.synthetic) || (result.retention && run.retained)) {
         throw new Error(`Evidence ${result.testCaseId} is marked ${result.synthetic ? 'synthetic' : 'not retained'}, which this run is not.`);
       }
+      // Who executed a record is the run's --executor, never a record's own claim (IR-090).
+      if (result.executedBy !== undefined && result.executedBy !== run.executor) {
+        throw new Error(`Evidence ${result.testCaseId} names the executor ${JSON.stringify(result.executedBy)}, but this run `
+          + `${run.executor ? `was run by ${JSON.stringify(run.executor)}` : 'names no executor'}.`);
+      }
     }
     results = results.map(result => ({
       ...result, ...(run.synthetic ? { synthetic: true as const } : {}), ...(run.retained ? {} : { retention: DEVELOPMENT_RUN_NOTICE }),
+      ...(run.executor ? { executedBy: run.executor } : {}),
     }));
   }
   const evidenceDir = path.join(outputDir, 'evidence', category);
@@ -370,6 +405,7 @@ export function saveEvidence(
     // Appended last, so an unmarked summary keeps its bytes.
     ...(run?.synthetic ? { synthetic: true, syntheticNotice: SYNTHETIC_NOTICE } : {}),
     ...(run && !run.retained ? { retention: DEVELOPMENT_RUN_NOTICE } : {}),
+    ...(run?.executor ? { executedBy: run.executor } : {}),
   };
   fs.writeFileSync(
     path.join(evidenceDir, `${category}-summary.json`),
@@ -389,6 +425,8 @@ export function saveEvidence(
     `| Cases Executed | ${executionPeriod(results)} |`,
     `| Node.js | ${process.version} |`,
     `| Platform | ${process.platform} ${process.arch} |`,
+    // Only when --executor named one, so the report of a run naming none keeps its bytes (IR-090).
+    ...(run?.executor ? [`| Executed By | ${run.executor.replace(/\|/g, '\\|')} (attribution only, not a signature) |`] : []),
     `| Total Tests | ${results.length} |`,
     `| Passed | ${passed} |`,
     `| Failed | ${failed} |`,
