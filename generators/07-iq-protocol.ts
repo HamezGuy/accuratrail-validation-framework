@@ -28,6 +28,15 @@ interface IqTestCase {
 }
 
 const YEAR = new Date().getFullYear();
+
+/** How a case that reads the API checkout is bound to the release under test (runners/iq-runner.ts
+ * bindApiSourceToRelease, IR-265). */
+export const IQ_SOURCE_BINDING_STATEMENT = `**Source binding:** every file system case that reads the ${SYSTEM_INFO.projectPaths.backend} `
+  + 'checkout is bound to the API release under test (--release-api) after its check. When the release is a Git commit and the '
+  + 'checkout\'s HEAD is another commit, or cannot be read, the case fails with SOURCE_NOT_RELEASE_UNDER_TEST; a file the case '
+  + 'reads that has uncommitted or untracked changes fails it with SOURCE_FILE_MODIFIED; when the release is a container image ID, '
+  + 'the case states that its binding is unverified, since a checkout cannot be compared with an image. A check group that fails '
+  + 'before recording its cases records each of them not executed (IQ_CHECK_ERROR), so every case from IQ-001 to IQ-035 has a result.';
 const DOC_ID = `IQ-${YEAR}-001`;
 
 function softwareInstallationCases(): IqTestCase[] {
@@ -638,6 +647,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   content += '- Infrastructure readiness (backups, encryption, timezone)\n\n';
   content += `**Applicable regulations:** ${REGULATORY_SCOPE.part11Applicable ? '21 CFR Part 11' : ''} ` +
     `${REGULATORY_SCOPE.hipaaApplicable ? ', HIPAA Security Rule' : ''}\n\n`;
+  content += IQ_SOURCE_BINDING_STATEMENT + '\n\n';
 
   content += section(2, 'Test Summary');
   const flatCases = allCases.flat();

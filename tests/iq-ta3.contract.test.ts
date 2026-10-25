@@ -12,8 +12,8 @@ import { collectFrontend } from '../collectors/frontend-collector';
 import { collectSOPs } from '../collectors/sop-collector';
 import {
   checkConfigurationUnderTest, checkDeadSettings, checkEnvironmentSegregation, checkSharedTypesInstallation, checkSoftwareInstallation, checkVendoredReceipts,
-  declaredMajor, readVendoredArchive, run as runIq,
-  IQ_CASE_COUNT, LIVE_PRODUCTION_STATEMENT, PRODUCTION_EXAMPLE, SHARED_TYPES_VERIFIER, type SharedTypesConsumer,
+  bindApiSourceToRelease, declaredMajor, readVendoredArchive, run as runIq,
+  IQ_CASE_COUNT, IQ_CASE_IDS, LIVE_PRODUCTION_STATEMENT, PRODUCTION_EXAMPLE, SHARED_TYPES_VERIFIER, type SharedTypesConsumer,
 } from '../runners/iq-runner';
 import {
   composeServiceEnvironment, configurationMismatches, dotenvEnvironment, effectiveFlagValue, observedFlag, parseTargetConfiguration, sourceFlagValue,
@@ -22,8 +22,9 @@ import {
   TARGET_CONFIGURATION_SOURCE_REQUIRED, type ConfigurationMismatch,
 } from '../runners/target-configuration';
 import type { EvidenceResult } from '../runners/evidence-capture';
-import { generate as generateIqProtocol } from '../generators/07-iq-protocol';
-import { generateAllDocuments, temporaryDirectory } from './generated-documents';
+import { generate as generateIqProtocol, IQ_SOURCE_BINDING_STATEMENT } from '../generators/07-iq-protocol';
+import { checkoutState, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
+import { commitCheckout, generateAllDocuments, temporaryDirectory } from './generated-documents';
 
 // IQ corrections and additions (TA3 plan VAL-1, spec P20 3.9). Every consumer,
 // archive and declaration here is synthetic and built in a temporary directory;
@@ -618,4 +619,117 @@ test('each flag-observing OQ case reads only its own disabled code as its flag o
   assert.deepEqual(configurationMismatches({ ENABLE_DEVIATION_ENGINE: true, ENABLE_DEVIATION_DECISIONS: true },
     { iq: [], oq: [oq('OQ-206', 'ENGINE_DISABLED'), oq('OQ-221', 'ENGINE_DISABLED'), oq('OQ-222', 'ENGINE_DISABLED')] }),
   [{ flag: 'ENABLE_DEVIATION_ENGINE', declared: true, observed: false, observedBy: 'OQ-206' }]);
+});
+
+// ---------------------------------------------------------------------------
+// Source binding of the API checkout to the release under test, and a row for every case (IR-265)
+// ---------------------------------------------------------------------------
+
+test('every IQ record that read the API checkout is bound to --release-api: another commit, a modified file, an image ID, the release itself (IR-265)', async t => {
+  const workspace = temporaryDirectory(t, 'accura-iq-binding-');
+  const api = path.join(workspace, 'libreclinica-api');
+  commitCheckout(api, {
+    'package.json': `${JSON.stringify({ name: 'synthetic-api', version: '0.0.0-synthetic', engines: { node: '>=20' } })}\n`,
+    'src/config/database.ts': '// SYNTHETIC: new Pool({}) for a postgres contract test\n',
+  });
+  const first = checkoutState(api).commit!;
+  commitCheckout(api, { 'later.txt': 'a later synthetic commit\n' });
+  const head = checkoutState(api).commit!;
+  assert.notEqual(first, head);
+  const baseUrl = await syntheticApi(t, { status: 'ok', version: SYSTEM_INFO.version });
+  t.after(() => setReleaseIdentity(undefined));
+  const runWith = async (release: string) => {
+    setReleaseIdentity(releaseIdentityFromInputs({ api: release, ui: 'b'.repeat(40), core: 'c'.repeat(40) }));
+    return runIq(temporaryDirectory(t, 'accura-iq-binding-out-'), baseUrl, workspace, []);
+  };
+  const binding = (result: EvidenceResult) => (result.responseBody as { sourceBinding?: Record<string, unknown> }).sourceBinding;
+
+  // The release itself: the cases keep their outcome, and each states its verified binding.
+  const equal = await runWith(head);
+  assert.equal(equal.length, IQ_CASE_COUNT);
+  for (const id of ['IQ-003', 'IQ-004', 'IQ-009']) {
+    assert.equal(byId(equal, id).passed, true, id);
+    assert.deepEqual(binding(byId(equal, id)), { release: `git-commit ${head}`, checkoutCommit: head, verified: true }, id);
+    assert.match(byId(equal, id).notes, new RegExp(`source binding: the API checkout is at the API release under test ${head}`), id);
+  }
+  // A record outside the API checkout (the frontend's package.json) and an API request are not bound.
+  assert.equal(binding(byId(equal, 'IQ-005')), undefined);
+  assert.equal(byId(equal, 'IQ-001').passed, true);
+
+  // Another commit: every record under the API checkout fails, whatever its own check found.
+  const other = await runWith(first);
+  for (const id of ['IQ-003', 'IQ-004', 'IQ-007', 'IQ-009']) {
+    assert.deepEqual([byId(other, id).passed, byId(other, id).outcomeCode], [false, 'SOURCE_NOT_RELEASE_UNDER_TEST'], id);
+    assert.match(byId(other, id).notes, new RegExp(`is at ${head}, not the API release under test ${first}`), id);
+  }
+  assert.deepEqual([byId(other, 'IQ-001').passed, byId(other, 'IQ-001').outcomeCode], [true, undefined]);
+
+  // A modified read file fails its own records only.
+  fs.writeFileSync(path.join(api, 'package.json'), `${JSON.stringify({ name: 'synthetic-api', version: '9.9.9-modified', engines: { node: '>=20' } })}\n`);
+  const modified = await runWith(head);
+  for (const id of ['IQ-003', 'IQ-004']) {
+    assert.deepEqual([byId(modified, id).passed, byId(modified, id).outcomeCode], [false, 'SOURCE_FILE_MODIFIED'], id);
+    assert.deepEqual(binding(byId(modified, id))!.modified, [path.join(api, 'package.json')], id);
+  }
+  assert.deepEqual([byId(modified, 'IQ-009').passed, binding(byId(modified, 'IQ-009'))!.verified], [true, true]);
+
+  // An image ID cannot be compared with a checkout: the binding is stated unverified and the outcome kept,
+  // while a modified file still fails.
+  const image = await runWith(`sha256:${'d'.repeat(64)}`);
+  assert.equal(byId(image, 'IQ-009').passed, true);
+  assert.match(byId(image, 'IQ-009').notes, /binding unverified: the API release under test is image-id sha256:d{64}/);
+  assert.equal(binding(byId(image, 'IQ-009'))!.verified, false);
+  assert.equal(byId(image, 'IQ-003').outcomeCode, 'SOURCE_FILE_MODIFIED');
+
+  // Without a release identity (a runner called outside the CLI) nothing is bound.
+  setReleaseIdentity(undefined);
+  const unbound = await runIq(temporaryDirectory(t, 'accura-iq-binding-out-'), baseUrl, workspace, []);
+  assert.equal(binding(byId(unbound, 'IQ-009')), undefined);
+});
+
+test('a checkout git cannot read fails every API record against a commit release, and is stated against an image (IR-265)', t => {
+  const api = path.join(temporaryDirectory(t, 'accura-iq-binding-unread-'), 'libreclinica-api');
+  const record = (): EvidenceResult => ({
+    testCaseId: 'IQ-009', timestamp: '2026-10-24T00:00:00Z', endpoint: 'File system check', method: 'FS', responseStatus: 200,
+    responseBody: { path: path.join(api, 'src', 'config', 'database.ts') }, passed: true, notes: 'PostgreSQL configured (synthetic)',
+  });
+  const commit = [record()];
+  bindApiSourceToRelease(commit, api, { identity: 'a'.repeat(40), kind: 'git-commit', source: 'operator-input' }, () => ({}));
+  assert.deepEqual([commit[0].passed, commit[0].outcomeCode], [false, 'SOURCE_NOT_RELEASE_UNDER_TEST']);
+  assert.match(commit[0].notes, /HEAD of the API checkout .* cannot be read/);
+  const image = [record()];
+  bindApiSourceToRelease(image, api, { identity: `sha256:${'d'.repeat(64)}`, kind: 'image-id', source: 'operator-input' }, () => ({}));
+  assert.deepEqual([image[0].passed, image[0].outcomeCode], [true, undefined]);
+  assert.match(image[0].notes, /binding unverified/);
+});
+
+test('a check group that throws still leaves a row for each of its cases, not executed: IQ_CHECK_ERROR (IR-265)', async t => {
+  const workspace = temporaryDirectory(t, 'accura-iq-throw-');
+  const nodeModules = path.join(resolveLibreclinicaApiRoot(workspace), 'node_modules');
+  const realFs = require('node:fs') as typeof fs;
+  const existsSync = realFs.existsSync;
+  // IQ-007's existence check is the one call of the software installation group outside a try.
+  const mocked = t.mock.method(realFs, 'existsSync', (file: fs.PathLike) => {
+    if (path.resolve(String(file)) === nodeModules) throw new Error('synthetic check failure');
+    return existsSync(file);
+  });
+  const baseUrl = await syntheticApi(t, { status: 'ok', version: SYSTEM_INFO.version });
+  const results = await runIq(temporaryDirectory(t, 'accura-iq-throw-out-'), baseUrl, workspace, []);
+  mocked.mock.restore();
+  assert.deepEqual(results.map(result => result.testCaseId), IQ_CASE_IDS);
+  for (const id of ['IQ-003', 'IQ-004', 'IQ-005', 'IQ-006', 'IQ-007', 'IQ-008']) {
+    const result = byId(results, id);
+    assert.deepEqual([result.method, result.passed, result.outcomeCode], ['CONTRACT', false, 'IQ_CHECK_ERROR'], id);
+    assert.match(result.notes, /check group checkSoftwareInstallation failed before recording this case \(synthetic check failure\)/, id);
+  }
+  assert.equal(results.filter(result => result.outcomeCode === 'IQ_CHECK_ERROR').length, 6);
+  assert.notEqual(byId(results, 'IQ-009').method, 'CONTRACT');
+});
+
+test('the IQ protocol states the source binding and the IQ_CHECK_ERROR rows (IR-265)', t => {
+  const output = temporaryDirectory(t, 'accura-iq-binding-protocol-');
+  generateIqProtocol(output, output);
+  const protocol = fs.readFileSync(path.join(output, '07-iq-protocol.md'), 'utf8');
+  assert.ok(protocol.includes(IQ_SOURCE_BINDING_STATEMENT));
+  for (const code of ['SOURCE_NOT_RELEASE_UNDER_TEST', 'SOURCE_FILE_MODIFIED', 'IQ_CHECK_ERROR', 'unverified']) assert.ok(protocol.includes(code), code);
 });

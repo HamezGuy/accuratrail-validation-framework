@@ -203,7 +203,18 @@ integrity) and the lockfile's integrity; the interop archive, which has no
 receipt, fails it. IQ-001 passes only when `GET /health` reports a `version`
 equal to `SYSTEM_INFO.version` (`config/system-info.ts`, the EDC API's
 `APP_VERSION` label); another or no version fails `VERSION_MISMATCH`. The IQ
-protocol has 35 cases, and the runner records a result for each.
+protocol has 35 cases, and the runner records a result for each: a check group
+that throws records each of its cases not executed (`CONTRACT`,
+`IQ_CHECK_ERROR`).
+
+Every file system record that read the libreclinicaapi checkout is bound to
+`--release-api` after the checks. When the release is a Git commit and the
+checkout's HEAD is another commit, or git cannot read it, the record fails
+`SOURCE_NOT_RELEASE_UNDER_TEST`; a read path with uncommitted or untracked
+changes fails `SOURCE_FILE_MODIFIED`; an image ID cannot be compared with a
+checkout, so the record states its binding unverified. Each bound record holds
+`responseBody.sourceBinding`. IQ against a checkout that is not the release
+under test therefore fails those cases: check out the release before `--iq`.
 
 The production host is refused. A production host is the production API or
 frontend in `config/system-info.ts`, or any other host under `accuratrials.com` or

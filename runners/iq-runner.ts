@@ -4,6 +4,7 @@
  * Groups: Software Installation, Database Schema, Configuration, Security & Backup.
  * Sibling checkouts resolve through collectors/workspace-paths.ts; shared types are
  * checked where consumers install them (vendored archives), never in a source folder.
+ * Records that read the API checkout are bound to the API release under test (bindApiSourceToRelease).
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,9 +23,11 @@ import {
   CORE_API_SERVICE, TARGET_CONFIGURATION_CONTRACT,
   type ConfigurationMismatch, type DeclaredConfiguration, type FlagValue, type SourceEnvironment, type TargetConfigurationFlag,
 } from './target-configuration';
+import { checkoutState, currentReleaseIdentity, type CheckoutState, type ReleaseComponent } from './release-identity';
 
 /** The IQ protocol's cases, IQ-001 to IQ-035; the runner records a result for each. */
 export const IQ_CASE_COUNT = 35;
+export const IQ_CASE_IDS: readonly string[] = Array.from({ length: IQ_CASE_COUNT }, (_, index) => `IQ-${String(index + 1).padStart(3, '0')}`);
 
 export interface IqRunOptions {
   /** The validation-target-configuration/1 declaration IQ-029 and IQ-033 read (--target-config);
@@ -959,6 +962,79 @@ function checkSecurityAndBackup(_workspaceRoot: string, apiRoot: string): Eviden
 }
 
 // ---------------------------------------------------------------------------
+// Source binding: the API checkout read is the API release under test (IR-265)
+// ---------------------------------------------------------------------------
+
+/** True when `inner` is `outer` or lies under it (case-insensitive on Windows, as path.relative is). */
+function within(outer: string, inner: string): boolean {
+  const relative = path.relative(path.resolve(outer), path.resolve(inner));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/** Binds every file system record that read the API checkout to the API release under test. With a
+ * Git commit as the release, a checkout whose HEAD is another commit (or cannot be read) fails the
+ * record (SOURCE_NOT_RELEASE_UNDER_TEST); with any release, a read path with uncommitted or untracked
+ * changes fails it (SOURCE_FILE_MODIFIED); an image ID cannot be compared with a checkout, so the
+ * record states its binding unverified. A record that already failed with a code keeps that code.
+ * Without a release identity (a runner called outside the CLI) records are left unchanged. */
+export function bindApiSourceToRelease(
+  results: EvidenceResult[], apiRoot: string, release: ReleaseComponent | undefined,
+  state: () => CheckoutState = () => checkoutState(apiRoot),
+): void {
+  if (!release) return;
+  const bound = results.filter(result => result.method === 'FS' && isRecord(result.responseBody)
+    && typeof result.responseBody.path === 'string' && within(apiRoot, result.responseBody.path));
+  if (!bound.length) return;
+  const checkout = state();
+  const releaseText = `${release.kind} ${release.identity}`;
+  for (const result of bound) {
+    const body = result.responseBody as Record<string, unknown>;
+    const read = body.path as string;
+    const modified = checkout.changed?.filter(changed => within(changed, read) || within(read, changed)) ?? [];
+    let code: string | undefined;
+    let statement: string;
+    if (release.kind === 'git-commit' && checkout.commit !== release.identity) {
+      code = 'SOURCE_NOT_RELEASE_UNDER_TEST';
+      statement = checkout.commit
+        ? `the API checkout ${apiRoot} is at ${checkout.commit}, not the API release under test ${release.identity}`
+        : `the HEAD of the API checkout ${apiRoot} cannot be read, so it is not shown to be the API release under test ${release.identity}`;
+      if (modified.length) statement += `, and ${read} has uncommitted changes`;
+    } else if (modified.length) {
+      code = 'SOURCE_FILE_MODIFIED';
+      statement = `${read} has uncommitted changes in the API checkout ${apiRoot}, so it is not the file of the API release under test ${releaseText}`;
+    } else if (release.kind === 'git-commit') {
+      statement = `the API checkout is at the API release under test ${release.identity} and ${path.basename(read)} has no uncommitted change`;
+    } else {
+      statement = `binding unverified: the API release under test is ${releaseText}, which a checkout cannot be compared with`
+        + `${checkout.commit ? ` (checkout at ${checkout.commit})` : ''}`;
+    }
+    result.responseBody = {
+      ...body,
+      sourceBinding: {
+        release: releaseText, checkoutCommit: checkout.commit ?? null,
+        verified: release.kind === 'git-commit' && code === undefined, ...(modified.length ? { modified } : {}),
+      },
+    };
+    if (code) {
+      result.passed = false;
+      result.outcomeCode ??= code;
+      result.notes += `; source binding failed: ${statement}`;
+    } else {
+      result.notes += `; source binding: ${statement}`;
+    }
+  }
+}
+
+/** A case a throwing check group did not record: CONTRACT, not executed (IQ_CHECK_ERROR). */
+function checkErrorResult(testCaseId: string, group: string, error: string): EvidenceResult {
+  return {
+    testCaseId, timestamp: ts(), endpoint: `IQ check group ${group}`, method: 'CONTRACT',
+    responseStatus: 0, responseBody: { group, error }, passed: false, outcomeCode: 'IQ_CHECK_ERROR',
+    notes: `Not executed: the IQ check group ${group} failed before recording this case (${error}).`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main runner
 // ---------------------------------------------------------------------------
 
@@ -976,29 +1052,24 @@ export async function run(
   const results: EvidenceResult[] = [];
 
   // --- File-based checks (IQ-003..IQ-030, IQ-032..IQ-035) ---
-  try { results.push(...checkSoftwareInstallation(wsRoot, apiRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkSoftwareInstallation error:', err);
-  }
-  try { results.push(...checkDatabaseSchema(apiRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkDatabaseSchema error:', err);
-  }
-  try { results.push(...checkConfiguration(apiRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkConfiguration error:', err);
-  }
-  try { results.push(...checkSecurityAndBackup(wsRoot, apiRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkSecurityAndBackup error:', err);
-  }
-  try { results.push(checkEnvironmentSegregation(options.targetConfigFile, baseUrl)); } catch (err: unknown) {
-    console.error('  [IQ] checkEnvironmentSegregation error:', err);
-  }
-  try { results.push(checkConfigurationUnderTest(options.targetConfigFile, baseUrl, apiRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkConfigurationUnderTest error:', err);
-  }
-  try { results.push(checkDeadSettings(apiRoot, resolveFrontendRoot(wsRoot), wsRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkDeadSettings error:', err);
-  }
-  try { results.push(checkVendoredReceipts(apiRoot)); } catch (err: unknown) {
-    console.error('  [IQ] checkVendoredReceipts error:', err);
+  // Each group's cases, so a group that throws still leaves a row for each of them (IQ_CHECK_ERROR).
+  const range = (from: number, to: number) => IQ_CASE_IDS.slice(from - 1, to);
+  const groups: Array<{ name: string; cases: readonly string[]; check: () => EvidenceResult[] }> = [
+    { name: 'checkSoftwareInstallation', cases: range(3, 8), check: () => checkSoftwareInstallation(wsRoot, apiRoot) },
+    { name: 'checkDatabaseSchema', cases: range(9, 18), check: () => checkDatabaseSchema(apiRoot) },
+    { name: 'checkConfiguration', cases: range(19, 25), check: () => checkConfiguration(apiRoot) },
+    { name: 'checkSecurityAndBackup', cases: ['IQ-026', 'IQ-027', 'IQ-028', 'IQ-030', 'IQ-032'], check: () => checkSecurityAndBackup(wsRoot, apiRoot) },
+    { name: 'checkEnvironmentSegregation', cases: ['IQ-029'], check: () => [checkEnvironmentSegregation(options.targetConfigFile, baseUrl)] },
+    { name: 'checkConfigurationUnderTest', cases: ['IQ-033'], check: () => [checkConfigurationUnderTest(options.targetConfigFile, baseUrl, apiRoot)] },
+    { name: 'checkDeadSettings', cases: ['IQ-034'], check: () => [checkDeadSettings(apiRoot, resolveFrontendRoot(wsRoot), wsRoot)] },
+    { name: 'checkVendoredReceipts', cases: ['IQ-035'], check: () => [checkVendoredReceipts(apiRoot)] },
+  ];
+  for (const group of groups) {
+    try { results.push(...group.check()); } catch (err: unknown) {
+      console.error(`  [IQ] ${group.name} error:`, err);
+      const recorded = new Set(results.map(result => result.testCaseId));
+      results.push(...group.cases.filter(id => !recorded.has(id)).map(id => checkErrorResult(id, group.name, errorText(err))));
+    }
   }
 
   // --- API-based checks ---
@@ -1054,6 +1125,11 @@ export async function run(
       passed: false, notes: `Unauthenticated access check failed: ${err instanceof Error ? err.message : 'unknown'}`,
     });
   }
+
+  // --- Every protocol case has a row; the API checkout's records are bound to the release ---
+  const recorded = new Set(results.map(result => result.testCaseId));
+  results.push(...IQ_CASE_IDS.filter(id => !recorded.has(id)).map(id => checkErrorResult(id, 'run', 'no check recorded this case')));
+  bindApiSourceToRelease(results, apiRoot, currentReleaseIdentity()?.components.api);
 
   // --- Sort by test case ID for clean output ---
   results.sort((a, b) => {

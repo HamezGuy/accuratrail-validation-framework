@@ -15,18 +15,27 @@ export function temporaryDirectory(t: { after(callback: () => void): void }, pre
   return directory;
 }
 
+/** Makes `directory` a git checkout on main with one commit holding `files` (relative path to
+ * content); a test that needs a checkout at a given place, such as a workspace's API folder, calls it. */
+export function commitCheckout(directory: string, files: Record<string, string>): void {
+  const git = (...args: string[]) => execFileSync('git', ['-C', directory, '-c', 'user.name=Contract test',
+    '-c', 'user.email=contract-test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', ...args],
+  { stdio: 'ignore', timeout: 20_000, windowsHide: true });
+  fs.mkdirSync(directory, { recursive: true });
+  git('init', '--quiet', '--initial-branch=main');
+  for (const [file, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+    fs.writeFileSync(path.join(directory, file), content);
+  }
+  git('add', ...Object.keys(files));
+  git('commit', '--quiet', '-m', 'Synthetic checkout for a contract test');
+}
+
 /** A temporary git checkout with one commit (tracked.txt and a .gitignore naming
  * output/) on main, standing in for the framework checkout; removed after the test. */
 export function temporaryCheckout(t: { after(callback: () => void): void }, prefix: string): string {
   const directory = temporaryDirectory(t, prefix);
-  const git = (...args: string[]) => execFileSync('git', ['-C', directory, '-c', 'user.name=Contract test',
-    '-c', 'user.email=contract-test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', ...args],
-  { stdio: 'ignore', timeout: 20_000, windowsHide: true });
-  git('init', '--quiet', '--initial-branch=main');
-  fs.writeFileSync(path.join(directory, 'tracked.txt'), 'tracked\n');
-  fs.writeFileSync(path.join(directory, '.gitignore'), 'output/\n');
-  git('add', 'tracked.txt', '.gitignore');
-  git('commit', '--quiet', '-m', 'Synthetic framework checkout for a contract test');
+  commitCheckout(directory, { 'tracked.txt': 'tracked\n', '.gitignore': 'output/\n' });
   return directory;
 }
 

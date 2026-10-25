@@ -93,20 +93,46 @@ export function parseReleaseComponent(
     : `--release-${name} must be a full 40-character Git commit, a sha256:<64 hex> image ID or none, got ${JSON.stringify(value)}.`);
 }
 
+/** A Git checkout as git reads it: the HEAD commit, the top level git reports for it,
+ * and every path (absolute) that differs from HEAD, a modified, staged, deleted or
+ * untracked one (an untracked directory is listed once, as the directory). An ignored
+ * path (output/, node_modules/) is not listed. Empty when git cannot read the checkout. */
+export interface CheckoutState {
+  commit?: string;
+  root?: string;
+  changed?: string[];
+}
+
+export function checkoutState(checkout: string): CheckoutState {
+  const git = (...args: string[]) => execFileSync('git', ['-C', checkout, ...args],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, windowsHide: true });
+  try {
+    const commit = git('rev-parse', 'HEAD').trim();
+    const root = path.resolve(git('rev-parse', '--show-toplevel').trim());
+    // -z: paths are not quoted, and each is relative to the top level. A rename or copy entry
+    // is followed by its original path, which is listed too: it no longer holds HEAD's bytes.
+    const entries = git('status', '--porcelain', '-z', '--untracked-files=normal').split('\0');
+    const changed: string[] = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index];
+      if (entry.length < 4) continue;
+      changed.push(path.resolve(root, entry.slice(3)));
+      if (/^[RC]/.test(entry) && entries[index + 1]) changed.push(path.resolve(root, entries[++index]));
+    }
+    return { commit, root, changed };
+  } catch {
+    return {};
+  }
+}
+
 /** The framework checkout that ran (this checkout unless another is named): its
  * commit and whether it differs from it. A modified tracked file or an untracked
  * file makes it dirty, since either can change what runs; an ignored file (output/,
  * node_modules/) does not (IR-585). Recorded in every release identity and every
  * sealed evidence package; empty when git cannot read the checkout. */
 export function frameworkCommit(checkout = path.resolve(__dirname, '..')): { commit?: string; dirty?: boolean } {
-  const git = (...args: string[]) => execFileSync('git', ['-C', checkout, ...args],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, windowsHide: true }).trim();
-  try {
-    const commit = git('rev-parse', 'HEAD');
-    return { commit, dirty: git('status', '--porcelain', '--untracked-files=normal').length > 0 };
-  } catch {
-    return {};
-  }
+  const state = checkoutState(checkout);
+  return state.commit ? { commit: state.commit, dirty: state.changed!.length > 0 } : {};
 }
 
 /** The components an identity records, in hash order. */
