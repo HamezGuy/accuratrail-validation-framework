@@ -396,6 +396,19 @@ test('without a plan every TA3 case records NO_TA3_PLAN and no request is made',
   }
 });
 
+test('each suite hands its case records and session row to onSuiteComplete as it completes, as they are returned (IR-166)', async t => {
+  const clock = fakeClock();
+  const thePlan = plan();
+  const edc = await startFakeEdc({ plan: thePlan, users: USERS, clock });
+  t.after(() => edc.close());
+  const batches: EvidenceResult[][] = [];
+  const results = await runTa3Suites(edc.baseUrl, thePlan, [13, 14], { env: ENV, clock, pollIntervalMs: 30_000, declaredFlags: DECLARED,
+    onSuiteComplete: rows => batches.push(rows) });
+  const suiteIds = (suite: number) => [...TA3_OQ_CASES.filter(entry => entry.suite === suite).map(entry => entry.id), `OQ-TA3-SUITE-${suite}`];
+  assert.deepEqual(batches.map(batch => batch.map(row => row.testCaseId)), [suiteIds(13), suiteIds(14)]);
+  for (const row of batches.flat()) assert.deepEqual(row, results.find(result => result.testCaseId === row.testCaseId), row.testCaseId);
+});
+
 test('an unselected suite records OQ_SUITE_NOT_SELECTED and opens no session', async t => {
   const { results, edc } = await runAgainst(t, {}, { selection: [17] });
   assert.deepEqual(results.filter(result => result.testCaseId.startsWith('OQ-TA3-SUITE-')).map(result => result.testCaseId), ['OQ-TA3-SUITE-17']);

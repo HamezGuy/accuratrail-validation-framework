@@ -7,6 +7,7 @@ import {
   isRecord,
   manualResult,
   saveEvidence,
+  appendCaseJournal,
   captureWithExpectedStatus,
 } from './evidence-capture';
 import { cloneStudy, pendingStudy, type StudyWorkspace, type StudyActivationReview, type StudyTransport, expectStudySuccess, nativeId } from './study-definition-client';
@@ -530,6 +531,9 @@ export function createWorkflowState(baseUrl: string, adminToken: string | null =
   };
 }
 
+/** The PQ registry: every case the runner records a result for. */
+export const PQ_CASE_IDS: readonly string[] = Array.from({ length: 40 }, (_, index) => `PQ-${String(index + 1).padStart(3, '0')}`);
+
 export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: string, qualificationFlags: readonly string[] = []): Promise<EvidenceResult[]> {
   const { username: pqUsername, password: pqPassword } = pqCredentials();
   const qualification = qualificationFlags.length ? {
@@ -557,13 +561,15 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   state.orgId = loginResult.orgId;
 
   const allResults: EvidenceResult[] = [];
+  // Each step group's records are journaled as it completes, so an interrupted run keeps them (IR-166).
+  const record = (rows: EvidenceResult[]) => { allResults.push(...rows); appendCaseJournal(outputDir, 'pq', rows); };
 
   const loginSuccess = authentication.evidence;
-  allResults.push(enrichResult(loginSuccess, {
+  record([enrichResult(loginSuccess, {
     regulatoryRef: '21 CFR 11.10(d) — System access limited to authorized individuals',
     testDescription: 'Authenticate test user for PQ workflow execution',
     acceptanceCriteria: 'Login returns valid access token with user and organization context',
-  }));
+  })]);
 
   const suites: Array<(url: string, s: WorkflowState) => Promise<EvidenceResult[]>> = [
     (url, current) => runStudySetup(url, current, qualification),
@@ -575,22 +581,22 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   for (const [suiteIndex, suite] of suites.entries()) {
     try {
       const results = await suite(baseUrl, state);
-      allResults.push(...results);
+      record(results);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      allResults.push(evidence(
+      record([evidence(
         `PQ-ERR-${suiteIndex + 1}`, baseUrl, 'SUITE', 0, { error: msg }, false,
         `PQ test suite threw unexpected error: ${msg}`,
-      ));
+      )]);
     }
   }
 
   } finally {
-    try { allResults.push(...await runCleanupVerification(baseUrl, state)); }
-    catch { allResults.push(evidence('PQ-CLEANUP-ERROR', baseUrl, 'CONTRACT', 0, null, false, 'Unexpected cleanup exception; reconcile owned fixture before retrying.')); }
-    finally { allResults.push(await captureWithExpectedStatus({ testCaseId: 'PQ-LOGOUT', baseUrl, method: 'POST', url: '/api/auth/logout', headers: { Authorization: `Bearer ${state.adminToken}` } }, 200)); }
+    try { record(await runCleanupVerification(baseUrl, state)); }
+    catch { record([evidence('PQ-CLEANUP-ERROR', baseUrl, 'CONTRACT', 0, null, false, 'Unexpected cleanup exception; reconcile owned fixture before retrying.')]); }
+    finally { record([await captureWithExpectedStatus({ testCaseId: 'PQ-LOGOUT', baseUrl, method: 'POST', url: '/api/auth/logout', headers: { Authorization: `Bearer ${state.adminToken}` } }, 200)]); }
   }
-  for (let id = 1; id <= 40; id++) { const testCaseId = `PQ-${String(id).padStart(3, '0')}`;
+  for (const testCaseId of PQ_CASE_IDS) {
     if (!allResults.some(row => row.testCaseId === testCaseId)) allResults.push({ ...manualResult(testCaseId, 'PQ case did not execute.'), method: 'CONTRACT' }); }
   allResults.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
   saveEvidence(outputDir, 'pq', allResults);

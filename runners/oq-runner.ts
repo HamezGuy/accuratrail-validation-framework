@@ -18,6 +18,7 @@ import {
   manualResult,
   redactEvidenceSecrets,
   saveEvidence,
+  appendCaseJournal,
 } from './evidence-capture';
 import { pendingStudy, readStudySummaryPage, expectStudySuccess, nativeId, StudyDefinitionClient, type StudyActivationReview } from './study-definition-client';
 import { captureStudyOperation, captureQualificationOperation } from './study-qualification';
@@ -2435,10 +2436,14 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
   console.log(`\n  Running OQ tests (${OQ_CASE_IDS.length} cases) against ${baseUrl}...`);
 
   const allResults: EvidenceResult[] = [];
-  if (selection.base) await runBaseSuites(allResults, baseUrl, qualificationFlags);
+  // Each base suite's and each TA3 suite's records are journaled as they complete, so an interrupted run keeps them (IR-166).
+  const journal = (rows: EvidenceResult[]) => appendCaseJournal(outputDir, 'oq', rows);
+  if (selection.base) await runBaseSuites(allResults, baseUrl, qualificationFlags, journal);
 
   let ta3Results: EvidenceResult[] = [];
-  try { ta3Results = await runTa3Suites(baseUrl, ta3Plan, selection.ta3, { declaredFlags }); }
+  const ta3Journaled = new Set<string>();
+  const onSuiteComplete = (rows: EvidenceResult[]) => { journal(rows); for (const row of rows) ta3Journaled.add(row.testCaseId); };
+  try { ta3Results = await runTa3Suites(baseUrl, ta3Plan, selection.ta3, { declaredFlags, onSuiteComplete }); }
   catch (error) {
     // A last resort (each suite records its own failures): the base suites' evidence is still saved,
     // and every TA3 case is recorded not executed, naming the exception.
@@ -2447,10 +2452,16 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
       { ...manualResult('OQ-TA3-EXECUTION', `Unexpected TA3 suite exception: ${reason}`), method: 'CONTRACT' }];
   }
   allResults.push(...ta3Results);
+  // What no suite journaled: the records of no plan or an unselected suite, and of a stopped TA3 run.
+  journal(ta3Results.filter(row => !ta3Journaled.has(row.testCaseId)));
   const ta3Cases = ta3Results.filter(row => /^OQ-\d{3}$/.test(row.testCaseId));
   console.log(`  Suites 13 to 18 (TA3): ${ta3Cases.filter(r => r.passed).length}/${ta3Cases.length} passed${ta3Plan ? '' : ' (no ta3-oq-plan/1)'}`);
 
-  if (selection.base) allResults.push(await runRateLimitTest(baseUrl));
+  if (selection.base) {
+    const rateLimit = await runRateLimitTest(baseUrl);
+    allResults.push(rateLimit);
+    journal([rateLimit]);
+  }
   // Every registry case has a result; the OQ protocol lists the same registry.
   for (const testCaseId of OQ_CASE_IDS) {
     if (allResults.some(row => row.testCaseId === testCaseId)) continue;
@@ -2472,7 +2483,11 @@ export async function run(outputDir: string, baseUrl: string, _workspaceRoot?: s
 }
 
 /** Suites 1 to 12 under the operator session and, with the synthetic qualification flags, the owned fixture. */
-async function runBaseSuites(allResults: EvidenceResult[], baseUrl: string, qualificationFlags: readonly string[]): Promise<void> {
+async function runBaseSuites(allResults: EvidenceResult[], baseUrl: string, qualificationFlags: readonly string[],
+  journal: (rows: EvidenceResult[]) => void = () => undefined): Promise<void> {
+  // Journals the rows pushed since the last call, after each suite.
+  let journaled = allResults.length;
+  const journalNew = () => { journal(allResults.slice(journaled)); journaled = allResults.length; };
   const { username, password } = qualificationCredentials();
   const qualification = qualificationFlags.length ? { ...qualificationOptions(qualificationFlags, baseUrl), username, password,
     reason: 'Execute the explicitly requested synthetic operational qualification fixture' } : undefined;
@@ -2480,6 +2495,7 @@ async function runBaseSuites(allResults: EvidenceResult[], baseUrl: string, qual
   const authResults = await runAuthenticationTests(baseUrl, username, password, !!qualification, true);
   allResults.push(...authResults);
   console.log(`  Suite 1 (Authentication): ${authResults.filter(r => r.passed).length}/${authResults.length} passed`);
+  journalNew();
 
   // The OQ-LOGIN exchange itself is not retained; OQ-001 records the valid login.
   const auth = (await login(baseUrl, username, password)).session;
@@ -2509,55 +2525,69 @@ async function runBaseSuites(allResults: EvidenceResult[], baseUrl: string, qual
     const acResults = await runAccessControlTests(baseUrl, auth.token, fixture);
     allResults.push(...acResults);
     console.log(`  Suite 2 (Access Control): ${acResults.filter(r => r.passed).length}/${acResults.length} passed`);
+    journalNew();
 
     const auditResults = await runAuditTrailTests(baseUrl, auth.token, fixture);
     allResults.push(...auditResults);
     console.log(`  Suite 3 (Audit Trail): ${auditResults.filter(r => r.passed).length}/${auditResults.length} passed`);
+    journalNew();
 
     const sigResults = await runSignatureTests(baseUrl, auth.token, fixture);
     allResults.push(...sigResults);
     console.log(`  Suite 4 (Signatures): ${sigResults.filter(r => r.passed).length}/${sigResults.length} passed`);
+    journalNew();
 
     const dataResults = await runDataOperationTests(baseUrl, auth.token, fixture);
     allResults.push(...dataResults);
     console.log(`  Suite 5 (Data Operations): ${dataResults.filter(r => r.passed).length}/${dataResults.length} passed`);
+    journalNew();
 
     const lockResults = await runDataLockTests(baseUrl, auth.token, fixture);
     allResults.push(...lockResults);
     console.log(`  Suite 6 (Data Locks): ${lockResults.filter(r => r.passed).length}/${lockResults.length} passed`);
+    journalNew();
 
     const part11Results = await runPart11ComplianceTests(baseUrl, username, password, auth.token, authResults, fixture);
     allResults.push(...part11Results);
     console.log(`  Suite 7 (Part 11 Compliance): ${part11Results.filter(r => r.passed).length}/${part11Results.length} passed`);
+    journalNew();
 
     const compAuthResults = await runComprehensiveAuthTests(baseUrl, username, password, auth.token, !!qualification);
     allResults.push(...compAuthResults);
     console.log(`  Suite 8 (Comprehensive Auth): ${compAuthResults.filter(r => r.passed).length}/${compAuthResults.length} passed`);
+    journalNew();
 
     const rbacResults = await runComprehensiveRbacTests(baseUrl, auth.token, fixture);
     allResults.push(...rbacResults);
     console.log(`  Suite 9 (Comprehensive RBAC): ${rbacResults.filter(r => r.passed).length}/${rbacResults.length} passed`);
+    journalNew();
 
     const compAuditResults = await runComprehensiveAuditTests(baseUrl, auth.token, fixture);
     allResults.push(...compAuditResults);
     console.log(`  Suite 10 (Comprehensive Audit): ${compAuditResults.filter(r => r.passed).length}/${compAuditResults.length} passed`);
+    journalNew();
 
     const deepDataResults = await runDeepDataOperationTests(baseUrl, auth.token, qualification, fixture);
     allResults.push(...deepDataResults);
     console.log(`  Suite 11 (Deep Data Operations): ${deepDataResults.filter(r => r.passed).length}/${deepDataResults.length} passed`);
+    journalNew();
 
     const securityResults = await runSecurityValidationTests(baseUrl, auth.token, username, password, fixture);
     allResults.push(...securityResults);
     console.log(`  Suite 12 (Security & Validation): ${securityResults.filter(r => r.passed).length}/${securityResults.length} passed`);
+    journalNew();
     if (fixture) {
       const mapping: Record<string, string> = { 'OQ-034': 'PQ-028', 'OQ-035': 'PQ-028', 'OQ-036': 'PQ-028',
         'OQ-037': 'PQ-027', 'OQ-039': 'PQ-029', 'OQ-029': 'PQ-037', 'OQ-044': 'PQ-037', 'OQ-064': 'PQ-028', 'OQ-065': 'PQ-027' };
+      const remapped: EvidenceResult[] = [];
       for (let i = 0; i < allResults.length; i++) {
         const sourceId = mapping[allResults[i].testCaseId];
         const native = fixture.results.find(row => row.testCaseId === sourceId);
-        if (native) allResults[i] = { ...native, testCaseId: allResults[i].testCaseId,
-          notes: `${native.notes} Shared native evidence ${sourceId}; not a second independent trial.`, relatedEvidence: [native] };
+        if (native) remapped.push(allResults[i] = { ...native, testCaseId: allResults[i].testCaseId,
+          notes: `${native.notes} Shared native evidence ${sourceId}; not a second independent trial.`, relatedEvidence: [native] });
       }
+      // A journaled case's last line is the one recovered.
+      journal(remapped);
     }
     } catch (error) {
       allResults.push({ ...manualResult('OQ-EXECUTION', 'Unexpected OQ suite exception; retained evidence identifies completed operations.'), method: 'CONTRACT',
@@ -2580,4 +2610,5 @@ async function runBaseSuites(allResults: EvidenceResult[], baseUrl: string, qual
       passed: false, notes: 'Authentication failed; suites 2-12 skipped',
     });
   }
+  journalNew();
 }

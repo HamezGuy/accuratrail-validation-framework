@@ -319,11 +319,8 @@ export function executionPeriod(records: readonly EvidenceResult[]): string {
     + (unstamped ? `; ${unstamped} record(s) carry no valid timestamp` : '');
 }
 
-export function saveEvidence(
-  outputDir: string,
-  category: EvidenceCategory,
-  results: EvidenceResult[],
-): string {
+/** Checks, redacts and stamps records as saveEvidence saves them: the release under test and the run's marking. */
+function stampEvidence(results: EvidenceResult[], category: EvidenceCategory) {
   requireEvidenceResults(results, category);
   results = redactEvidenceSecrets(results) as EvidenceResult[];
   const identity = currentReleaseIdentity();
@@ -355,6 +352,15 @@ export function saveEvidence(
       ...(run.executor ? { executedBy: run.executor } : {}),
     }));
   }
+  return { results, identity, run };
+}
+
+export function saveEvidence(
+  outputDir: string,
+  category: EvidenceCategory,
+  records: EvidenceResult[],
+): string {
+  const { results, identity, run } = stampEvidence(records, category);
   const evidenceDir = path.join(outputDir, 'evidence', category);
   fs.mkdirSync(evidenceDir, { recursive: true });
   // Written first and exclusively: a category's results are saved once per folder, so a later
@@ -483,8 +489,104 @@ export function saveEvidence(
     reportLines.join('\n'),
     'utf-8',
   );
+  // The category is saved whole, so its case journal is spent: an uninterrupted package keeps its file list (IR-166).
+  fs.rmSync(caseJournalPath(outputDir, category), { force: true });
 
   return evidenceDir;
+}
+
+// ---------------------------------------------------------------------------
+// The case journal: a category's records as each case group completes, so an
+// interrupted run keeps its evidence (IR-166)
+// ---------------------------------------------------------------------------
+
+/** The outcome code of a registry case an interrupted run never recorded. */
+export const RUN_INTERRUPTED = 'RUN_INTERRUPTED';
+
+export function caseJournalPath(outputDir: string, category: EvidenceCategory): string {
+  return path.join(outputDir, 'evidence', category, `${category}-journal.jsonl`);
+}
+
+/** Appends each record, checked, redacted and stamped as saveEvidence would save it, as one JSON line
+ * of evidence/<category>/<category>-journal.jsonl. A journal that cannot be written is a warning, never
+ * a stop: the run and its final save go on. */
+export function appendCaseJournal(outputDir: string, category: EvidenceCategory, records: EvidenceResult[]): void {
+  if (!records.length) return;
+  try {
+    const { results } = stampEvidence(records, category);
+    const file = caseJournalPath(outputDir, category);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const journaledAt = new Date().toISOString();
+    fs.appendFileSync(file, results.map(record => `${JSON.stringify({ journaledAt, record })}\n`).join(''), 'utf-8');
+  } catch (error) {
+    console.error(`  [WARN] ${category.toUpperCase()} case journal not written: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Saves an interrupted category through saveEvidence: every journaled record (a case's last line wins),
+ * every registry case without one as not executed (CONTRACT, RUN_INTERRUPTED) and a
+ * <CATEGORY>-RUN-INTERRUPTED row stating the interruption. Returns undefined when there is no journal. */
+export function recoverFromJournal(outputDir: string, category: EvidenceCategory, registryIds: readonly string[],
+  reason = 'the run stopped before it saved this category'): EvidenceResult[] | undefined {
+  let raw: string;
+  try { raw = fs.readFileSync(caseJournalPath(outputDir, category), 'utf8'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  const journaled = new Map<string, EvidenceResult>();
+  // A line cut short by the interruption is left out and counted.
+  let unreadable = 0;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry: unknown = JSON.parse(line);
+      if (isRecord(entry) && isRecord(entry.record) && typeof entry.record.testCaseId === 'string') {
+        journaled.set(entry.record.testCaseId, entry.record as unknown as EvidenceResult);
+      } else unreadable++;
+    } catch { unreadable++; }
+  }
+  const at = new Date().toISOString();
+  const label = category.toUpperCase();
+  const missing = registryIds.filter(id => !journaled.has(id)).map((testCaseId): EvidenceResult => ({
+    testCaseId, timestamp: at, endpoint: 'N/A', method: 'CONTRACT', responseStatus: 0, responseBody: null, passed: false,
+    outcomeCode: RUN_INTERRUPTED, notes: `Not executed: the run was interrupted (${reason}) before this case recorded a result.`,
+  }));
+  const interruption: EvidenceResult = {
+    testCaseId: `${label}-RUN-INTERRUPTED`, timestamp: at, endpoint: 'N/A', method: 'CONTRACT', responseStatus: 0,
+    responseBody: { reason, journaled: journaled.size, notExecuted: missing.length, unreadableJournalLines: unreadable },
+    passed: false, outcomeCode: RUN_INTERRUPTED,
+    notes: `The run was interrupted (${reason}) before it saved the ${label} evidence: ${journaled.size} record(s) were recovered from `
+      + `the case journal${unreadable ? `, ${unreadable} unreadable journal line(s) were left out` : ''}, and ${missing.length} registry `
+      + `case(s) are recorded not executed (${RUN_INTERRUPTED}).`,
+  };
+  const results = [...journaled.values(), ...missing, interruption]
+    .sort((a, b) => a.testCaseId.localeCompare(b.testCaseId, undefined, { numeric: true }));
+  saveEvidence(outputDir, category, results);
+  return results;
+}
+
+/** Recovers every category with a case journal and no results file (generate.ts, after a runner exception
+ * or on a signal), each with the registry `registryOf` names for it. A category that cannot be recovered is
+ * reported and keeps its journal. Returns the categories saved. */
+export function recoverJournaledCategories(outputDir: string, registryOf: (category: EvidenceCategory) => readonly string[],
+  reason: string): EvidenceCategory[] {
+  const recovered: EvidenceCategory[] = [];
+  for (const category of EVIDENCE_CATEGORIES) {
+    if (!fs.existsSync(caseJournalPath(outputDir, category))
+      || fs.existsSync(path.join(outputDir, 'evidence', category, `${category}-results.json`))) continue;
+    try {
+      const results = recoverFromJournal(outputDir, category, registryOf(category), reason);
+      if (!results) continue;
+      recovered.push(category);
+      const notExecuted = results.filter(row => row.outcomeCode === RUN_INTERRUPTED && REGISTRY_CASE_ID.test(row.testCaseId)).length;
+      console.error(`  [FAIL] ${category.toUpperCase()} evidence recovered from its case journal (${reason}): `
+        + `${results.length} records, ${notExecuted} registry case(s) not executed.`);
+    } catch (error) {
+      console.error(`  [FAIL] ${category.toUpperCase()} case journal not recovered: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return recovered;
 }
 
 export async function captureApiCall(opts: CaptureOptions): Promise<EvidenceResult> {

@@ -14,6 +14,7 @@ import {
   captureWithValidator,
   isRecord,
   saveEvidence,
+  appendCaseJournal,
 } from './evidence-capture';
 import { defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
 import { SYSTEM_INFO } from '../config/system-info';
@@ -1016,6 +1017,14 @@ export async function run(
   console.log(`\n  Running IQ checks (${IQ_CASE_COUNT} test cases) against ${baseUrl}...`);
 
   const results: EvidenceResult[] = [];
+  // Each check group's records are journaled as it completes, so an interrupted run keeps them (IR-166). The
+  // journaled copies are bound to the release as the saved records are, on one read of the API checkout.
+  let journalCheckout: CheckoutState | undefined;
+  const journal = (rows: EvidenceResult[]) => {
+    const copies = JSON.parse(JSON.stringify(rows)) as EvidenceResult[];
+    bindApiSourceToRelease(copies, apiRoot, currentReleaseIdentity()?.components.api, () => (journalCheckout ??= checkoutState(apiRoot)));
+    appendCaseJournal(outputDir, 'iq', copies);
+  };
 
   // --- File-based checks (IQ-003..IQ-030, IQ-032..IQ-035) ---
   // Each group's cases, so a group that throws still leaves a row for each of them (IQ_CHECK_ERROR).
@@ -1031,12 +1040,15 @@ export async function run(
     { name: 'checkVendoredReceipts', cases: ['IQ-035'], check: () => [checkVendoredReceipts(apiRoot)] },
   ];
   for (const group of groups) {
+    const before = results.length;
     try { results.push(...group.check()); } catch (err: unknown) {
       console.error(`  [IQ] ${group.name} error:`, err);
       const recorded = new Set(results.map(result => result.testCaseId));
       results.push(...group.cases.filter(id => !recorded.has(id)).map(id => checkErrorResult(id, group.name, errorText(err))));
     }
+    journal(results.slice(before));
   }
+  const apiChecksFrom = results.length;
 
   // --- API-based checks ---
 
@@ -1091,6 +1103,8 @@ export async function run(
       passed: false, notes: `Unauthenticated access check failed: ${err instanceof Error ? err.message : 'unknown'}`,
     });
   }
+
+  journal(results.slice(apiChecksFrom));
 
   // --- Every protocol case has a row; the API checkout's records are bound to the release ---
   const recorded = new Set(results.map(result => result.testCaseId));

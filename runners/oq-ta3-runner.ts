@@ -245,6 +245,9 @@ export interface Ta3RunOptions {
   /** Tests only: a controlled clock and a short poll interval. */
   clock?: Ta3Clock;
   pollIntervalMs?: number;
+  /** Called after each selected suite with its case records and its session row, as they will be returned,
+   * so the OQ runner journals them (IR-166). */
+  onSuiteComplete?: (records: EvidenceResult[]) => void;
 }
 
 class Ta3Stop extends Error {
@@ -664,6 +667,8 @@ export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, sele
   const env = options.env ?? process.env;
   ta3AccountUsernames(plan, env);
   const rows: EvidenceResult[] = [];
+  const recordOf = (entry: Ta3OqCase) => ctx.results.get(entry.id) ?? unrecorded(entry, selected, OUTCOME.PREREQUISITE_MISSING,
+    `Suite ${entry.suite} stopped before this case recorded a result; see OQ-TA3-SUITE-${entry.suite}.`, clock);
   for (const suite of TA3_SUITE_ORDER) {
     if (!selected.has(suite)) continue;
     const entries = TA3_OQ_CASES.filter(entry => entry.suite === suite);
@@ -674,6 +679,7 @@ export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, sele
           + 'is not declared a duplicate. Suite 16 leaves its escalation policy in force on the study, matching every deviation of the OQ site, so it runs only '
           + 'on a declared duplicate; no request was made.', clock));
       }
+      options.onSuiteComplete?.(entries.map(recordOf));
       continue;
     }
     const accounts = [...new Set(entries.flatMap(entry => entry.accounts))];
@@ -718,10 +724,9 @@ export async function runTa3Suites(baseUrl: string, plan: Ta3OqPlan | null, sele
       },
       relatedEvidence: sessions.flatMap(session => session.exchanges),
     });
+    options.onSuiteComplete?.([...entries.map(recordOf), rows[rows.length - 1]]);
   }
-  const records = TA3_OQ_CASES.map(entry => ctx.results.get(entry.id) ?? unrecorded(entry, selected, OUTCOME.PREREQUISITE_MISSING,
-    `Suite ${entry.suite} stopped before this case recorded a result; see OQ-TA3-SUITE-${entry.suite}.`, clock));
-  return [...records, ...rows];
+  return [...TA3_OQ_CASES.map(recordOf), ...rows];
 }
 
 /** The registry IDs of the TA3 suites, for callers that check the census. */

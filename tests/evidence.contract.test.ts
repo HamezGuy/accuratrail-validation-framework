@@ -3,10 +3,17 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
   loadEvidence, saveEvidence, manualResult, captureWithExpectedStatus, captureWithValidator, registryCounts, registryCountsText, setEvidenceMarking,
-  REGISTRY_CASE_ID, type EvidenceResult,
+  appendCaseJournal, caseJournalPath, recoverFromJournal, recoverJournaledCategories, REGISTRY_CASE_ID, RUN_INTERRUPTED, type EvidenceResult,
 } from '../runners/evidence-capture';
+import { createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
+import { currentReleaseIdentity, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
+import { IQ_CASE_IDS, run as runIq } from '../runners/iq-runner';
+import { OQ_CASE_IDS } from '../config/oq-case-registry';
+import { commitCheckout, temporaryCheckout } from './generated-documents';
 import { loadRunnerEvidence, tryLoadEvidence } from '../generators/helpers/evidence-linker';
 import { generate as generateExecutionRecords } from '../generators/20-test-execution-records';
 import { generate as generateValidationSummary } from '../generators/12-validation-summary';
@@ -561,4 +568,166 @@ test('the security and performance runners refuse a nonlocal target without --al
   await assert.rejects(runPerformance(workspace(t), 'https://qualification.invalid', undefined, ['--allow-production-qualification']),
     /OQ_USERNAME and OQ_PASSWORD/);
   assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+// ---------------------------------------------------------------------------
+// The case journal: an interrupted run keeps the cases it completed (IR-166)
+// ---------------------------------------------------------------------------
+
+/** A retained synthetic package in a temporary synthetic data root, from a clean temporary framework checkout. */
+function syntheticPackage(t: { after(callback: () => void): void }) {
+  const dataRoot = workspace(t);
+  fs.writeFileSync(path.join(dataRoot, SYNTHETIC_ROOT_MARKER), 'Synthetic-trial data root for a contract test.\n');
+  t.after(() => setEvidenceMarking(undefined));
+  return createPackage({
+    retainRoot: path.join(dataRoot, 'runs', 'validation-packages'), version: 'journal-v1', executed: true,
+    syntheticBasis: ['synthetic-qualification'], frameworkCheckout: temporaryCheckout(t, 'accura-journal-framework-'),
+  });
+}
+
+const journalLines = (file: string) => fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+
+test('two journaled suites of an interrupted run are kept, every other case is RUN_INTERRUPTED, and the sealed package verifies (IR-166)', t => {
+  const evidencePackage = syntheticPackage(t);
+  const dir = evidencePackage.dir;
+  const journal = caseJournalPath(dir, 'oq');
+  // Suite one, then suite two; a case journaled again (a remapped row) is recovered from its last line.
+  appendCaseJournal(dir, 'oq', [result({ requestHeaders: { Authorization: 'Bearer synthetic-journal-token' } }),
+    result({ testCaseId: 'OQ-002', passed: false, notes: 'Synthetic failure' }), result({ testCaseId: 'OQ-AUTH' })]);
+  appendCaseJournal(dir, 'oq', [result({ testCaseId: 'OQ-003' }), result({ testCaseId: 'OQ-002', notes: 'Synthetic remapped pass' })]);
+  const lines = journalLines(journal);
+  assert.equal(lines.length, 5);
+  // Each line is redacted and stamped as saveEvidence saves it.
+  assert.equal(fs.readFileSync(journal, 'utf8').includes('synthetic-journal-token'), false);
+  for (const line of lines) {
+    assert.ok(!Number.isNaN(Date.parse(line.journaledAt)));
+    assert.deepEqual([line.record.synthetic, line.record.retention], [true, undefined], line.record.testCaseId);
+  }
+  // A line the interruption cut short is left out and counted.
+  fs.appendFileSync(journal, '{"journaledAt":"2026-10-25T00:00:00Z","record":{"testCaseId":"OQ-0');
+
+  const recovered = recoverFromJournal(dir, 'oq', OQ_CASE_IDS, 'a synthetic interruption')!;
+  const byCase = new Map(recovered.map(row => [row.testCaseId, row]));
+  assert.deepEqual([byCase.get('OQ-001')!.passed, byCase.get('OQ-002')!.notes, byCase.get('OQ-003')!.passed, byCase.get('OQ-AUTH')!.passed],
+    [true, 'Synthetic remapped pass', true, true]);
+  const interrupted = OQ_CASE_IDS.filter(id => !['OQ-001', 'OQ-002', 'OQ-003'].includes(id));
+  for (const id of interrupted) {
+    const row = byCase.get(id)!;
+    assert.deepEqual([row.method, row.passed, row.outcomeCode], ['CONTRACT', false, RUN_INTERRUPTED], id);
+    assert.match(row.notes, /^Not executed: the run was interrupted \(a synthetic interruption\) before this case recorded a result\.$/, id);
+  }
+  const marker = byCase.get('OQ-RUN-INTERRUPTED')!;
+  assert.deepEqual([marker.method, marker.passed, marker.outcomeCode], ['CONTRACT', false, RUN_INTERRUPTED]);
+  assert.deepEqual(marker.responseBody, { reason: 'a synthetic interruption', journaled: 4, notExecuted: interrupted.length, unreadableJournalLines: 1 });
+  assert.equal(recovered.length, OQ_CASE_IDS.length + 2);
+  // Saved once through saveEvidence: the saved records are the recovered ones, and the journal is spent.
+  assert.deepEqual(loadEvidence(dir, 'oq').map(row => row.testCaseId), recovered.map(row => row.testCaseId));
+  assert.equal(loadEvidence(dir, 'oq').every(row => row.synthetic === true), true);
+  assert.equal(fs.existsSync(journal), false);
+  assert.equal(recoverFromJournal(dir, 'oq', OQ_CASE_IDS), undefined, 'no journal, nothing to recover');
+
+  const sealed = sealPackage(evidencePackage);
+  const verified = verifyPackage(sealed.dir);
+  assert.equal(verified.ok, true, verified.problems.join('; '));
+  const manifest = JSON.parse(fs.readFileSync(sealed.manifestPath, 'utf8'));
+  assert.deepEqual(manifest.categories, [{ category: 'oq', total: OQ_CASE_IDS.length + 2, passed: 4, failed: OQ_CASE_IDS.length - 2,
+    manual: 0, notExecuted: interrupted.length + 1 }]);
+});
+
+test('a complete save spends the journal, so a journaled category keeps the files of one never journaled (IR-166)', t => {
+  const journaledDir = workspace(t), plainDir = workspace(t);
+  const rows = [result({ testCaseId: 'PQ-001' }), result({ testCaseId: 'PQ-002' }), result({ testCaseId: 'PQ-LOGOUT' })];
+  appendCaseJournal(journaledDir, 'pq', rows.slice(0, 1));
+  appendCaseJournal(journaledDir, 'pq', rows.slice(1));
+  assert.equal(journalLines(caseJournalPath(journaledDir, 'pq')).length, 3);
+  saveEvidence(journaledDir, 'pq', rows);
+  saveEvidence(plainDir, 'pq', rows);
+  assert.equal(fs.existsSync(caseJournalPath(journaledDir, 'pq')), false);
+  assert.deepEqual(fs.readdirSync(path.join(journaledDir, 'evidence', 'pq')).sort(), fs.readdirSync(path.join(plainDir, 'evidence', 'pq')).sort());
+  // Recovery after a runner stopped: only a journaled category without results is saved, with its own registry.
+  appendCaseJournal(journaledDir, 'iq', [result({ testCaseId: 'IQ-001' })]);
+  assert.deepEqual(recoverJournaledCategories(journaledDir, category => category === 'iq' ? ['IQ-001', 'IQ-002'] : [], 'the IQ Runner stopped'),
+    ['iq']);
+  assert.deepEqual(loadEvidence(journaledDir, 'iq').map(row => [row.testCaseId, row.outcomeCode ?? null]),
+    [['IQ-001', null], ['IQ-002', RUN_INTERRUPTED], ['IQ-RUN-INTERRUPTED', RUN_INTERRUPTED]]);
+  assert.deepEqual(recoverJournaledCategories(journaledDir, () => [], 'again'), []);
+  // A journal that cannot be written warns and never stops the run.
+  const warn = t.mock.method(console, 'error', () => undefined);
+  appendCaseJournal(journaledDir, 'dr', [result({ testCaseId: '../escape' })]);
+  assert.equal(fs.existsSync(caseJournalPath(journaledDir, 'dr')), false);
+  assert.match(String(warn.mock.calls[0].arguments[0]), /\[WARN\] DR case journal not written: Invalid evidence/);
+});
+
+test('the IQ runner journals each check group, bound to the release, before its API checks, and a complete run leaves no journal (IR-166)', async t => {
+  const ws = workspace(t);
+  const api = path.join(ws, 'libreclinica-api');
+  commitCheckout(api, { 'package.json': `${JSON.stringify({ name: 'synthetic-api', version: '0.0.0-synthetic', engines: { node: '>=20' } })}\n` });
+  const output = workspace(t);
+  const journal = caseJournalPath(output, 'iq');
+  let atHealth: Array<{ record: EvidenceResult }> = [];
+  const server = http.createServer((request, response) => {
+    // The file checks ran and were journaled before the first request.
+    if (request.url === '/health') atHealth = journalLines(journal);
+    const open = request.url === '/health';
+    response.writeHead(open ? 200 : 401, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(open ? { status: 'ok', version: SYSTEM_INFO.version } : { success: false }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  t.after(() => setReleaseIdentity(undefined));
+  // A release that is not the checkout's HEAD: the journaled copies fail the binding as the saved records do.
+  setReleaseIdentity(releaseIdentityFromInputs({ api: 'a'.repeat(40), ui: 'b'.repeat(40), core: 'c'.repeat(40) }));
+  const results = await runIq(output, `http://127.0.0.1:${(server.address() as AddressInfo).port}`, ws, []);
+  const fileCases = IQ_CASE_IDS.filter(id => !['IQ-001', 'IQ-002', 'IQ-031'].includes(id));
+  assert.deepEqual(atHealth.map(line => line.record.testCaseId).sort(), [...fileCases].sort());
+  const journaled = atHealth.find(line => line.record.testCaseId === 'IQ-003')!.record;
+  const saved = results.find(row => row.testCaseId === 'IQ-003')!;
+  assert.deepEqual([journaled.outcomeCode, saved.outcomeCode], ['SOURCE_NOT_RELEASE_UNDER_TEST', 'SOURCE_NOT_RELEASE_UNDER_TEST']);
+  assert.equal(journaled.notes, saved.notes);
+  assert.equal(journaled.releaseUnderTest?.identityHash, currentReleaseIdentity()!.identityHash);
+  assert.equal(fs.existsSync(journal), false, 'the complete save spent the journal');
+  assert.equal(fs.readdirSync(path.join(output, 'evidence', 'iq')).some(name => name.endsWith('.jsonl')), false);
+});
+
+test('the PQ runner journals each step group before the next one starts, and a complete run leaves no journal (IR-166)', async t => {
+  const auth = require('../runners/auth');
+  const names = ['OQ_USERNAME', 'OQ_PASSWORD'] as const;
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, index) => { if (saved[index] === undefined) delete process.env[name]; else process.env[name] = saved[index]; }));
+  Object.assign(process.env, { OQ_USERNAME: 'synthetic-pq-operator', OQ_PASSWORD: 'synthetic-pq-secret' });
+  const output = workspace(t);
+  const journal = caseJournalPath(output, 'pq');
+  const login = result({ testCaseId: 'PQ-000', endpoint: '/api/auth/login', method: 'POST' });
+  t.mock.method(auth, 'login', async () => ({ evidence: login, session: { token: 'synthetic-session', userId: 7, orgId: 8 } }));
+  const atRequest: string[][] = [];
+  t.mock.method(globalThis, 'fetch', async () => {
+    atRequest.push(fs.existsSync(journal) ? journalLines(journal).map(line => line.record.testCaseId) : []);
+    return new Response(JSON.stringify({ success: false }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+  });
+  const results = await runPq(output, 'http://127.0.0.1:9');
+  // The login was journaled before the first request, and the logout request saw every earlier group journaled.
+  assert.deepEqual(atRequest[0], ['PQ-000']);
+  const backfilled = (row: EvidenceResult) => row.notes === 'Manual verification required: PQ case did not execute.';
+  assert.deepEqual(new Set(atRequest.at(-1)), new Set(results.filter(row => row.testCaseId !== 'PQ-LOGOUT' && !backfilled(row)).map(row => row.testCaseId)));
+  assert.ok(atRequest.at(-1)!.length > 1);
+  assert.equal(fs.existsSync(journal), false);
+});
+
+test('the OQ runner journals each TA3 suite as it completes, and keeps them when the TA3 run then throws (IR-166)', async t => {
+  const ta3 = require('../runners/oq-ta3-runner');
+  const output = workspace(t);
+  const journal = caseJournalPath(output, 'oq');
+  let journaledBeforeThrow: string[] = [];
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('No request may be made'); });
+  t.mock.method(ta3, 'runTa3Suites', async (_url: string, _plan: unknown, _selection: number[], options: { onSuiteComplete?: (rows: EvidenceResult[]) => void }) => {
+    options.onSuiteComplete?.([result({ testCaseId: 'OQ-206' }), result({ testCaseId: 'OQ-TA3-SUITE-13' })]);
+    options.onSuiteComplete?.([result({ testCaseId: 'OQ-212' }), result({ testCaseId: 'OQ-TA3-SUITE-14' })]);
+    journaledBeforeThrow = journalLines(journal).map(line => line.record.testCaseId);
+    throw new Error('Synthetic TA3 interruption');
+  });
+  const results: EvidenceResult[] = await runOq(output, 'http://127.0.0.1:9', undefined, [], { suites: { base: false, ta3: [13, 14] } });
+  assert.deepEqual(journaledBeforeThrow, ['OQ-206', 'OQ-TA3-SUITE-13', 'OQ-212', 'OQ-TA3-SUITE-14']);
+  // An uninterrupted runner saves as before (the stopped TA3 records) and spends the journal.
+  assert.equal(results.find(row => row.testCaseId === 'OQ-206')!.outcomeCode, 'PREREQUISITE_MISSING');
+  assert.equal(fs.existsSync(journal), false);
 });
