@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ICH_E6_R3 } from '../config/regulatory-scope';
+import { collectSOPs, sopFolders } from '../collectors/sop-collector';
 import {
   documentHeader,
   markdownTable,
@@ -28,40 +29,6 @@ interface RequiredCategory {
   matchPatterns: RegExp[];
 }
 
-const KNOWN_SOPS: SOPEntry[] = [
-  { sopNumber: 'SOP-001', title: 'Product Management and Requirements', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-002', title: 'Periodic System Review and Revalidation Assessment', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-003', title: 'Code Review Process', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-004', title: 'Testing and Validation', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-005', title: 'Change Control Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-006', title: 'System Validation and Qualification', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-007', title: 'Training and Access Control', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-008', title: 'Audit Trail and Record Retention', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-009', title: 'HIPAA Breach Notification and Incident Response', version: '', directory: 'compliance' },
-  { sopNumber: 'SOP-010', title: 'Vendor and Supplier Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-011', title: 'Local Development Environment Setup', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-012', title: 'Running Application from GitHub', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-013', title: 'AI Backend Integration Deployment', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-014', title: 'System Troubleshooting', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-015-compliance', title: 'GxP Compliance and System Training', version: '', directory: 'compliance' },
-  { sopNumber: 'SOP-015-operational', title: 'User Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-016', title: 'Form Creation and Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-017', title: 'Workflow Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-018', title: 'Data Lock Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-019', title: 'Validation Rules', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-020', title: 'Query Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-021', title: 'Electronic Signature', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-022', title: 'Data Export', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-025', title: 'Study Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-026', title: 'Patient/Subject Management', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-028', title: 'Source Data Verification', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-029', title: 'Data Entry', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-030', title: 'Randomization', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-031', title: 'Reports and Analytics', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-032', title: 'Login and Navigation', version: '', directory: 'operational' },
-  { sopNumber: 'SOP-033', title: 'Data Migration and System Decommissioning', version: '', directory: 'operational' },
-];
-
 const REQUIRED_CATEGORIES: RequiredCategory[] = [
   { id: 1, name: 'Computer System Validation', description: 'SOP governing CSV lifecycle, validation planning, and execution', matchPatterns: [/validation/i, /qualification/i, /csv/i] },
   { id: 2, name: 'Part 11 / Electronic Records', description: 'SOP for managing electronic records per 21 CFR Part 11', matchPatterns: [/part\s*11/i, /electronic\s*record/i, /gxp\s*compliance/i, /21\s*cfr/i] },
@@ -82,16 +49,33 @@ const REQUIRED_CATEGORIES: RequiredCategory[] = [
   { id: 17, name: 'Periodic Review', description: 'SOP for periodic review of validated systems to ensure continued compliance', matchPatterns: [/periodic.*review/i, /revalidation\s*assessment/i, /system\s*validation\s*and\s*qualification/i] },
 ];
 
-function loadSOPs(workspaceRoot: string): SOPEntry[] {
+/** The SOPs the collector read, or why none were read: the folders it tried and its error.
+ * Nothing is filled in from a list, so the inventory never names an SOP that was not read (IR-265). */
+export interface SopInventory {
+  sops: SOPEntry[];
+  notRead?: { folders: string[]; error?: string };
+}
+
+export const SOP_INVENTORY_NOT_READ = 'SOP inventory not read';
+
+export function loadSOPs(workspaceRoot: string): SopInventory {
+  let error: string | undefined;
   try {
-    const collectorPath = path.resolve(__dirname, '..', 'collectors', 'sop-collector');
-    const { collectSOPs } = require(collectorPath) as { collectSOPs: (root: string) => SOPEntry[] };
     const collected = collectSOPs(workspaceRoot);
-    if (collected.length > 0) {
-      return collected;
-    }
-  } catch { /* fall through to known list */ }
-  return KNOWN_SOPS;
+    if (collected.length > 0) return { sops: collected };
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  let folders: string[];
+  try { folders = sopFolders(workspaceRoot).map(folder => folder.path); }
+  catch (err) { folders = [`folders not determinable (${err instanceof Error ? err.message : String(err)})`]; }
+  return { sops: [], notRead: { folders, ...(error ? { error } : {}) } };
+}
+
+/** The line the CLI warns with, and the inventory section states, when no SOP was read. */
+export function sopInventoryNotReadText(notRead: NonNullable<SopInventory['notRead']>): string {
+  return `${SOP_INVENTORY_NOT_READ}: ${notRead.error ? `the collector failed (${notRead.error})` : 'no SOP file was found'}; `
+    + `folders tried: ${notRead.folders.join(', ')}. Every category is Not assessed.`;
 }
 
 function matchSOPsToCategory(sops: SOPEntry[], category: RequiredCategory): SOPEntry[] {
@@ -109,8 +93,9 @@ function priorityForGap(categoryId: number): string {
   return 'Medium';
 }
 
-export function generate(outputDir: string, workspaceRoot: string): void {
-  const sops = loadSOPs(workspaceRoot);
+/** Writes 13-sop-gap-analysis.md. Returns the warning generate.ts prints when no SOP was read. */
+export function generate(outputDir: string, workspaceRoot: string): { warnings: string[] } {
+  const { sops, notRead } = loadSOPs(workspaceRoot);
 
   const toc = tableOfContents([
     { level: 1, title: 'Purpose' },
@@ -144,17 +129,21 @@ export function generate(outputDir: string, workspaceRoot: string): void {
 
   // Section 2: Existing SOPs Inventory
   content += section(2, 'Existing SOPs Inventory');
-  content += `**Total SOPs Found:** ${sops.length}\n\n`;
+  if (notRead) {
+    content += `**${sopInventoryNotReadText(notRead)}**\n\n`;
+  } else {
+    content += `**Total SOPs Found:** ${sops.length}\n\n`;
 
-  content += markdownTable(
-    ['SOP Number', 'Title', 'Category', 'Version'],
-    sops.map((s) => [
-      s.sopNumber || '(no number)',
-      s.title || '(untitled)',
-      s.directory,
-      s.version || '—',
-    ]),
-  );
+    content += markdownTable(
+      ['SOP Number', 'Title', 'Category', 'Version'],
+      sops.map((s) => [
+        s.sopNumber || '(no number)',
+        s.title || '(untitled)',
+        s.directory,
+        s.version || '—',
+      ]),
+    );
+  }
   content += '\n';
   content += hr();
 
@@ -166,6 +155,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   let coveredCount = 0;
   let gapCount = 0;
   let partialCount = 0;
+  let notAssessedCount = 0;
 
   for (const category of REQUIRED_CATEGORIES) {
     const matches = matchSOPsToCategory(sops, category);
@@ -173,7 +163,13 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     let gapDescription: string;
     let priority: string;
 
-    if (matches.length === 0) {
+    if (notRead) {
+      // No inventory, no rating: an unread folder is not a gap.
+      status = 'Not assessed';
+      gapDescription = `${SOP_INVENTORY_NOT_READ}, so whether an SOP covers ${category.description.toLowerCase()} is not assessed.`;
+      priority = '—';
+      notAssessedCount++;
+    } else if (matches.length === 0) {
       status = 'GAP';
       gapDescription = `No existing SOP covers ${category.description.toLowerCase()}. A new SOP must be created.`;
       priority = priorityForGap(category.id);
@@ -207,7 +203,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
 
     gapRows.push([
       `${category.id}. ${category.name}`,
-      status === 'GAP' ? '**GAP**' : status === 'Partial' ? '**Partial**' : 'Covered',
+      status === 'GAP' ? '**GAP**' : status === 'Partial' ? '**Partial**' : status === 'Not assessed' ? '**Not assessed**' : 'Covered',
       matchedSops,
       gapDescription,
       priority,
@@ -228,6 +224,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
       ['Fully Covered', String(coveredCount)],
       ['Partially Covered', String(partialCount)],
       ['Gaps (No Coverage)', String(gapCount)],
+      ...(notRead ? [['Not Assessed', String(notAssessedCount)]] : []),
     ],
   );
   content += '\n';
@@ -236,12 +233,14 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   // Section 4: Gap Remediation Plan
   content += section(2, 'Gap Remediation Plan');
   content += 'The following remediation actions are required to close identified SOP gaps:\n\n';
+  // Without an inventory no gap is identified, so each list states that it was not assessed.
+  const notAssessedLine = notRead ? `Not assessed: ${SOP_INVENTORY_NOT_READ}.\n\n` : undefined;
 
   content += section(3, 'Critical Priority Gaps');
   content += 'These SOPs must be created or updated **before production release**:\n\n';
   const criticalGaps = gapRows.filter((r) => r[4] === 'Critical' && r[1].includes('GAP'));
   if (criticalGaps.length === 0) {
-    content += 'No critical SOP gaps identified.\n\n';
+    content += notAssessedLine ?? 'No critical SOP gaps identified.\n\n';
   } else {
     criticalGaps.forEach((row, i) => {
       content += `${i + 1}. **${row[0]}** — ${row[3]}\n`;
@@ -253,7 +252,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   content += 'These SOPs should be created or updated within **30 days of production release**:\n\n';
   const highGaps = gapRows.filter((r) => r[4] === 'High' && r[1].includes('GAP'));
   if (highGaps.length === 0) {
-    content += 'No high-priority SOP gaps identified.\n\n';
+    content += notAssessedLine ?? 'No high-priority SOP gaps identified.\n\n';
   } else {
     highGaps.forEach((row, i) => {
       content += `${i + 1}. **${row[0]}** — ${row[3]}\n`;
@@ -265,7 +264,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   content += 'These SOPs should be reviewed and updated within **90 days of production release**:\n\n';
   const mediumItems = gapRows.filter((r) => r[4] === 'Medium');
   if (mediumItems.length === 0) {
-    content += 'No medium-priority items identified.\n\n';
+    content += notAssessedLine ?? 'No medium-priority items identified.\n\n';
   } else {
     mediumItems.forEach((row, i) => {
       content += `${i + 1}. **${row[0]}** — ${row[3]}\n`;
@@ -285,4 +284,5 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   content += '\n---\n*End of Document*\n';
 
   fs.writeFileSync(path.join(outputDir, '13-sop-gap-analysis.md'), content);
+  return { warnings: notRead ? [sopInventoryNotReadText(notRead)] : [] };
 }

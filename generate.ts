@@ -491,10 +491,13 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
       : undefined,
   };
   const runGenerator = (gen: GeneratorEntry) => {
-    const mod = require(gen.file) as { generate: (outputDir: string, workspaceRoot: string, options?: Record<string, unknown>) => void };
+    const mod = require(gen.file) as {
+      generate: (outputDir: string, workspaceRoot: string, options?: Record<string, unknown>) => { warnings?: string[] } | undefined;
+    };
     const options = generatorOptions[gen.name];
-    if (options) mod.generate(outputDir, WORKSPACE_ROOT, options);
-    else mod.generate(outputDir, WORKSPACE_ROOT);
+    const generatedWith = options ? mod.generate(outputDir, WORKSPACE_ROOT, options) : mod.generate(outputDir, WORKSPACE_ROOT);
+    // A generator that wrote its document without a source it reads says so (13: an unread SOP inventory, IR-265).
+    for (const warning of generatedWith?.warnings ?? []) console.warn(`  [WARN] ${gen.name}: ${warning}`);
   };
 
   // Phase 2: Run generators

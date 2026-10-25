@@ -8,6 +8,8 @@ import { generate as generatePqProtocol } from '../generators/09-pq-protocol';
 import { executionPeriod, generate as generateExecutionRecords } from '../generators/20-test-execution-records';
 import { generate as generateIqProtocol, iqProtocolCases } from '../generators/07-iq-protocol';
 import { IQ_APPENDIX_ROWS } from '../generators/18-regulatory-requirements-map';
+import { generate as generateSopGapAnalysis, sopInventoryNotReadText, SOP_INVENTORY_NOT_READ } from '../generators/13-sop-gap-analysis';
+import { sopFolders } from '../collectors/sop-collector';
 import { APPROVAL_STATEMENT, approvalBlock, e6r3StatusRow, masterEvidenceIndexHeader } from '../generators/helpers/markdown-writer';
 import { recordedTargetUrl, systemVersionText } from '../generators/helpers/version-stamper';
 import { E6_R3_SECTION_STATUS, ICH_E6_R3 } from '../config/regulatory-scope';
@@ -184,4 +186,30 @@ test('the IQ protocol names the target under test and the declaration for IQ-019
   }
   assert.match(caseText('IQ-029'), /NO_TARGET_CONFIGURATION/);
   assert.doesNotMatch(caseText('IQ-029'), /docker-compose\.test-env/);
+});
+
+test('13 with no SOP folder states the SOP inventory not read, lists no SOP and rates every category Not assessed (IR-265)', t => {
+  const directory = temporaryDirectory(t, 'accura-sop-unread-');
+  const { warnings } = generateSopGapAnalysis(directory, directory);
+  const content = fs.readFileSync(path.join(directory, '13-sop-gap-analysis.md'), 'utf8');
+  const tried = sopFolders(directory).map(folder => folder.path);
+  assert.equal(tried.length, 2);
+  for (const folder of tried) assert.ok(content.includes(folder), folder);
+  assert.ok(content.includes(`${SOP_INVENTORY_NOT_READ}: no SOP file was found; folders tried: ${tried.join(', ')}. Every category is Not assessed.`));
+  // No SOP the collector did not read: the retired list named SOP-001 to SOP-033 (its SOP-018 was Data Lock Management).
+  assert.doesNotMatch(content, /SOP-0\d\d|Data Lock Management|Total SOPs Found/);
+  assert.equal((content.match(/\| \*\*Not assessed\*\* \|/g) ?? []).length, 17);
+  assert.doesNotMatch(content, /\*\*GAP\*\*|\*\*Partial\*\*|\| Covered \||No critical SOP gaps identified/);
+  assert.match(content, /\| Not Assessed \| 17 \|/);
+  assert.deepEqual(warnings, [sopInventoryNotReadText({ folders: tried })]);
+
+  // A folder that holds an SOP is read, and rated, as before.
+  const read = temporaryDirectory(t, 'accura-sop-read-');
+  fs.mkdirSync(path.join(read, 'EDCProjectCompliant', 'SOPs_For_Email'), { recursive: true });
+  fs.writeFileSync(path.join(read, 'EDCProjectCompliant', 'SOPs_For_Email', 'SOP-021_Electronic_Signature.md'), '# Electronic Signature (synthetic)\n');
+  assert.deepEqual(generateSopGapAnalysis(read, read).warnings, []);
+  const readContent = fs.readFileSync(path.join(read, '13-sop-gap-analysis.md'), 'utf8');
+  assert.match(readContent, /\*\*Total SOPs Found:\*\* 1\n/);
+  assert.match(readContent, /\| 3\. Electronic Signatures \| Covered \| SOP-021 \|/);
+  assert.doesNotMatch(readContent, new RegExp(`${SOP_INVENTORY_NOT_READ}|Not assessed`));
 });

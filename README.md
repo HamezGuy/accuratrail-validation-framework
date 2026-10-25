@@ -216,6 +216,12 @@ checkout, so the record states its binding unverified. Each bound record holds
 `responseBody.sourceBinding`. IQ against a checkout that is not the release
 under test therefore fails those cases: check out the release before `--iq`.
 
+Document 13 (SOP gap analysis) lists only the SOPs the collector read from the
+frontend's `SOPs_For_Email` and `COMPLIANCE_DOCUMENTATION` folders. When the
+collector fails or finds none, it states "SOP inventory not read" with the
+folders tried, rates every category Not assessed, and the CLI prints a
+`[WARN] sop-gap-analysis` line.
+
 The production host is refused. A production host is the production API or
 frontend in `config/system-info.ts`, or any other host under `accuratrials.com` or
 `acuratrials.com` that the file does not list as staging. Only an approved

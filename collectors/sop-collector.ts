@@ -17,16 +17,22 @@ const SOP_DIRS: { rel: string; label: 'operational' | 'compliance' }[] = [
   { rel: 'COMPLIANCE_DOCUMENTATION', label: 'compliance' },
 ];
 
+/** The SOP folders collectSOPs reads, as absolute paths, so a reader that finds no
+ * SOP can name the folders it tried. */
+export function sopFolders(workspaceRoot: string): { path: string; label: 'operational' | 'compliance' }[] {
+  const frontendRoot = resolveFrontendRoot(workspaceRoot);
+  return SOP_DIRS.map(dir => ({ path: path.join(frontendRoot, dir.rel), label: dir.label }));
+}
+
 /**
  * Reads all .md files from both SOP directories and extracts
  * title, SOP number, version, and directory classification.
  */
 export function collectSOPs(workspaceRoot: string): SOPEntry[] {
   const entries: SOPEntry[] = [];
-  const frontendRoot = resolveFrontendRoot(workspaceRoot);
 
-  for (const dir of SOP_DIRS) {
-    const fullDir = path.join(frontendRoot, dir.rel);
+  for (const dir of sopFolders(workspaceRoot)) {
+    const fullDir = dir.path;
     const pattern = path.join(fullDir, '*.md').replace(/\\/g, '/');
 
     let files: string[];
