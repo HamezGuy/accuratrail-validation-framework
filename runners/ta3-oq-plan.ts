@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { isRecord, strictObject } from './evidence-capture';
+import { isRecord, strictObject, SHA256_HEX } from './evidence-capture';
 import type { Ta3Account } from '../config/ta3-oq-cases';
 
 // The TA3 OQ plan (TA3 plan VAL-1, spec P20 VD-5 and 3.3). A ta3-oq-plan/1 names
@@ -59,7 +59,6 @@ export interface Ta3OqPlan {
   escalation: { maxWaitMinutes?: number; recipientRole: typeof RECIPIENT_ROLES[number]; recipientUsername: string };
 }
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,127}$/;
 const RUN_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 /** A deviation spec rule id (the EDC stores them as text; the engine's own pattern is wider than any id seen). */

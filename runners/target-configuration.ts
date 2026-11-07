@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { isRecord, strictObject, type EvidenceResult } from './evidence-capture';
+import { isRecord, strictObject, SHA256_HEX, type EvidenceResult } from './evidence-capture';
 
 // The configuration under test (TA3 plan VAL-1, spec P20 VD-9, 3.3 and 3.9). A
 // validation-target-configuration/1 declaration states the EDC settings of the
@@ -88,7 +88,6 @@ export interface ConfigurationUnderTest {
 }
 export const CONFIGURATION_UNDER_TEST_REQUIRED = ['contract', 'sha256', 'flags', 'mismatches'] as const;
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 const CASE_ID = /^[A-Z]{2,4}-\d{3}$/;
 const DECLARATION_BYTE_LIMIT = 1024 * 1024;

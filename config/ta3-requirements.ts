@@ -1,4 +1,5 @@
 import { e6r3, type E6R3Key } from './regulatory-scope';
+import { pilotPqCase } from './ta3-pq-cases';
 
 /**
  * The TA3 platform requirements, URS-081 to URS-101, each with its functional
@@ -526,3 +527,275 @@ export const TA3_REQUIREMENTS: readonly Ta3Requirement[] = [
 export function ta3RequirementCases(requirement: Ta3Requirement): string[] {
   return [...new Set(requirement.planned.flatMap(item => item.cases))];
 }
+
+/*
+ * The lab-to-endpoint pilot requirements, URS-102 to URS-126, each with its functional requirement FRS-108 to
+ * FRS-132 (backlog LE-7.2; plan revision 3 sections 9 and 10; the TA3 plan item VAL-1 extended to the pilot's
+ * intended use). URS-102 to URS-121 are the acceptance cases A1 to A20, URS-122 the G3 bound and URS-123 to
+ * URS-126 the computerised-system validation controls. Each cites exactly one pilot case of PILOT_PQ_CASES
+ * (config/ta3-pq-cases.ts), whose risk, Part 11 sections, ICH E6(R3) topics and pass criterion it takes, so the
+ * criterion is written once. The URS (03), FRS (04) and traceability matrix (06) print them in their
+ * "Lab-to-Endpoint Pilot (CDISCPILOT01)" category through the same code as the TA3 requirements; the pilot
+ * validation plan (23) prints the requirement-to-test matrix. Implementation references name the owning
+ * repository and the backlog item that builds it.
+ */
+
+/** What every pilot case leaves to the evidence it admits, stated once in each planned verification. */
+const ADMITS_BY_HASH = 'The framework admits the run\'s verdict for this case only with every cited evidence file verified by SHA-256, '
+  + 'complete coverage and a key sealed before the run; it does not re-judge the evidence content, which the LE-7.3 observer produces.';
+const DERIVATION = 'accuratrail-validation-framework runners/benchmark-evidence.ts (derivePilotResults, behind VALIDATION_PILOT_ACCEPTANCE_IMPORT)';
+
+interface PilotRequirementInput {
+  id: string;
+  caseId: string;
+  title: string;
+  description: string;
+  rationale: string;
+  context: string;
+  activity: string;
+  frs: { id: string; requirement: string; implementation: string };
+}
+
+function pilotRequirement(input: PilotRequirementInput): Ta3Requirement {
+  const pqCase = pilotPqCase(input.caseId);
+  if (pqCase.requirement !== input.id) throw new Error(`${input.caseId} names ${pqCase.requirement}, not ${input.id}.`);
+  return {
+    id: input.id, title: input.title, description: input.description, priority: 'Must', risk: pqCase.riskLevel,
+    part11Ref: pqCase.cfr, e6r3: pqCase.e6r3, acceptance: pqCase.passesWhen,
+    rationale: input.rationale, context: input.context,
+    planned: [verify(input.activity, [input.caseId], ADMITS_BY_HASH)],
+    frs: { ...input.frs, implementation: `${input.frs.implementation}; ${DERIVATION}` },
+  };
+}
+
+const CRITICAL_CLASSES = 'a wrong participant or specimen linkage, a wrong value or unit in an analysis input, a falsely verified '
+  + 'action, unblinding of a blinded role, or a permitted consent-restricted use';
+
+export const PILOT_REQUIREMENTS: readonly Ta3Requirement[] = [
+  pilotRequirement({
+    id: 'URS-102', caseId: 'PQA-001', title: 'Protocol requirement traced to the endpoint result (A1)',
+    description: 'The platform SHALL trace each protocol requirement of the pilot endpoint through its form item and laboratory definition to the observation, the derived variable and the result',
+    rationale: `${e6r3('dataCapture')} and 21 CFR Part 11 §11.10(a) and §11.10(e) require data to be attributable and traceable to source. `
+      + 'The pilot endpoint (ALT change from baseline at Week 24 by arm) is only credible when every value can be followed back to the requirement it answers.',
+    context: 'CDISCPILOT01 definitions are authored and signed in CSL (D-A1, LE-3.4); the EDC captures, BW derives ADLB (LE-6.2), the CC evaluator compares with ADLBC (LE-6.3) and the LE-7.3 observer takes the lineage census (G8).',
+    activity: 'Lineage census of the 113 Week 24 ALT values and the reference comparison, from the reconstructed pilot run',
+    frs: { id: 'FRS-108', requirement: 'Each released ADLB value shall carry a lineage record naming its protocol citation, CSL definition, EDC item, source observation and derivation; the run shall count values without one',
+      implementation: 'ClinicalSemanticLayer csl-authored release (LE-3.4, LE-3.10); BiometricsWorkbench ADLB derivation (LE-6.2); CommandCenter synthetic-trial/evaluate/reference comparator (LE-6.3); lineage census of the LE-7.3 observer' },
+  }),
+  pilotRequirement({
+    id: 'URS-103', caseId: 'PQA-002', title: 'Specimen and identity linkage, units and censored results (A2)',
+    description: 'The platform SHALL keep different specimens and participant or event identities apart, refuse ambiguous linkage and incompatible unit assumptions, standardise one analyte reported in different units identically and never coerce a censored result',
+    rationale: `A wrong linkage or unit in an analysis input is a critical failure (plan section 10). ${e6r3('dataCapture')} and §11.10(a) require the system to keep values exactly as reported and attributed to the right participant.`,
+    context: 'The real data carry 6 censored results and conventional and SI pairs for bilirubin, glucose and albumin; the overlay adds specimen ids and an ambiguous linkage. D-LE-13 keeps a censored value as character with its limit and comparator.',
+    activity: 'Linkage refusals, unit standardisation and censored-value storage, from the reconstructed pilot run',
+    frs: { id: 'FRS-109', requirement: 'Lab intake shall refuse an ambiguous participant, event or specimen linkage with its ambiguity state, refuse a unit it cannot convert, convert by UCUM to the standard unit and store censored results as character with limit and comparator',
+      implementation: 'ClinicalSemanticLayer lab transfer semantics (LE-3.6), units and conversion (LE-3.7), regional identity crosswalk (LE-3.8)' },
+  }),
+  pilotRequirement({
+    id: 'URS-104', caseId: 'PQA-003', title: 'Correction reason, retained value and missing rationale (A3)',
+    description: 'The platform SHALL record a site correction with its reason for change, a retained-value decision, and an edit without rationale with the rationale status missing rather than a sentinel string',
+    rationale: `${e6r3('dataCorrections')} and 21 CFR Part 11 §11.10(e) require every change to keep the previous value and the reason; a sentinel string reads as a reason that was never given.`,
+    context: 'LE-4.1 maps the EDC sentinel reasons to stated, coded-only or missing; LE-4.12 and LE-4.13 carry the status unchanged into CSL and BW; LE-4.4 separates action and outcome verification.',
+    activity: 'Correction, retained-value decision and rationale status read back in the EDC, CSL and BW, from the reconstructed pilot run',
+    frs: { id: 'FRS-110', requirement: 'The EDC shall classify each change\'s rationale as stated, coded-only or missing and the CSL and BW projections shall carry that status unchanged; a retained-value resolution shall close verified without a value change',
+      implementation: 'libreclinicaapi form-save reason gate and rationale status (LE-4.1); ClinicalSemanticLayer decision index and clinical projection (LE-4.2, LE-4.4, LE-4.12); BiometricsWorkbench cell and decision views (LE-4.13)' },
+  }),
+  pilotRequirement({
+    id: 'URS-105', caseId: 'PQA-004', title: 'Form definition change apart from response correction (A4)',
+    description: 'The platform SHALL show a form-definition change separately from a participant-response correction, identify the affected deployed versions and keep collected data under the definition and form version they were collected under',
+    rationale: `${e6r3('protocolAndRecords')} and §11.10(e) require collected records to keep their context; rewriting a collected form\'s structure would change what a participant\'s answer meant.`,
+    context: 'LE-4.10 stops template propagation rewriting instances that hold data and adds instance form amendments.',
+    activity: 'Collected form versions before and after the overlay amendment and a form-version migration, from the reconstructed pilot run',
+    frs: { id: 'FRS-111', requirement: 'Template propagation shall not rewrite the structure of a form instance that holds data; a form-definition change and a response correction shall be different record types',
+      implementation: 'libreclinicaapi form-propagation.service.ts and study-definition-form-amendment.ts (LE-4.10)' },
+  }),
+  pilotRequirement({
+    id: 'URS-106', caseId: 'PQA-005', title: 'Discrepancy to verified resolution and regenerated analysis (A5)',
+    description: 'The platform SHALL take a cross-system discrepancy through a signed raise-query decision, the site\'s correction with its reason, verification on a later system revision and regeneration of the dependent analysis',
+    rationale: `A falsely verified action is a critical failure. ${e6r3('dataCorrections')}, §11.50 and §11.70 require the decision to be signed and bound to its record, and the resolution to be read back from the system of record.`,
+    context: 'LE-4.5 runs the real EDC query path (PR-11.C); LE-4.6 has BW regenerate on closure; LE-4.4 records action and outcome verification separately. G2 times every hop.',
+    activity: 'Hop records, signed decision, EDC correction, later-revision verification and BW regeneration, from the reconstructed pilot run',
+    frs: { id: 'FRS-112', requirement: 'A query shall be raised only from a signed decision, closed verified only on readback of a later EDC revision, and its closure shall trigger an analysis regeneration plan',
+      implementation: 'ClinicalSemanticLayer action proposals and query source (LE-4.5, LE-4.4); libreclinicaapi edc-query-intake; BiometricsWorkbench regeneration plan (LE-4.6)' },
+  }),
+  pilotRequirement({
+    id: 'URS-107', caseId: 'PQA-006', title: 'Duplicates, relabels, late corrections and unknown outcomes (A6)',
+    description: 'The platform SHALL handle duplicate events, corrections, relabels, late corrections, concurrent edits, failed writes and ambiguous timeouts without duplicate or falsely verified effects',
+    rationale: `§11.10(a) and §11.10(f) require accurate and correctly sequenced operation; ${e6r3('dataCapture')} requires that retried or reordered transfers change nothing they should not.`,
+    context: 'LE-4.3 adds the outcome-unknown state with no path to verified without readback; LE-3.6 detects and codes the L1 to L11 delivery faults.',
+    activity: 'Each injected fault with its record or refusal and every unknown outcome resolved by readback, from the reconstructed pilot run',
+    frs: { id: 'FRS-113', requirement: 'A command whose outcome is unknown shall be held outcome_unknown until readback resolves it; duplicates, corrections and relabels shall be told apart by natural key and content',
+      implementation: 'CommandCenter control.command outcome-unknown state and transition table (LE-4.3); ClinicalSemanticLayer lab transfer semantics (LE-3.6)' },
+  }),
+  pilotRequirement({
+    id: 'URS-108', caseId: 'PQA-007', title: 'Scoped amendment activation and blinded arm change (A7)',
+    description: 'The platform SHALL activate an amendment for one site or open-label scope while another stays on its old release, detect a new requirement without a dependency edge, and keep blinded roles unable to infer allocation from an arm-specific change',
+    rationale: `${e6r3('protocolAndRecords')} requires the governing version per site; ${e6r3('blinding')} requires that no configuration change reveals allocation.`,
+    context: 'LE-4.9 builds the impact assessment chain (G9); LE-5.7 the blinded-configuration check with a blinding-impact assessment per arm-scoped assignment.',
+    activity: 'Per-site release state, impact plan, blinded-role views and the out-of-scope diff, from the reconstructed pilot run',
+    frs: { id: 'FRS-114', requirement: 'Amendment activation shall be scoped to the declared sites or open-label scope; an arm-scoped change shall be refused unless blinded roles see identical forms, schedules, requisitions and layouts',
+      implementation: 'ClinicalSemanticLayer impact assessment chain (LE-4.9); libreclinicaapi arm lifecycle blinded-configuration check (LE-5.7)' },
+  }),
+  pilotRequirement({
+    id: 'URS-109', caseId: 'PQA-008', title: 'Optional consent restriction and restricted uses (A8)',
+    description: 'The platform SHALL enforce an optional-consent restriction and the EDC reconsent gate, block the optional use while a permission is unknown and refuse restricted joins and exports',
+    rationale: `A permitted consent-restricted use is a critical failure (plan section 10). ${e6r3('gcp')} requires participants\' consent to govern every use of their data.`,
+    context: 'The consent records are a declared synthetic overlay (D-A8); unknown blocks and raises a site query (D-LE-7); LE-5.6 records every export with recipient, purpose, scope and digest.',
+    activity: 'Data-use evaluations, the blocked use, the site query and the refused joins and exports, from the reconstructed pilot run',
+    frs: { id: 'FRS-115', requirement: 'Data-use evaluation shall report unknown when no permission is recorded, unknown shall block the optional use, and a restricted join or export shall be refused with a code',
+      implementation: 'ClinicalSemanticLayer DataUsePolicyV1 consent route (LE-5.1) and export controls (LE-5.6); libreclinicaapi reconsent gate; BiometricsWorkbench restricted joins' },
+  }),
+  pilotRequirement({
+    id: 'URS-110', caseId: 'PQA-009', title: 'Alternative baseline held as a scoped version (A9)',
+    description: 'The platform SHALL hold a statistician\'s alternative mapping or baseline rule as a scoped version, report the affected records, derived values and pooled outputs, and keep by-arm outputs from blinded roles',
+    rationale: `${e6r3('reviewOfData')} requires analysis choices to be documented and reproducible; ${e6r3('blinding')} forbids by-arm results to blinded roles.`,
+    context: 'The real unscheduled 1.x retests give the alternative baseline; LE-6.6 holds it as a scoped version with a per-value diff; LE-5.4 partitions unblinding per study and allocation level.',
+    activity: 'Per-value diff of the alternative definition and the blinded-role read, from the reconstructed pilot run',
+    frs: { id: 'FRS-116', requirement: 'An alternative derivation shall be a scoped version over the same cut with a per-derived-value diff; blinded roles shall see pooled impact only',
+      implementation: 'BiometricsWorkbench revision impact and regeneration plan (LE-6.6); study unblinding partition (LE-5.4)' },
+  }),
+  pilotRequirement({
+    id: 'URS-111', caseId: 'PQA-010', title: 'Earlier analysis reproduced from pinned inputs (A10)',
+    description: 'The platform SHALL reproduce an earlier analysis from its pinned inputs after source, document and mapping changes and SHALL identify superseded outputs explicitly',
+    rationale: `${e6r3('validation')} and §11.10(b) require records that can be reproduced accurately for inspection; ${e6r3('retention')} requires them to stay retrievable.`,
+    context: 'LE-6.4 makes the analysis release owned by BW, pinning the CSL snapshot when configured, with a reproduction gate (G7).',
+    activity: 'Re-run output digests against the release and the superseded-output list, from the reconstructed pilot run',
+    frs: { id: 'FRS-117', requirement: 'An analysis release shall pin its inputs and declared tolerances; a re-run shall compare every output digest and list superseded outputs',
+      implementation: 'BiometricsWorkbench analysis release and reproduction gate (LE-6.4)' },
+  }),
+  pilotRequirement({
+    id: 'URS-112', caseId: 'PQA-011', title: 'Standards finding mapped to evidence (A11)',
+    description: 'The platform SHALL map each standards finding back to its original evidence, SHALL distinguish a skipped or erroring validation from verified coverage and SHALL report a defect no selected rule can reach as not covered, never as a pass',
+    rationale: `${e6r3('reviewOfData')} and §11.10(a) require a validation result to state what was checked; a skipped rule counted as coverage overstates conformance.`,
+    context: 'BW runs CORE V1.0 (LE-6.10, LE-6.11; OD-15, OD-18) on the SDTMIG 3.4 datasets it produces and, through an imported-dataset input pinned by its data-use manifest SHA-256, on the unchanged SDTMIG 3.1.2 pilot files under an explicitly selected SDTMIG 3.2 profile with no define (OD-16, OD-19). USDM, TIG and SEND stay on 0.17.1, and no ADaM runs until a pinned release ships adamig rules (OD-18). The run stays local only if LE-6.11\'s measured peak fits its stage budget, otherwise it uses the LE-2.10 copy (LE-6.18).',
+    activity: 'Structured runner result with coverage sets, rule manifest and occurrence traces, the CORE-002087 count and the ADVS key check, from the reconstructed pilot run',
+    frs: { id: 'FRS-118', requirement: 'Each CORE V1.0 occurrence shall be joined to dataset, row and variable, the EDC source record, the CSL definition and the citation, with the exact rule and engine versions; issues, execution errors, skips and verified coverage shall be counted apart; the unchanged files shall record declared and executed versions; the ADVS duplicate keys shall be checked by a standalone reader on the keys this plan states',
+      implementation: 'BiometricsWorkbench src/cdisc-core-runner.ts, validator-runner-result/2, standards-lineage/2 and CoreFindingEvidenceJoinV1 (LE-6.8, LE-6.10, LE-6.11); keySequence check (LE-6.15); EDC audit read at the cut (LE-6.16); data-use manifest pins (LE-6.17); the standalone ADVS reader (OD-22)' },
+  }),
+  pilotRequirement({
+    id: 'URS-113', caseId: 'PQA-012', title: 'Correction after hard lock and unblinding (A12)',
+    description: 'The platform SHALL refuse a correction after hard lock and unblinding and SHALL record the approved unlock, the authorised site correction, the re-lock, the investigator endorsement and the change for the clinical study report',
+    rationale: `${e6r3('dataCorrections')}, §11.10(d), §11.10(e) and §11.50 require that locked data change only through an authorised, signed and audited path.`,
+    context: 'LE-5.5 adds the finalisation record per analysis release or milestone (D-LE-9) with its unlock path.',
+    activity: 'Refusal, unlock approval, authorised correction, re-lock, endorsement and change list, from the reconstructed pilot run',
+    frs: { id: 'FRS-119', requirement: 'A finalisation record shall move through soft lock, endorsement, hard lock and unblinded states with an unlock path approved by a person other than the requester, and list post-unblinding changes',
+      implementation: 'libreclinicaapi finalisation record and EDC locks (LE-5.5); BiometricsWorkbench release pin' },
+  }),
+  pilotRequirement({
+    id: 'URS-114', caseId: 'PQA-013', title: 'Reference ranges by laboratory and collection date (A13)',
+    description: 'The platform SHALL bind each laboratory result to the reference range in force at its laboratory on its collection date and SHALL flag a result with no applicable range rather than default one',
+    rationale: `Indicators and grades drive safety review. ${e6r3('dataCapture')} and §11.10(a) require the range applied to be the one that governed the result; a defaulted range is a wrong analysis input.`,
+    context: 'The real data hold 1,814 ALT results in four range sets and 2,041 numeric results with no range; the overlay adds a mid-study change and a second-site local range. LE-3.5 versions the ranges.',
+    activity: 'Range binding census, overlay results either side of the change and flagged no-range results, from the reconstructed pilot run',
+    frs: { id: 'FRS-120', requirement: 'Reference range sets shall be versioned by laboratory, analyte, sex, age band, method, unit and effective interval, bound at collection, never retroactively, with no-range results flagged',
+      implementation: 'ClinicalSemanticLayer ReferenceRangePolicy catalog type and laboratory profile (LE-3.5)' },
+  }),
+  pilotRequirement({
+    id: 'URS-115', caseId: 'PQA-014', title: 'Partial date and untimed dose under two baseline rules (A14)',
+    description: 'The platform SHALL derive the SAP baseline and imputation flag for a partial collection date with an untimed same-day dose, and SHALL change both predictably under the alternative rule',
+    rationale: `${e6r3('reviewOfData')} requires derivations to follow the pre-specified analysis plan, with imputations flagged.`,
+    context: 'The partial date and untimed dose are a declared overlay; LE-6.2 runs the reviewed and the alternative definitions on the same cut.',
+    activity: 'The overlay participant\'s ADLB rows under both definitions, from the reconstructed pilot run',
+    frs: { id: 'FRS-121', requirement: 'ADLB derivation shall apply the SAP baseline and imputation rules and flag imputed dates; the alternative definition shall be a second reviewed definition on the same cut',
+      implementation: 'BiometricsWorkbench standards engine and analysis contracts (LE-6.2)' },
+  }),
+  pilotRequirement({
+    id: 'URS-116', caseId: 'PQA-015', title: 'Specimen before consent raises a finding (A15)',
+    description: 'The platform SHALL raise a finding when a specimen is collected before signature of the applicable ICF version',
+    rationale: `${e6r3('nonCompliance')} requires protocol and consent noncompliance to be identified; a procedure before consent is a serious deviation.`,
+    context: 'Consent timing is an EDC deviation rule authored as data in the deviation specification (LE-3.4, LE-1.6), with the EDC deviation engine as its single producer; the consent records are a declared overlay (LE-5.1); the replay keeps consent on the Screening 1 visit date, and the 85 participants with earlier draws are declared source-timing findings in the key (OD-21).',
+    activity: 'The deviation receipt for the overlay specimen, from the reconstructed pilot run',
+    frs: { id: 'FRS-122', requirement: 'The deviation specification shall carry the consent-before-procedure rule and the EDC deviation engine shall evaluate it against the applicable ICF version',
+      implementation: 'libreclinicaapi deviation-evaluation.service.ts, with the rule kind LE-5.1-edc adds to judge each dated draw against the ICF version applicable on that date (OD-28); csl-study-deviation-spec/1 (LE-3.4, OD-11); ClinicalSemanticLayer consent route (LE-5.1)' },
+  }),
+  pilotRequirement({
+    id: 'URS-117', caseId: 'PQA-016', title: 'Hidden laboratory field and unblinding event (A16)',
+    description: 'The platform SHALL withhold a laboratory field classified as hidden from the study team from blinded roles and SHALL record a simulated inadvertent exposure as an unblinding event with an impact assessment',
+    rationale: `Unblinding of a blinded role is a critical failure. ${e6r3('blinding')} requires blinding to be safeguarded in data governance and every unblinding to be recorded.`,
+    context: 'LE-5.2 classifies laboratory fields by allocation level (D-LE-10); LE-5.3 adds the unblinding event as the D-S3 decision record.',
+    activity: 'Blinded-channel census of the hidden field and the unblinding event record, from the reconstructed pilot run',
+    frs: { id: 'FRS-123', requirement: 'A field classified hidden shall be separated at intake and never reach a blinded channel, rationale, AI context or log; an exposure shall create an unblinding event with kind, scope, blinded roles and impact assessment',
+      implementation: 'ClinicalSemanticLayer security markings and laboratory-field classes (LE-5.2); libreclinicaapi randomization unblinding event (LE-5.3)' },
+  }),
+  pilotRequirement({
+    id: 'URS-118', caseId: 'PQA-017', title: 'Out-of-window draw to confirmed deviation and analysis set (A17)',
+    description: 'The platform SHALL raise a deviation candidate for an out-of-window lab draw with importance unassessed and its rule version, have a named person confirm it and assign its importance, and set analysis-set membership by a documented pre-unblinding decision',
+    rationale: `${e6r3('nonCompliance')} makes importance a qualified person\'s decision; ${e6r3('blinding')} requires analysis sets to be fixed before unblinding.`,
+    context: 'The key holds 111 scheduled ALT draws outside the SAP section 8.2 windows (15 at Week 24) on the bound pack; 3 of those rows cannot be candidates, and the machine rules give 149 candidates, 108 at visits with an ALT record (OD-28, OD-29). A rule\'s mandatory severity is not its importance (OD-28). LE-4.7 adds candidates and analysis-set determinations; the per-protocol rule is an overlay.',
+    activity: 'Candidates against the key with importance unassessed, signed confirmation with the importance assigned and the analysis-set determination, from the reconstructed pilot run',
+    frs: { id: 'FRS-124', requirement: 'The deviation engine shall emit candidates with importance unassessed; a named person shall confirm each with its importance; BW shall record each analysis-set determination with its time relative to unblinding',
+      implementation: 'libreclinicaapi deviation-evaluation.service.ts and deviation decisions (LE-4.7, ENABLE_DEVIATION_ENGINE, ENABLE_DEVIATION_DECISIONS); BiometricsWorkbench analysis-set determinations' },
+  }),
+  pilotRequirement({
+    id: 'URS-119', caseId: 'PQA-018', title: 'Schedule divergence raises a finding (A18)',
+    description: 'The platform SHALL raise a finding for each CSL or OSB schedule entry that differs from the approved schedule of activities',
+    rationale: `${e6r3('protocolAndRecords')} requires the system to implement the approved protocol; a schedule that drifts from it changes what data are collected.`,
+    context: 'LE-3.11 extends the CSL G5.6 schedule-cell check; the key records each real difference against Attachment LZZT.1, or an overlay injects one.',
+    activity: 'Findings against the key\'s differing cells, from the reconstructed pilot run',
+    frs: { id: 'FRS-125', requirement: 'The schedule comparison shall raise one dispatchable:false finding per differing cell between the release schedule and the approved schedule of activities',
+      implementation: 'ClinicalSemanticLayer protocol-conformance-v1 schedule-cell check (LE-3.11)' },
+  }),
+  pilotRequirement({
+    id: 'URS-120', caseId: 'PQA-019', title: 'Platform wrote no participant value (A19)',
+    description: 'The platform SHALL write no participant value at any step; every participant value SHALL be written by a declared site-entry account or a named person',
+    rationale: `${e6r3('dataCapture')}, §11.10(d) and §11.10(e) require participant data to be attributable to the person who entered it; corrections stay native to the EDC (BW ADR 001, CC ADR-009).`,
+    context: 'The LE-7.3 observer counts participant values by writer class through the EDC audit trail; G3 needs the platform-principal count to be zero.',
+    activity: 'A19 census by writer class over every participant value of the run, from the reconstructed pilot run',
+    frs: { id: 'FRS-126', requirement: 'No platform principal shall hold a participant-value write path; the census shall resolve every participant value\'s writer through the EDC audit trail',
+      implementation: 'libreclinicaapi audit trail; the LE-7.3 observer A19 census' },
+  }),
+  pilotRequirement({
+    id: 'URS-121', caseId: 'PQA-020', title: 'Liver injury pattern reaches the safety owner (A20)',
+    description: 'The platform SHALL route a potential drug-induced liver injury pattern found during reconciliation to the safety owner without waiting in a review queue',
+    rationale: `${e6r3('reviewOfData')} and ${e6r3('qualityManagement')} require potential safety signals to reach the responsible person promptly; a review queue in front of them delays a safety decision.`,
+    context: 'CDISCPILOT01 participant 01-705-1186 shows the pattern on 4 draws; LE-1.6 adds dili-pattern@1 and LE-4.11 routes the finding to a safety-owner task outside every review queue.',
+    activity: 'Findings, the safety-owner task and its timing against the reconciliation run, from the reconstructed pilot run',
+    frs: { id: 'FRS-127', requirement: 'dili-pattern@1 shall evaluate each draw\'s ALT or AST against 3x ULN with total bilirubin against 2x ULN and report ALP; a hit shall open a safety-owner task with a protocol-timeline due time and no review step before it',
+      implementation: 'ClinicalSemanticLayer dili-pattern@1 module evaluator (LE-1.6, OD-13) and safety linkage (LE-4.11); CommandCenter operator task (CcOperatorTaskDueSourceV1)' },
+  }),
+  pilotRequirement({
+    id: 'URS-122', caseId: 'PQA-021', title: 'Zero critical failures across the acceptance cases (G3)',
+    description: `The pilot SHALL show zero critical failures (${CRITICAL_CLASSES}) in at least 300 scored critical case instances across A1 to A20, with N fixed in the sealed key before the run`,
+    rationale: `${e6r3('validation')} requires validation in proportion to risk; a statement of zero failures means something only with its denominator, reported as the 95% upper bound 3/N, never as a universal accuracy claim (plan section 10).`,
+    context: 'N is written into the sealed key by the adjudicator (LE-3.2, D-LE-21) before the run; the LE-7.3 observer scores each case\'s critical instances.',
+    activity: 'Sum of critical instances and failures over A1 to A20 against the key\'s declared N, from the reconstructed pilot run',
+    frs: { id: 'FRS-128', requirement: 'The sealed key set manifest shall declare N; the run shall report critical instances and failures per case and cite that manifest and its seal record; the import shall read N from those bytes and require the sum to equal it, N to be at least 300 and failures to be zero',
+      implementation: 'CommandCenter synthetic-trial/evaluate/reference key sets (LE-3.2); the LE-7.3 observer' },
+  }),
+  pilotRequirement({
+    id: 'URS-123', caseId: 'PQC-001', title: 'Security test of every pilot leg',
+    description: 'Every pilot leg SHALL be security tested on the qualification estate, refusing requests without a session, with a forged or expired token, for another tenant or study, and blinded reads of unblinded data',
+    rationale: `${e6r3('validation')} (computerised systems, 4.3) requires security controls to be in place and tested; §11.10(d) and §11.300 require access limited to authorised individuals.`,
+    context: 'The EDC alone has a security suite today (SEC-001 to SEC-010); the pilot also runs on CSL, CC and BW. The probes run on the qualification estate (LE-7.1) and their results enter the pilot run (LE-7.3).',
+    activity: 'Per-leg probe counts with zero unexpected acceptances, from the reconstructed pilot run',
+    frs: { id: 'FRS-129', requirement: 'Each pilot leg shall refuse an unauthenticated, forged, expired, cross-tenant, cross-study or blinded-to-unblinded request; the run shall record probes and refusals per leg',
+      implementation: 'the qualification estate (LE-7.1); probe results in the pilot run (LE-7.3); libreclinicaapi auth middleware, ClinicalSemanticLayer auth.ts, CommandCenter server/auth.js, BiometricsWorkbench session checks' },
+  }),
+  pilotRequirement({
+    id: 'URS-124', caseId: 'PQC-002', title: 'Backup and disaster-recovery restore of every pilot store',
+    description: 'The store of every pilot leg SHALL be backed up and restored into an isolated target, with the restored content digest equal to the source digest and the recovery point and time recorded',
+    rationale: `§11.10(c) requires records to be protected and retrievable throughout retention; ${e6r3('retention')} and ICH E6(R3) 4.3.3 require backup and disaster recovery with periodic tests.`,
+    context: 'The EDC DR runner checks files and endpoints only and DR-005 (restore) is manual. The restore test runs on the qualification estate (LE-7.1) and its digests enter the pilot run (LE-7.3).',
+    activity: 'Per-leg backup, isolated restore and digest equality with recovery point and time, from the reconstructed pilot run',
+    frs: { id: 'FRS-130', requirement: 'Each pilot store shall be restorable from its backup into an isolated target whose content digest equals the source; recovery point and time shall be recorded per store',
+      implementation: 'the qualification estate (LE-7.1); restore results in the pilot run (LE-7.3); libreclinicaapi backup routes; the Postgres and SQLite stores of CSL, CC and BW' },
+  }),
+  pilotRequirement({
+    id: 'URS-125', caseId: 'PQC-003', title: 'Signature-to-record linking across the pilot (21 CFR 11.70)',
+    description: 'Every electronic signature produced in the pilot SHALL be linked to the record revision it signed, so that the digest recorded at signing recomputes from that revision',
+    rationale: '21 CFR Part 11 §11.70 requires signatures to be linked to their records so they cannot be excised, copied or transferred. The EDC binding is qualified by OQ-037, OQ-040 and OQ-065; the pilot also signs in CSL, BW and CC.',
+    context: 'Signing systems in the pilot: EDC Part 11 acts, CSL signed decisions, BW review approvals and CC approved-change receipts (D-LE-5: one record, one meaning, one signer).',
+    activity: 'Per-system signature census with zero unlinked and zero mismatched, from the reconstructed pilot run',
+    frs: { id: 'FRS-131', requirement: 'Each signing system shall store with every signature the signed record id, its revision and the content digest at signing; the census shall recompute each digest from the stored revision',
+      implementation: 'libreclinicaapi esignature.service.ts (content_hash); ClinicalSemanticLayer approval-service.ts; BiometricsWorkbench signed reviews; CommandCenter approved-change receipts; the census in the pilot run (LE-7.3)' },
+  }),
+  pilotRequirement({
+    id: 'URS-126', caseId: 'PQC-004', title: 'Access and account-change log census',
+    description: 'Every pilot application SHALL keep an access log and an account-change log covering the run; every declared account SHALL appear in its account-change log and no account SHALL appear in a log that the run did not declare',
+    rationale: `§11.10(d) and §11.10(e) require access to be limited and changes to be audited; ${e6r3('auditTrails')} requires the audit trail to show who could act. Plan section 9 names these logs missing across applications.`,
+    context: 'The declared set is the OD-8 le_* accounts on R1, created through each application\'s own routes (LE-7.1), and the owner\'s list of named role holders and site-entry accounts on R2; the census runs over the EDC, CSL, CC and BW logs (LE-7.3).',
+    activity: 'Per-application access and account-change event counts, declared accounts found and undeclared accounts seen, from the reconstructed pilot run',
+    frs: { id: 'FRS-132', requirement: 'Each application shall log sign-ins and account creation, role change, deactivation and credential change; the census shall count them over the run window and match the declared accounts in both directions',
+      implementation: 'libreclinicaapi audit login history and user audit; ClinicalSemanticLayer, CommandCenter and BiometricsWorkbench access and account logs; the census in the pilot run (LE-7.3)' },
+  }),
+];

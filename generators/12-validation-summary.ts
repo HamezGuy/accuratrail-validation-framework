@@ -13,7 +13,7 @@ import {
 import {
   loadRunnerEvidence, mappedCaseState, runnerCaseCheck, tryLoadEvidence, type RunnerResult,
 } from './helpers/evidence-linker';
-import { loadEvidence, registryCounts, type RegistryCounts } from '../runners/evidence-capture';
+import { currentEvidenceMarking, loadEvidence, registryCounts, type RegistryCounts } from '../runners/evidence-capture';
 import { complianceRow, E6_R3_MAPPINGS, HIPAA_MAPPINGS, PART11_MAPPINGS, TA3_USE_MAPPINGS } from './helpers/compliance-mapping';
 import { DEVIATION_DETECTION_CONTRACT, TA3_PQ_CASES } from '../config/ta3-pq-cases';
 import { contractBuildRows, currentReleaseIdentity } from '../runners/release-identity';
@@ -232,7 +232,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   } else {
     content += '**Overall:** [To be completed after test execution]\n\n';
   }
-  content += section(3, 'Supplemental Synthetic Benchmark Evidence');
+  content += section(3, currentEvidenceMarking()?.declaredPublicData ? 'Supplemental Benchmark Evidence (Declared Public Data)' : 'Supplemental Synthetic Benchmark Evidence');
   content += benchmarkStats.total === 0
     ? 'No reconstructed benchmark evidence is attached. Benchmark performance remains unmeasured in this package.\n\n'
     : `${benchmarkStats.pass} of ${benchmarkStats.total} benchmark evidence checks passed; ${benchmarkStats.fail} failed or remain unexecuted. See **evidence/benchmark/benchmark-execution-report.md** and **20-test-execution-records.md**.\n\n`;

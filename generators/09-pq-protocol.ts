@@ -15,7 +15,8 @@ import {
 import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
 import { ta3RegulatoryRef } from '../config/ta3-oq-cases';
 import {
-  DEVIATION_DETECTION_CONTRACT, DEVIATION_RECONSTRUCTION_ENTRY, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, type Ta3PqCase,
+  DEVIATION_DETECTION_CONTRACT, DEVIATION_RECONSTRUCTION_ENTRY, PILOT_ACCEPTANCE_CONTRACT, PILOT_IMPORT_SWITCH,
+  PILOT_PQ_CASES, PILOT_RECONSTRUCTION_ENTRY, PUBLIC_DATA_BASIS_NOT_ADMITTED, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, UNSUPPORTED_PILOT_SUMMARY, type Ta3PqCase,
 } from '../config/ta3-pq-cases';
 
 interface PqTestCase {
@@ -527,22 +528,23 @@ function archiveRecoveryCases(): PqTestCase[] {
 /** The section title of the TA3 PQ cases tied to the O-7 run (spec P20 3.5). */
 export const TA3_PQ_SECTION = 'TA3 Deviation Detection on Public Protocols (PQT-001 to PQT-006)';
 
-function pqtCaseBlock(tc: Ta3PqCase): string {
+function pqtCaseBlock(tc: Ta3PqCase, importName = 'O-7'): string {
   const lines: string[] = [
     `### ${tc.id}: ${tc.title}`,
     '',
     `- **Requirement:** ${tc.requirement}`,
+    ...(tc.acceptanceCase ? [`- **Acceptance Case:** ${tc.acceptanceCase}; stage ${tc.stage} exit; runs on ${tc.source} data; evidence produced by ${(tc.items ?? []).join(', ')}`] : []),
     `- **Regulatory Reference:** ${ta3RegulatoryRef(tc)}`,
     `- **Risk Level:** ${riskBadge(tc.riskLevel)}`,
-    `- **Method:** ${tc.method === 'MANUAL' ? 'Manual: a qualified person\'s act; the import records it and never passes it' : 'Derived by the O-7 import from the reconstructed run, without re-scoring'}`,
+    `- **Method:** ${tc.method === 'MANUAL' ? 'Manual: a qualified person\'s act; the import records it and never passes it' : `Derived by the ${importName} import from the reconstructed run, without re-scoring`}`,
     `- **Preconditions:** ${tc.preconditions}`,
     '- **Steps:**',
     ...tc.steps.map((step, i) => `  ${i + 1}. ${step}`),
     `- **Passes when:** ${tc.passesWhen}`,
     `- **Outcome code otherwise:** ${tc.failureCode ? `\`${tc.failureCode}\`` : 'none: the case never passes automatically'}`,
     `- **Expected Result:** ${tc.expectedResult}`,
-    '- **Actual Result:** _[Recorded by the O-7 import]_',
-    `- **Evidence:** _[evidence/benchmark/${tc.id}.json of the package that holds the O-7 import]_`,
+    `- **Actual Result:** _[Recorded by the ${importName} import]_`,
+    `- **Evidence:** _[evidence/benchmark/${tc.id}.json of the package that holds the ${importName} import]_`,
     '',
   ];
   return lines.join('\n');
@@ -566,6 +568,31 @@ function ta3PqSection(): string {
   );
   content += '\n';
   for (const tc of TA3_PQ_CASES) content += pqtCaseBlock(tc);
+  return content;
+}
+
+export const PILOT_PQ_SECTION = 'Lab-to-Endpoint Pilot (PQA-001 to PQA-021, PQC-001 to PQC-004)';
+
+/** The lab-to-endpoint pilot cases (LE-7.2), printed through the same case block as the O-7 cases. */
+function pilotPqSection(): string {
+  let content = section(2, PILOT_PQ_SECTION);
+  content += 'These cases qualify the platform for the lab-to-endpoint pilot\'s intended use (CDISCPILOT01, ALT change from baseline at '
+    + 'Week 24 by arm; plan revision 3 sections 9 and 10). They are satisfied only by an imported pilot run of the qualification estate '
+    + `whose run-summary.json states \`${PILOT_ACCEPTANCE_CONTRACT}\`, imported with \`--benchmark-run\` while \`${PILOT_IMPORT_SWITCH}=true\`. `
+    + `The import reconstructs the run through \`${PILOT_RECONSTRUCTION_ENTRY}\`, the CommandCenter entry LE-7.3 owns; until that entry exists every case is recorded not executed. It admits each case's verdict only with every evidence `
+    + 'file it cites verified by SHA-256 inside the run directory, complete coverage and an answer key whose own manifest and seal record show it sealed before the run; it never '
+    + `re-judges the evidence content. An unrecognised member or value records \`${UNSUPPORTED_PILOT_SUMMARY}\`, never a guess; a case the `
+    + 'run did not run or report is recorded not executed, so an R1 at the Stage B exit shows its Stage C cases not executed.\n\n';
+  content += 'An R1 run is synthetic engineering evidence (D-LE-14) with mechanical or builder-declared keys (D-LE-21). Only an R2 run '
+    + 'with countersigned keys, admitted under the declared-public-data basis the QA owner filed and retained under QA-RETENTION-ROOT, is the run of '
+    + `record; an R2 run not so admitted records \`${PUBLIC_DATA_BASIS_NOT_ADMITTED}\` on its acceptance cases and controls and stays synthetic. The pilot validation plan (document 23) holds `
+    + 'the intended use, the system risk assessment and the requirement-to-test matrix.\n\n';
+  content += markdownTable(
+    ['Case', 'Acceptance case', 'Requirement', 'Stage', 'Title', 'Outcome code otherwise'],
+    PILOT_PQ_CASES.map(tc => [tc.id, tc.acceptanceCase ?? '', tc.requirement, tc.stage ?? '', tc.title, tc.failureCode ?? 'none (manual)']),
+  );
+  content += '\n';
+  for (const tc of PILOT_PQ_CASES) content += pqtCaseBlock(tc, 'pilot');
   return content;
 }
 
@@ -601,6 +628,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     tocEntries.push({ level: 1, title });
   }
   tocEntries.push({ level: 1, title: TA3_PQ_SECTION });
+  tocEntries.push({ level: 1, title: PILOT_PQ_SECTION });
   tocEntries.push({ level: 1, title: 'Acceptance Criteria' });
   tocEntries.push({ level: 1, title: 'Deviations' });
   tocEntries.push({ level: 1, title: 'Approval Signatures' });
@@ -692,6 +720,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
 
   /* TA3 PQ cases tied to the O-7 run */
   content += ta3PqSection();
+  content += pilotPqSection();
   content += hr();
 
   /* Acceptance Criteria */

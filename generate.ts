@@ -9,9 +9,10 @@ import {
 } from './runners/release-identity';
 import { approvalBlock, masterEvidenceIndexHeader, registryCasesText } from './generators/helpers/markdown-writer';
 import {
-  benchmarkRunInputs, checkExecutorName, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
+  admitPublicDataRun, benchmarkRunInputs, checkExecutorName, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
   sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
+import type { PublicDataAdmission } from './runners/benchmark-evidence';
 import { ALL_OQ_SUITES, OQ_CASE_IDS, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
@@ -289,6 +290,7 @@ const GENERATORS: GeneratorEntry[] = [
   { name: 'test-execution-records', file: './generators/20-test-execution-records' },
   { name: 'design-specification', file: './generators/21-design-specification' },
   { name: 'platform-validation-summary', file: './generators/22-platform-validation-summary' },
+  { name: 'pilot-validation-plan', file: './generators/23-pilot-validation-plan' },
 ];
 
 interface CollectorEntry {
@@ -375,37 +377,48 @@ async function main(): Promise<void> {
     const loaded = checkTa3OqPlan(args.ta3OqPlan);
     console.log(`TA3 OQ plan: ${loaded.file} (${loaded.plan.contract}, study ${loaded.plan.study.studyId}, OQ site ${loaded.plan.study.siteStudyId}, SHA-256 ${loaded.sha256.slice(0, 12)})`);
   }
-  let platformEvidenceSynthetic = false;
+  let platformEvidenceSynthetic = false, platformEvidencePublicData = false;
   if (args.platformEvidence) {
     // Refused before anything runs: a plan that breaks its contract, cites what the inventory does not admit,
     // or declares a cited package's synthetic flag wrongly. Hashes that do not match are shown in document 22.
     const checked = checkPlatformEvidencePlan(args.platformEvidence);
     platformEvidenceSynthetic = checked.synthetic;
+    platformEvidencePublicData = checked.declaredPublicData;
     const counts = PLATFORM_EVIDENCE_STATUSES.map(status => `${checked.entries.filter(entry => entry.status === status).length} ${status}`);
     console.log(`Platform evidence plan: ${checked.file} (${checked.plan.contract}, ${counts.join(', ')}`
-      + `${checked.synthetic ? ', cites synthetic evidence' : ''}, SHA-256 ${checked.sha256.slice(0, 12)})`);
+      + `${checked.synthetic ? ', cites synthetic evidence' : ''}${checked.declaredPublicData ? ', cites declared public data' : ''}, SHA-256 ${checked.sha256.slice(0, 12)})`);
   }
   const version = args.version || 'v1.0';
   const imports = !args.docsOnly && Boolean(args.benchmarkRun || args.p13Plan);
   const executed = imports || (!args.docsOnly && liveRunnerSelected(args));
-  // Synthetic is computed from the run, never chosen; every import is synthetic engineering evidence, and a
-  // documents package whose platform evidence plan cites synthetic evidence is synthetic too (VD-3).
-  const basis = syntheticBasis({
+  // Synthetic is computed from the run, never chosen; every import is synthetic engineering evidence unless the run is
+  // admitted under its filed declared-public-data basis (D-LE-14), and a documents package whose platform evidence plan
+  // cites synthetic evidence is synthetic too (VD-3).
+  const syntheticFacts = {
     syntheticQualification: args.qualificationFlags.includes('--synthetic-qualification'),
-    benchmarkImport: !args.docsOnly && Boolean(args.benchmarkRun),
     p13Import: !args.docsOnly && Boolean(args.p13Plan),
     platformEvidencePlan: platformEvidenceSynthetic,
-  });
+  };
+  const publicData = !args.docsOnly && args.benchmarkRun
+    ? admitPublicDataRun({ runDir: args.benchmarkRun, retainRoot: args.retainRoot, otherSyntheticBases: syntheticBasis({ ...syntheticFacts, benchmarkImport: false }) })
+    : undefined;
+  if (publicData?.claimed) {
+    console.log(publicData.admitted
+      ? `Declared-public-data basis: admitted, ${publicData.basisRef} (SHA-256 ${publicData.basisSha256.slice(0, 12)}, filed by ${publicData.filedBy})`
+      : `Declared-public-data basis: NOT admitted (${publicData.code}): ${publicData.reason}. The import stays synthetic engineering evidence.`);
+  }
+  const basis = syntheticBasis({ ...syntheticFacts, benchmarkImport: !args.docsOnly && Boolean(args.benchmarkRun) && !publicData?.admitted });
   if (args.retainRoot) {
     // Refused before anything runs when the root, a marker or an input is wrong.
     const evidencePackage = createPackage({
-      retainRoot: args.retainRoot, version, executed, syntheticBasis: basis, inputs: packageInputs(args),
+      retainRoot: args.retainRoot, version, executed, syntheticBasis: basis, inputs: packageInputs(args), ...(publicData ? { publicData } : {}),
+      ...(platformEvidencePublicData ? { citesDeclaredPublicData: true } : {}),
       ...(args.allowDirtyFramework ? { allowDirtyFramework: true } : {}),
       ...(args.executor !== undefined ? { executor: args.executor } : {}),
     });
     const stopOnSignal = onInterrupt(evidencePackage.dir, () => sealRetainedPackage(evidencePackage, args));
     try {
-      await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage });
+      await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage }, publicData);
     } finally {
       stopOnSignal();
       // Sealed whatever the outcome, so a failed run is retained too, with every category it journaled.
@@ -425,7 +438,7 @@ async function main(): Promise<void> {
   // Every scratch run writes into a new folder of its own, with a scratch TMF-FILING.md (IR-034, RF-013).
   const scratch = createScratchRun({ outputRoot: path.join(__dirname, 'output'), version });
   const stopOnSignal = onInterrupt(scratch.dir);
-  try { await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' }); }
+  try { await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' }, publicData); }
   finally { stopOnSignal(); }
 }
 
@@ -476,7 +489,7 @@ function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): v
   }
 }
 
-async function generateInto(args: CliArgs, outputDir: string, retention: Retention): Promise<void> {
+async function generateInto(args: CliArgs, outputDir: string, retention: Retention, publicData?: PublicDataAdmission): Promise<void> {
   // Documents and evidence of this run carry the release under test.
   setReleaseIdentity(args.releaseIdentity);
 
@@ -504,7 +517,8 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     console.log(`Executor: ${args.executor}${account ? ` (OS account ${account})` : ''}; attribution only, nothing is signed`);
   }
   if (retention.kind === 'package') {
-    console.log(`Retention: sealed evidence package${retention.evidencePackage.synthetic ? ' (synthetic engineering evidence)' : ''}`);
+    console.log(`Retention: sealed evidence package${retention.evidencePackage.synthetic ? ' (synthetic engineering evidence)' : ''}`
+      + `${retention.evidencePackage.declaredPublicData ? ' (declared public data)' : ''}`);
   } else if (retention.kind === 'not-retained') {
     console.log(`Retention: none. ${DEVELOPMENT_RUN_NOTICE}; nothing from this run is retained.`);
   }
@@ -589,7 +603,7 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
       try {
         const { importBenchmarkEvidence } = require('./runners/benchmark-evidence') as typeof import('./runners/benchmark-evidence');
         const results = await importBenchmarkEvidence(outputDir, {
-          runDir: args.benchmarkRun, evaluatorRoot: args.benchmarkEvaluatorRoot,
+          runDir: args.benchmarkRun, evaluatorRoot: args.benchmarkEvaluatorRoot, ...(publicData ? { publicData } : {}),
         });
         const notPassed = failedRunnerCases(results);
         if (notPassed.length) {
@@ -598,7 +612,7 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
           console.error(`  [FAIL] Benchmark reconstruction, engineering gates or PQ cases not passed (${notPassed.join(', ')}); see retained benchmark evidence.`);
         } else {
           runnersPassed++;
-          console.log('  [OK] Benchmark reconstructed; synthetic engineering scope only.');
+          console.log(publicData?.admitted ? '  [OK] Benchmark reconstructed; declared public data under the filed basis.' : '  [OK] Benchmark reconstructed; synthetic engineering scope only.');
         }
       } catch (error) {
         runnersFailed++;
@@ -690,7 +704,7 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
     // The IQ, OQ and PQ protocols name the target the release identity observed, which is set only after phase 2 (RF-009).
     const evidenceDependentGens = GENERATORS.filter(
       (g) => g.name === 'traceability-matrix' || g.name === 'validation-summary' || g.name === 'release-gate-checklist' || g.name === 'csa-feature-assurance' || g.name === 'test-execution-records'
-        || g.name === 'platform-validation-summary' || g.name === 'regulatory-requirements-map'
+        || g.name === 'platform-validation-summary' || g.name === 'regulatory-requirements-map' || g.name === 'pilot-validation-plan'
         || g.name === 'iq-protocol' || g.name === 'oq-protocol' || g.name === 'pq-protocol'
     );
     for (const gen of evidenceDependentGens) {

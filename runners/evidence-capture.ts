@@ -5,6 +5,8 @@ import {
   currentReleaseIdentity, isReleaseStamp, releaseComponent, releaseComponentText, releaseStamp, RELEASE_COMPONENTS, type ReleaseStamp,
 } from './release-identity';
 
+export { SHA256_HEX } from './release-identity';
+
 export interface EvidenceResult {
   testCaseId: string;
   timestamp: string;
@@ -99,6 +101,9 @@ export function executorText(records: ReadonlyArray<{ executedBy?: string }>): s
 
 /** Opens every record, summary and document of a synthetic run (VD-3, D-22). */
 export const SYNTHETIC_NOTICE = 'SYNTHETIC ENGINEERING EVIDENCE. Synthetic data on a test stack. Not a real trial, not an approval.';
+/** Opens every summary and document of a package admitted under the pilot's filed declared-public-data basis (D-LE-14),
+ * so a package that is not synthetic is never read as a real trial's data. */
+export const DECLARED_PUBLIC_DATA_NOTICE = 'DECLARED PUBLIC DATA. Public CDISCPILOT01 data with declared synthetic overlays on the testing estate, under the basis the QA owner filed. Not a real trial\'s participants, not an approval.';
 /** Stated on every record and document of a run that is not retained in a sealed package. */
 export const DEVELOPMENT_RUN_NOTICE = 'Development run: not retained, not validation evidence';
 
@@ -112,6 +117,8 @@ export interface EvidenceMarking {
   retained: boolean;
   /** The --executor name; when set, saveEvidence stamps it on every record as executedBy. */
   executor?: string;
+  /** True only for a package admitted under the pilot's filed declared-public-data basis (never with synthetic). */
+  declaredPublicData?: boolean;
 }
 
 let marking: EvidenceMarking | undefined;
@@ -127,7 +134,8 @@ export function currentEvidenceMarking(): EvidenceMarking | undefined {
 /** The notices a document of this run opens with, in order. */
 export function evidenceNotices(value: EvidenceMarking | undefined = marking): string[] {
   if (!value) return [];
-  return [...(value.synthetic ? [SYNTHETIC_NOTICE] : []), ...(value.retained ? [] : [DEVELOPMENT_RUN_NOTICE])];
+  return [...(value.synthetic ? [SYNTHETIC_NOTICE] : []), ...(value.declaredPublicData ? [DECLARED_PUBLIC_DATA_NOTICE] : []),
+    ...(value.retained ? [] : [DEVELOPMENT_RUN_NOTICE])];
 }
 
 /** The same notices as Markdown lines for the top of a document; empty when there is none. */
@@ -158,6 +166,18 @@ export interface CaptureOptions {
 /** Plain-object guard shared by every runner that inspects untyped API payloads. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** True when `target` is `base` or lies under it (case-insensitive on Windows, as path.relative is). Resolve links first
+ * (fs.realpathSync) where a link must not count as inside. */
+export function isWithin(base: string, target: string): boolean {
+  const relative = path.relative(base, target);
+  return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
+}
+
+/** True when `target` lies under `base` and is not `base` itself. */
+export function isInside(base: string, target: string): boolean {
+  return path.relative(base, target) !== '' && isWithin(base, target);
 }
 
 /** A key whose value is a credential (password, token, secret, API key, cookie or authorization). */
@@ -410,6 +430,7 @@ export function saveEvidence(
     })),
     // Appended last, so an unmarked summary keeps its bytes.
     ...(run?.synthetic ? { synthetic: true, syntheticNotice: SYNTHETIC_NOTICE } : {}),
+    ...(run?.declaredPublicData ? { declaredPublicData: true, declaredPublicDataNotice: DECLARED_PUBLIC_DATA_NOTICE } : {}),
     ...(run && !run.retained ? { retention: DEVELOPMENT_RUN_NOTICE } : {}),
     ...(run?.executor ? { executedBy: run.executor } : {}),
   };

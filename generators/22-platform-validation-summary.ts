@@ -13,7 +13,7 @@ import {
 import { OQ_SUITES, oqSuiteCaseIds } from '../config/oq-case-registry';
 import { ICH_E6_R3, E6_R3_SECTION_STATUS, e6r3 } from '../config/regulatory-scope';
 import { RELEASE_PQ_CASE } from '../config/ta3-pq-cases';
-import { checkPlatformEvidencePlan, PLATFORM_EVIDENCE_STATUSES, type CheckedPlatformEvidence, type PlatformEvidenceStatus } from '../runners/evidence-package';
+import { checkPlatformEvidencePlan, PLATFORM_EVIDENCE_STATUSES, PLATFORM_SUMMARY_DOCUMENT, type CheckedPlatformEvidence, type PlatformEvidenceStatus } from '../runners/evidence-package';
 import { currentEvidenceMarking, isRecord, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../runners/evidence-capture';
 import { frameworkCommit, parseReleaseComponent, type ReleaseComponent } from '../runners/release-identity';
 import { dotenvEnvironment, sourceFlagValue, type FlagValue } from '../runners/target-configuration';
@@ -34,7 +34,7 @@ import { approvalBlock, documentHeader, hr, markdownTable, section } from './hel
 // Repositories are only read: git rev-parse and git status, never a write.
 
 export const PLATFORM_SUMMARY_CONTRACT = 'platform-validation-summary/1';
-export const PLATFORM_SUMMARY_DOCUMENT = '22-platform-validation-summary.md';
+export { PLATFORM_SUMMARY_DOCUMENT };
 export const PLATFORM_SUMMARY_FILE = 'platform-validation-summary.json';
 
 /** Required members of the summary and of its objects; the contract test compares them with the schema. */

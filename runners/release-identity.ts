@@ -122,7 +122,8 @@ export interface ReleaseStamp {
 
 const GIT_COMMIT = /^[0-9a-f]{40}$/;
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
-const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** A SHA-256 in lower-case hex. Defined here, the one runner module with no runner imports; evidence-capture re-exports it. */
+export const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export function parseReleaseComponent(
   name: ReleaseComponentName, value: string, source: ReleaseComponent['source'] = 'operator-input',

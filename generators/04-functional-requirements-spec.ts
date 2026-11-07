@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
-import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
+import { PILOT_REQUIREMENTS, TA3_REQUIREMENTS, ta3RequirementCases, type Ta3Requirement } from '../config/ta3-requirements';
 import {
   documentHeader,
   markdownTable,
@@ -161,8 +161,8 @@ function hipaaFrs(): FRS[] {
 /** One functional requirement per TA3 user requirement (config/ta3-requirements.ts). The verification
  * method is the runner cases of that requirement's planned verification, each a catalogued case;
  * a requirement no case verifies says so. */
-function ta3Frs(): FRS[] {
-  return TA3_REQUIREMENTS.map((r): FRS => {
+function ta3Frs(requirements: readonly Ta3Requirement[] = TA3_REQUIREMENTS): FRS[] {
+  return requirements.map((r): FRS => {
     const cases = ta3RequirementCases(r);
     for (const id of cases) runnerCaseCheck(id);
     return [r.frs.id, r.id, r.frs.requirement, r.frs.implementation,
@@ -185,6 +185,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     ...workflowFrs(),
     ...hipaaFrs(),
     ...ta3Frs(),
+    ...ta3Frs(PILOT_REQUIREMENTS),
   ];
 
   let content = '';
@@ -208,6 +209,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     { level: 1, title: 'Clinical Workflows (FRS-063 to FRS-076)' },
     { level: 1, title: 'HIPAA Safeguards (FRS-077 to FRS-086)' },
     { level: 1, title: 'TA3 Platform Operations (FRS-087 to FRS-107)' },
+    { level: 1, title: 'Lab-to-Endpoint Pilot (FRS-108 to FRS-132)' },
     { level: 1, title: 'Requirements Summary' },
     { level: 1, title: 'Approval Signatures' },
   ]) + '\n';
@@ -231,6 +233,8 @@ export function generate(outputDir: string, workspaceRoot: string): void {
   content += 'The TA3 Platform Operations entries (FRS-087 to FRS-107) name libreclinicaapi components unless they name this ' +
     'framework. A component of an item that has not landed is named with its item (M-2, W-1), and each verification method ' +
     'lists the OQ cases of the requirement\'s planned verification in the URS.\n\n';
+  content += 'The Lab-to-Endpoint Pilot entries (FRS-108 to FRS-132) name the owning repository and the lab-to-endpoint backlog item ' +
+    'that builds each function, and the framework\'s pilot import that records the verifying case.\n\n';
   content += hr();
 
   const categories: [string, FRS[]][] = [
@@ -241,6 +245,7 @@ export function generate(outputDir: string, workspaceRoot: string): void {
     ['Clinical Workflows (FRS-063 to FRS-076)', workflowFrs()],
     ['HIPAA Safeguards (FRS-077 to FRS-086)', hipaaFrs()],
     ['TA3 Platform Operations (FRS-087 to FRS-107)', ta3Frs()],
+    ['Lab-to-Endpoint Pilot (FRS-108 to FRS-132)', ta3Frs(PILOT_REQUIREMENTS)],
   ];
 
   for (const [title, entries] of categories) {

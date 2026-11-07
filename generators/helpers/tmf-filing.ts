@@ -11,6 +11,9 @@ export const SCRATCH_FILING_LINE = 'SCRATCH: not a validation evidence package; 
 /** The first line of the filing instructions of a synthetic package. */
 export const SYNTHETIC_FILING_LINE = 'SYNTHETIC: file only in an IL project on a test stack to show the mechanics; never in a production TMF.';
 
+/** The first line of the filing instructions of a package admitted under the pilot's filed declared-public-data basis (D-LE-14). */
+export const DECLARED_PUBLIC_DATA_FILING_LINE = 'DECLARED PUBLIC DATA: the R2 run of the CDISCPILOT01 pilot, admitted under the basis the QA owner filed; not a real trial\'s participants.';
+
 /** The first line of the filing instructions of a package whose framework checkout was
  * dirty, unreadable or changed during the run (--allow-dirty-framework, IR-056). */
 export const NOT_RUN_OF_RECORD_LINE = 'NOT A RUN OF RECORD: framework checkout dirty or changed during the run';
@@ -45,6 +48,10 @@ export interface TmfFilingFacts {
   notRunOfRecord?: boolean;
   /** The package retains the training module's privileged inspection capture. */
   restricted?: boolean;
+  /** The filed basis the package was admitted under (D-LE-14). */
+  declaredPublicData?: { basisRef: string; basisSha256: string };
+  /** The package cites another package admitted under that basis (its platform summary). */
+  citesDeclaredPublicData?: boolean;
 }
 
 /** The filing instructions: static text plus the package ID, version and synthetic
@@ -57,13 +64,17 @@ export function tmfFilingText(facts: TmfFilingFacts): string {
     ...(facts.restricted ? [RESTRICTED_FILING_LINE, ''] : []),
     ...(facts.notRunOfRecord ? [NOT_RUN_OF_RECORD_LINE, ''] : []),
     ...(facts.synthetic ? [SYNTHETIC_FILING_LINE, ''] : []),
-    ...evidenceNoticeLines({ synthetic: facts.synthetic, retained: true }),
+    ...(facts.declaredPublicData || facts.citesDeclaredPublicData ? [DECLARED_PUBLIC_DATA_FILING_LINE, ''] : []),
+    ...evidenceNoticeLines({ synthetic: facts.synthetic, retained: true, ...(facts.declaredPublicData || facts.citesDeclaredPublicData ? { declaredPublicData: true } : {}) }),
     `# eTMF Filing of Validation Evidence Package ${facts.packageId}`,
     '',
     markdownTable(['Field', 'Value'], [
       ['Package ID', facts.packageId],
       ['Version', facts.version],
       ['Synthetic', facts.synthetic ? 'yes: synthetic engineering evidence' : 'no'],
+      ...(facts.declaredPublicData ? [
+        ['Declared-public-data basis', `${facts.declaredPublicData.basisRef}, SHA-256 ${facts.declaredPublicData.basisSha256}, retained as evidence/public-data-basis.json`],
+      ] : []),
       ['Package contract', 'validation-evidence-package/1'],
       ['Filed record', 'package-manifest.json'],
     ]),
@@ -73,7 +84,8 @@ export function tmfFilingText(facts: TmfFilingFacts): string {
     facts.synthetic
       ? 'This package holds synthetic engineering evidence. File it, if at all, only in an IL project on a test stack to '
         + 'show the mechanics. A filing there is not QA approval of a real system.'
-      : 'Only a package that is not synthetic is filed in the platform\'s production TMF.',
+      : `Only a package that is not synthetic is filed in the platform\'s production TMF.${facts.declaredPublicData || facts.citesDeclaredPublicData
+        ? ' This package supports the pilot\'s intended use only (23-pilot-validation-plan.md), never a decision about a real participant.' : ''}`,
     '',
     '## 1. Verify the package bytes',
     '',
@@ -95,6 +107,8 @@ export function tmfFilingText(facts: TmfFilingFacts): string {
       ['package-manifest.json', 'The filed record: every file of the package with its byte count and SHA-256, and the package hash'],
       ['12-validation-summary.md', 'For reading'],
       ['22-platform-validation-summary.md', 'For reading, when this package holds it'],
+      ['23-pilot-validation-plan.md', 'For reading: the lab-to-endpoint pilot validation plan and risk assessment the QA owner approves (LE-7.2)'],
+      ...(facts.declaredPublicData ? [['evidence/public-data-basis.json', 'For reading: the declared-public-data basis the QA owner filed, under which this package was admitted (D-LE-14)']] : []),
     ]),
     ...(facts.restricted ? ['Upload no other file of this package: inputs/training-evidence.json and the files under '
       + 'evidence/training/ hold the privileged training capture and stay with the package.', ''] : []),

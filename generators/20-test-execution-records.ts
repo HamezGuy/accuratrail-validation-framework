@@ -19,6 +19,7 @@ import { e6r3 } from '../config/regulatory-scope';
 import { RECORDED_AT_EXECUTION, recordedTargetUrl, systemVersionText } from './helpers/version-stamper';
 import { contractBuildRows, currentReleaseIdentity } from '../runners/release-identity';
 import {
+  currentEvidenceMarking,
   EVIDENCE_CATEGORIES as ALL_CATEGORIES,
   executionPeriod,
   executorText,
@@ -50,6 +51,11 @@ const CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   benchmark: 'Synthetic Benchmark Evidence (Engineering Scope)',
   p13: 'Native P13 Evidence Attachment (Engineering Scope)',
 };
+
+/** A package admitted under the pilot's declared-public-data basis holds no synthetic benchmark (D-LE-14). */
+function categoryLabel(category: EvidenceCategory): string {
+  return category === 'benchmark' && currentEvidenceMarking()?.declaredPublicData ? 'Benchmark Evidence (Declared Public Data)' : CATEGORY_LABELS[category];
+}
 
 function safeJsonExcerpt(body: unknown, maxLength: number = 500): string {
   if (body === null || body === undefined) return 'N/A';
@@ -212,7 +218,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     const pass = records.filter(r => r.passed).length;
     allStats.push({
       category: cat,
-      label: CATEGORY_LABELS[cat],
+      label: categoryLabel(cat),
       total: records.length,
       pass,
       fail: records.length - pass,
@@ -233,7 +239,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
   for (const cat of ALL_CATEGORIES) {
     const records = categoryRecords.get(cat);
     if (records && records.length > 0) {
-      tocEntries.push({ level: 1, title: `${CATEGORY_LABELS[cat]} — Execution Records` });
+      tocEntries.push({ level: 1, title: `${categoryLabel(cat)} — Execution Records` });
     }
   }
 
@@ -347,7 +353,7 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     const records = categoryRecords.get(cat);
     if (!records || records.length === 0) continue;
 
-    content += section(2, `${CATEGORY_LABELS[cat]} — Execution Records`);
+    content += section(2, `${categoryLabel(cat)} — Execution Records`);
 
     const catPass = records.filter(r => r.passed).length;
     const catFail = records.length - catPass;

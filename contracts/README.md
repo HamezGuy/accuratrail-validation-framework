@@ -14,6 +14,7 @@ validator dependency is added.
 | `ta3-oq-plan/1` | `ta3-oq-plan-v1.schema.json` | owner: this framework, `runners/ta3-oq-plan.ts`; producer: the operator (VAL-1/validation-run step 0, every member read back from the stack) | the TA3 OQ suites 13 to 18 (`runners/oq-ta3-runner.ts`); `createPackage`, which retains it as `inputs/ta3-oq-plan.json` |
 | `platform-validation-evidence-plan/1` | `platform-validation-evidence-plan-v1.schema.json` | owner: this framework, `runners/platform-evidence-plan.ts`; producer: the operator (the validation lead, VAL-1/validation-run step 3) | `checkPlatformEvidencePlan` (`runners/evidence-package.ts`) and the platform summary (`generators/22-platform-validation-summary.ts`); `createPackage`, which retains it as `inputs/platform-evidence-plan.json` |
 | `platform-validation-summary/1` | `platform-validation-summary-v1.schema.json` | this framework, `generators/22-platform-validation-summary.ts` | CommandCenter W-5 readiness, when it is built (not yet) |
+| `pilot-declared-public-data-basis/1` | `pilot-declared-public-data-basis-v1.schema.json` | owner: this framework, `runners/benchmark-evidence.ts` (`publicDataAdmissionOf`); producer: the QA owner, by hand, in the tree holding `QA-RETENTION-ROOT` | `admitPublicDataRun` and `npm run verify:package` (`runners/evidence-package.ts`), which recheck the copy a package keeps as `evidence/public-data-basis.json` |
 
 ## Versioning
 
@@ -24,6 +25,16 @@ old one, and readers accept both before the producer emits the new one.
 `validation-evidence-package/1` reserves the input roles of later VAL-1
 subtasks; its `configurationUnderTest`, null before IQ-033, took its object form
 with that case (no package with the null-only form had been retained).
+
+## pilot-declared-public-data-basis/1
+
+The declared-public-data basis of the lab-to-endpoint pilot's run of record (D-LE-14): a file the QA owner places by hand
+in the tree holding `QA-RETENTION-ROOT`, before the run starts. It names the study, the run kind R2, the classification,
+the decisions it rests on (D-LE-1 and D-LE-14 among them), the SHA-256 of the data-use manifest and of the sealed key set
+of the run, who filed it, in what role and when. An R2 run summary cites it by relative path and SHA-256. It carries no
+signature and no code creates it. `validation-evidence-package/1` is unchanged: a package admitted under the basis keeps
+a byte copy as the listed file `evidence/public-data-basis.json`, and `npm run verify:package` recomputes the rule from the
+retained summary and basis bytes.
 
 ## validation-target-configuration/1
 

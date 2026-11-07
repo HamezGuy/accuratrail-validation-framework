@@ -6,7 +6,7 @@ import {
 } from '../../runners/release-identity';
 import { e6r3StatusRow } from './markdown-writer';
 import { SYSTEM_INFO } from '../../config/system-info';
-import { currentEvidenceMarking, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../../runners/evidence-capture';
+import { currentEvidenceMarking, DECLARED_PUBLIC_DATA_NOTICE, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../../runners/evidence-capture';
 
 /** The metadata row of a document written into a retained evidence package. */
 export const RETAINED_PACKAGE_TEXT = 'Retained evidence package, sealed by its package-manifest.json';
@@ -142,6 +142,7 @@ export function stampDocument(content: string, meta: DocumentMeta): string {
   // The synthetic and not-retained banners, also stated at the top of the document.
   const run = currentEvidenceMarking();
   if (run?.synthetic) lines.push(`| Evidence Classification | ${SYNTHETIC_NOTICE} |`);
+  if (run?.declaredPublicData) lines.push(`| Evidence Classification | ${DECLARED_PUBLIC_DATA_NOTICE} |`);
   if (run) lines.push(`| Retention | ${run.retained ? RETAINED_PACKAGE_TEXT : DEVELOPMENT_RUN_NOTICE} |`);
 
   lines.push('');

@@ -12,7 +12,7 @@ import {
 } from './helpers/markdown-writer';
 import { loadRunnerEvidence, mappedCaseState, runnerCaseCheck, RunnerResult } from './helpers/evidence-linker';
 import { TESTS_LIVE_MAPPINGS, getAllMappedTestCaseIds, getScriptsForTestCase } from '../config/tests-live-mapping';
-import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
+import { PILOT_REQUIREMENTS, TA3_REQUIREMENTS, ta3RequirementCases, type Ta3Requirement } from '../config/ta3-requirements';
 import { resolveTestsLiveRoot } from '../collectors/workspace-paths';
 
 const DOC_DATE = new Date().toISOString().split('T')[0];
@@ -344,8 +344,9 @@ function disasterRecoveryRows(): TraceRow[] {
  * its test cases those of the requirement's planned verification, each a catalogued runner case. The status reads
  * each case's retained state, so a case recorded not executed (for example NO_TA3_PLAN, or a suite not selected)
  * leaves the row Pending, never Fail; a requirement no case verifies is a GAP row. */
-function ta3Rows(evidenceMap: Map<string, RunnerResult>): TraceRow[] {
-  return TA3_REQUIREMENTS.map((r): TraceRow => {
+function ta3Rows(evidenceMap: Map<string, RunnerResult>, requirements: readonly Ta3Requirement[] = TA3_REQUIREMENTS,
+  evidenceDir = 'evidence/oq/'): TraceRow[] {
+  return requirements.map((r): TraceRow => {
     const cases = ta3RequirementCases(r);
     const reference = [...r.part11Ref.split(', ').map(sectionId => `§${sectionId}`), 'ICH E6(R3)'].join(', ');
     if (!cases.length) return [`${r.id}: ${r.title}`, reference, riskBadge(r.risk), r.frs.implementation, 'GAP', 'Pending', 'None', 'None', 'Pending'];
@@ -354,7 +355,7 @@ function ta3Rows(evidenceMap: Map<string, RunnerResult>): TraceRow[] {
       : states.every(state => state === 'passed') ? ['Pass', 'Verified']
         : states.includes('passed') ? ['Partial', 'Pending']
           : states.every(state => state === 'missing') ? ['Pending', 'Pending'] : ['Not executed', 'Pending'];
-    return [`${r.id}: ${r.title}`, reference, riskBadge(r.risk), r.frs.implementation, cases.join(', '), result, 'evidence/oq/', 'None', status];
+    return [`${r.id}: ${r.title}`, reference, riskBadge(r.risk), r.frs.implementation, cases.join(', '), result, evidenceDir, 'None', status];
   });
 }
 
@@ -469,6 +470,8 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
   }
   // The TA3 rows carry their status from each case's retained state already.
   const ta3 = ta3Rows(evidenceMap);
+  // The lab-to-endpoint pilot rows (LE-7.2): each case is recorded by the benchmark import of a pilot run.
+  const pilot = ta3Rows(evidenceMap, PILOT_REQUIREMENTS, 'evidence/benchmark/');
 
   const allSections = [
     { name: 'Part 11 Requirements', rows: p11 },
@@ -489,6 +492,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
     { name: 'Performance Testing', rows: performance },
     { name: 'Disaster Recovery', rows: disasterRecovery },
     { name: 'TA3 Platform Operations', rows: ta3 },
+    { name: 'Lab-to-Endpoint Pilot (CDISCPILOT01)', rows: pilot },
   ];
 
   const allRows = allSections.flatMap((s) => s.rows);
@@ -537,6 +541,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
     { level: 1, title: 'Performance Testing' },
     { level: 1, title: 'Disaster Recovery' },
     { level: 1, title: 'TA3 Platform Operations' },
+    { level: 1, title: 'Lab-to-Endpoint Pilot (CDISCPILOT01)' },
     { level: 1, title: 'Traceability Summary' },
     { level: 2, title: 'Coverage Statistics' },
     { level: 2, title: 'Risk Distribution' },
@@ -720,6 +725,18 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
   c += '\n';
   c += hr();
 
+  // Lab-to-Endpoint Pilot (LE-7.2)
+  c += section(2, 'Lab-to-Endpoint Pilot (CDISCPILOT01)');
+  c += `Traceability for the **Lab-to-Endpoint Pilot** requirements URS-102 to URS-126 (**${pilot.length}** requirements): the `;
+  c += 'acceptance cases A1 to A20, the G3 bound and the security, backup and disaster-recovery, signature-to-record linking and ';
+  c += 'access-log controls, each with the implementation of its functional requirement (FRS-108 to FRS-132) and its one pilot case.\n\n';
+  c += '> The pilot cases are recorded only by the benchmark import of a reconstructed pilot run (VALIDATION_PILOT_ACCEPTANCE_IMPORT=true). ';
+  c += 'A case the run did not run or report is recorded not executed and leaves its row Pending, never Fail. The requirement-to-test ';
+  c += 'matrix with stages, sources and producing items is in the pilot validation plan (23-pilot-validation-plan.md).\n\n';
+  c += markdownTable(TRACE_HEADERS, pilot);
+  c += '\n';
+  c += hr();
+
   // Traceability Summary
   c += section(2, 'Traceability Summary');
 
@@ -746,6 +763,7 @@ function buildDocument(evidenceMap: Map<string, RunnerResult>, testsLiveRoot: st
       ['Performance Testing Items', String(performance.length)],
       ['Disaster Recovery Items', String(disasterRecovery.length)],
       ['TA3 Platform Operations Requirements', String(ta3.length)],
+      ['Lab-to-Endpoint Pilot Requirements', String(pilot.length)],
       ['Requirements Verified (Passed)', String(verifiedCount)],
       ['Requirements Pending Verification', String(pendingCount)],
       ['Requirements Non-Compliant (Failed)', String(nonCompliantCount)],

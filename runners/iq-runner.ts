@@ -15,6 +15,7 @@ import {
   isRecord,
   saveEvidence,
   appendCaseJournal,
+  isWithin,
 } from './evidence-capture';
 import { defaultWorkspaceRoot, resolveFrontendRoot, resolveLibreclinicaApiRoot } from '../collectors/workspace-paths';
 import { SYSTEM_INFO } from '../config/system-info';
@@ -907,13 +908,6 @@ function realPath(file: string): string {
   }
 }
 
-/** True when `inner` is `outer` or lies under it (case-insensitive on Windows, as path.relative is).
- * Both are real paths (realPath). */
-function within(outer: string, inner: string): boolean {
-  const relative = path.relative(outer, inner);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
 /** Every path a file system record read: the path it names and each one its check lists in
  * `readPaths` (a check that reads more files, or a directory), as real paths. */
 function recordReadPaths(body: Record<string, unknown>): string[] {
@@ -938,7 +932,7 @@ export function bindApiSourceToRelease(
   const api = realPath(apiRoot);
   const bound = results.flatMap(result => {
     if (result.method !== 'FS' || !isRecord(result.responseBody)) return [];
-    const reads = recordReadPaths(result.responseBody).filter(file => within(api, file));
+    const reads = recordReadPaths(result.responseBody).filter(file => isWithin(api, file));
     return reads.length ? [{ result, reads }] : [];
   });
   if (!bound.length) return;
@@ -954,7 +948,7 @@ export function bindApiSourceToRelease(
     : `the HEAD of the API checkout ${apiRoot} cannot be read`;
   for (const { result, reads } of bound) {
     const body = result.responseBody as Record<string, unknown>;
-    const modified = changed.filter(file => reads.some(readPath => within(file, readPath) || within(readPath, file)));
+    const modified = changed.filter(file => reads.some(readPath => isWithin(file, readPath) || isWithin(readPath, file)));
     let code: string | undefined;
     let statement: string;
     if (release.kind === 'git-commit' && checkout.commit !== release.identity) {

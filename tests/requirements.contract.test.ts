@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { E6_R3_REFERENCES, REGULATORY_SCOPE, e6r3 } from '../config/regulatory-scope';
 import { FEATURE_RISKS } from '../config/risk-ratings';
-import { TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
+import { PILOT_REQUIREMENTS, TA3_REQUIREMENTS, ta3RequirementCases } from '../config/ta3-requirements';
 import { TA3_OQ_CASES } from '../config/ta3-oq-cases';
 import { saveEvidence, type EvidenceResult } from '../runners/evidence-capture';
 import { runnerCaseCheck } from '../generators/helpers/evidence-linker';
@@ -123,9 +123,11 @@ test('the generated URS and FRS carry the TA3 requirements, their ICH E6(R3) ref
   const frs = generated(directory, '04-functional-requirements-spec.md');
 
   assert.match(urs, /^## TA3 Platform Operations$/m);
-  assert.match(urs, /\*\*Total Requirements:\*\* 101/);
+  // URS-001 to URS-080, the TA3 URS-081 to URS-101 and the lab-to-endpoint pilot URS-102 to URS-126 (LE-7.2).
+  assert.match(urs, /\*\*Total Requirements:\*\* 126/);
+  assert.match(urs, /^## Lab-to-Endpoint Pilot \(CDISCPILOT01\)$/m);
   const ursRows = rows(urs, 'URS-');
-  for (const requirement of TA3_REQUIREMENTS) {
+  for (const requirement of [...TA3_REQUIREMENTS, ...PILOT_REQUIREMENTS]) {
     const table = ursRows.find(cells => cells[0] === requirement.id && cells.length === 6);
     assert.ok(table, `${requirement.id} has a requirement row`);
     assert.equal(table[1], requirement.description);
@@ -141,12 +143,13 @@ test('the generated URS and FRS carry the TA3 requirements, their ICH E6(R3) ref
 
   assert.ok(frs.includes('## TA3 Platform Operations (FRS-087 to FRS-107)'));
   assert.ok(frs.includes('- [TA3 Platform Operations (FRS-087 to FRS-107)]'), 'the table of contents lists the TA3 section');
-  assert.match(frs, /\*\*Total Functional Requirements:\*\* 107/);
+  assert.match(frs, /\*\*Total Functional Requirements:\*\* 132/);
+  assert.ok(frs.includes('## Lab-to-Endpoint Pilot (FRS-108 to FRS-132)'));
   const ursIds = new Set(ursRows.filter(cells => cells.length === 6).map(cells => cells[0]));
   const frsRows = rows(frs, 'FRS-');
-  // Every FRS, old or new, cites an existing URS, and every TA3 URS has its FRS.
+  // Every FRS, old or new, cites an existing URS, and every TA3 and pilot URS has its FRS.
   for (const [frsId, ursRef] of frsRows) assert.ok(ursIds.has(ursRef), `${frsId} cites ${ursRef}`);
-  for (const requirement of TA3_REQUIREMENTS) {
+  for (const requirement of [...TA3_REQUIREMENTS, ...PILOT_REQUIREMENTS]) {
     const row = frsRows.find(cells => cells[0] === requirement.frs.id);
     assert.ok(row, requirement.frs.id);
     assert.deepEqual(row.slice(1, 4), [requirement.id, requirement.frs.requirement, requirement.frs.implementation]);

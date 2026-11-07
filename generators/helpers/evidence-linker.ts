@@ -1,4 +1,8 @@
 import { EVIDENCE_CATEGORIES, loadEvidence, type EvidenceCategory, type EvidenceResult } from '../../runners/evidence-capture';
+import {
+  PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_IMPORT_SWITCH, PILOT_MIN_CRITICAL_INSTANCES, PILOT_PQ_CASES, PUBLIC_DATA_BASIS_NOT_ADMITTED,
+  type Ta3PqCase,
+} from '../../config/ta3-pq-cases';
 
 /** The saved evidence fields generators read. Every value is the one `saveEvidence`
  * wrote. Who executed a record is `executedBy`, the person the run's --executor named
@@ -326,7 +330,37 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'PQ-038': { check: 'Synthetic fixture: reads the owned query back and requires the same form and closed status 4.' },
   'PQ-039': { check: 'Synthetic fixture: the final signature proof must be signed, integrity-valid and verified, with the latest '
     + 'signature active (same run).' },
+  // The lab-to-endpoint pilot cases (LE-7.2; runners/benchmark-evidence.ts derivePilotResults), recorded only by a
+  // --benchmark-run import of a reconstructed run whose summary contract is cdisc-pilot-acceptance-summary/1, while
+  // VALIDATION_PILOT_ACCEPTANCE_IMPORT is exactly true; nothing is re-scored and no evidence content is re-judged.
+  ...Object.fromEntries(PILOT_PQ_CASES.map(pqCase => [pqCase.id, { check: pilotCaseCheck(pqCase) }])),
 };
+
+/** What the pilot import checks for one pilot case (derivePilotResults), stated from the catalog entry. */
+function pilotCaseCheck(pqCase: Ta3PqCase): string {
+  const common = `Pilot import (${PILOT_IMPORT_SWITCH}=true) of a reconstructed ${PILOT_ACCEPTANCE_CONTRACT} run: the run must be `
+    + 'classified synthetic-engineering for R1 and declared-public-data for R2 (else CLASSIFICATION_MISMATCH), and an R2 run must be admitted under '
+    + `its filed basis (else ${PUBLIC_DATA_BASIS_NOT_ADMITTED})`;
+  if (pqCase.acceptanceCase === 'G3') {
+    return `${common}; every A1 to A20 case must have been executed (else CASES_NOT_RUN, not executed) and passed, their critical instances `
+      + `must sum to the N the sealed key set manifest declares, which must be at least ${PILOT_MIN_CRITICAL_INSTANCES}, with zero critical failures; `
+      + 'otherwise CRITICAL_FAILURE_BOUND_NOT_MET. The record states N and the 95% upper bound 3/N.';
+  }
+  if (/^A\d+$/.test(pqCase.acceptanceCase ?? '')) {
+    return `${common}; the run must cite the sealed key set's manifest and seal record inside the run directory (else KEY_MANIFEST_MISSING), whose bytes must state the key set, seal time and N the summary states (else KEY_MANIFEST_MISMATCH), sealed before the run start (else KEY_NOT_SEALED_BEFORE_RUN) and not holding this case (else KEY_CASE_HELD). The result for `
+      + `${pqCase.acceptanceCase} must name ${pqCase.requirement} (else REQUIREMENT_MISMATCH) and cite evidence files that all lie inside the run `
+      + 'directory with their recorded SHA-256 (else EVIDENCE_PATH_OUTSIDE_RUN, EVIDENCE_HASH_MISMATCH or EVIDENCE_MISSING); verdict fail or a '
+      + `critical failure records ${pqCase.failureCode}; inconclusive, incomplete coverage, no scored instance or no evidence records INCONCLUSIVE; `
+      + 'an R2 key must be countersigned, in the summary and in the sealed manifest (else KEY_NOT_COUNTERSIGNED); not-run or an absent result is recorded not executed (CASE_NOT_RUN, '
+      + 'CASE_NOT_REPORTED); an unrecognised member or value records UNSUPPORTED_PILOT_SUMMARY. The evidence content is the run\'s; the import does '
+      + 'not re-judge it.';
+  }
+  return `${common}. The ${pqCase.acceptanceCase} result must name ${pqCase.requirement} (else REQUIREMENT_MISMATCH) and report each of `
+    + `${PILOT_CONTROL_SYSTEMS.join(', ')} once with its counts and evidence files, all inside the run directory with their recorded SHA-256; a `
+    + `count breaking the rule records ${pqCase.failureCode}, a system not reported or unable to show the rule records INCONCLUSIVE, an absent `
+    + 'control is recorded not executed (CONTROL_NOT_REPORTED) and an unrecognised member or inconsistent count UNSUPPORTED_PILOT_SUMMARY. Rule: '
+    + `${pqCase.passesWhen}.`;
+}
 
 /** The actual check of a cited runner case; citing an uncatalogued case is a defect. */
 export function runnerCaseCheck(testCaseId: string): RunnerCaseCheck {

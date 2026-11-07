@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { isRecord, strictObject } from './evidence-capture';
+import { isRecord, strictObject, SHA256_HEX } from './evidence-capture';
 import { PLATFORM_SYSTEMS, type EvidenceAdmission, type PlatformSystemId } from '../config/platform-inventory';
 
 // The platform evidence plan (TA3 plan VAL-1, spec P20 3.3 and 3.7). A
@@ -45,7 +45,6 @@ export interface PlatformEvidencePlan {
   systems: Partial<Record<PlatformSystemId, { evidence: PlatformEvidenceEntry[] }>>;
 }
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** A contract-like label such as validation-evidence-package/1 or bw-formal-qualification/1. */
 const KIND = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const PLAN_BYTE_LIMIT = 1024 * 1024;

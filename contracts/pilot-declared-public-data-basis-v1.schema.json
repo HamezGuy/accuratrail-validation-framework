@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.accuratrials.com/validation-framework/pilot-declared-public-data-basis/1",
+  "title": "pilot-declared-public-data-basis/1",
+  "description": "The declared-public-data basis of the lab-to-endpoint pilot's run of record (D-LE-14). Owner: this framework, runners/benchmark-evidence.ts (publicDataAdmissionOf). Producer: the QA owner, by hand, as a file in the tree holding QA-RETENTION-ROOT; no code creates it. An R2 run summary cites it by relative path (pilot.classification.basisRef) and SHA-256 (pilot.classification.basisSha256). A package admitted under it keeps a byte copy as evidence/public-data-basis.json. The basis carries no signature; it records who filed it, and approval stays a governance decision in the eTMF.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "study",
+    "runKind",
+    "classification",
+    "decisions",
+    "dataUseManifestSha256",
+    "keySetManifestSha256",
+    "filedBy",
+    "filedRole",
+    "filedAt"
+  ],
+  "properties": {
+    "contract": { "const": "pilot-declared-public-data-basis/1" },
+    "study": {
+      "description": "The pilot study the basis covers.",
+      "const": "CDISCPILOT01"
+    },
+    "runKind": {
+      "description": "Only the run of record is admitted. R1 keeps the synthetic classification (D-LE-14).",
+      "const": "R2"
+    },
+    "classification": { "const": "declared-public-data" },
+    "decisions": {
+      "description": "The decision ids the basis rests on; must include D-LE-1 (CDISC data use) and D-LE-14 (evidence classification).",
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+    },
+    "dataUseManifestSha256": {
+      "description": "The SHA-256 of the lab-to-endpoint.data-use-manifest/1 file the QA owner read when filing.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "keySetManifestSha256": {
+      "description": "The SHA-256 of the sealed, countersigned key set manifest the run of record states as pilot.keySet.manifestSha256. A run under another key set is not admitted, and resealing the keys needs a new filing.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "filedBy": {
+      "description": "The person who filed the basis.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "filedRole": {
+      "description": "The role that person held, for example QA owner (interim).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "filedAt": {
+      "description": "An RFC 3339 instant before the run's pilot.startedAt; a basis filed later is not admitted.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?(Z|[+-]\\d{2}:\\d{2})$"
+    }
+  }
+}

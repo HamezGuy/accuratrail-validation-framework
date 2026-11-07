@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_INFO } from '../config/system-info';
 import { ICH_E6_R3, e6r3, type E6R3Key } from '../config/regulatory-scope';
-import { TA3_REQUIREMENTS, gap, verify, type PlannedVerification } from '../config/ta3-requirements';
+import { PILOT_REQUIREMENTS, TA3_REQUIREMENTS, gap, verify, type PlannedVerification } from '../config/ta3-requirements';
 import {
   documentHeader,
   markdownTable,
@@ -392,8 +392,8 @@ function buildDetailedDescriptions(): DetailedDescription[] {
         gap('ePHI access review and anomaly detection', 'No executed case exists.'),
       ],
     },
-    // TA3 Platform Operations (URS-081 to URS-101), from config/ta3-requirements.ts.
-    ...TA3_REQUIREMENTS.map((r) => ({ id: r.id, title: r.title, rationale: r.rationale, context: r.context, planned: r.planned })),
+    // TA3 Platform Operations (URS-081 to URS-101) and the lab-to-endpoint pilot (URS-102 to URS-126), from config/ta3-requirements.ts.
+    ...[...TA3_REQUIREMENTS, ...PILOT_REQUIREMENTS].map((r) => ({ id: r.id, title: r.title, rationale: r.rationale, context: r.context, planned: r.planned })),
   ];
 }
 
@@ -531,6 +531,14 @@ function buildCategories(): ReqCategory[] {
       requirements: TA3_REQUIREMENTS.map(({ id, description, priority, risk, part11Ref, acceptance, e6r3: topics }) => (
         { id, description, priority, risk, part11Ref, acceptance, e6r3: topics })),
     },
+    {
+      // The lab-to-endpoint pilot's intended use (backlog LE-7.2): A1 to A20, the G3 bound and the CSV controls,
+      // each verified by one pilot case; the requirement-to-test matrix is in the pilot validation plan (23).
+      title: 'Lab-to-Endpoint Pilot (CDISCPILOT01)',
+      anchor: 'pilot',
+      requirements: PILOT_REQUIREMENTS.map(({ id, description, priority, risk, part11Ref, acceptance, e6r3: topics }) => (
+        { id, description, priority, risk, part11Ref, acceptance, e6r3: topics })),
+    },
   ];
 }
 
@@ -569,6 +577,11 @@ export function generate(outputDir: string, _workspaceRoot: string): void {
     'detection on save and in the sweep, the governing protocol version, complete and signed deviation records, independent ' +
     'review and closure, timed escalation, signed milestones and retained measurement documents, inspection copies, and the ' +
     'validation status and retained evidence of the platform. Their planned verification cites the OQ cases of suites 13 to 18.\n\n';
+  content += 'The Lab-to-Endpoint Pilot requirements (URS-102 to URS-126) state the pilot\'s intended use (CDISCPILOT01, ALT change ' +
+    'from baseline at Week 24 by arm): the acceptance cases A1 to A20 (URS-102 to URS-121), the G3 bound of zero critical failures ' +
+    '(URS-122) and the security, backup and disaster-recovery, signature-to-record linking and access-log controls (URS-123 to ' +
+    'URS-126). Each is verified by one pilot case (PQA-001 to PQA-021, PQC-001 to PQC-004) that the benchmark import derives from a ' +
+    'reconstructed run of the qualification estate; the requirement-to-test matrix is in the pilot validation plan (document 23).\n\n';
   content += 'This is a specification and records no test results. The **Planned Verification** of each detailed ' +
     'requirement cites a runner case only where that case\'s actual executed check, quoted beside it, matches the ' +
     'planned activity; an activity without such a case is marked "Gap — no executed case mapped". Executed results ' +

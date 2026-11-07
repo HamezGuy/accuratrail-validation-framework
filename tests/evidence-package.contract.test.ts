@@ -6,19 +6,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   canonicalJson, checkExecutorName, currentEvidenceMarking, executorText, loadEvidence, saveEvidence, setEvidenceMarking,
-  DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceResult,
+  DECLARED_PUBLIC_DATA_NOTICE, DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceResult,
 } from '../runners/evidence-capture';
 import {
-  createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
+  admitPublicDataRun, createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
   APPROVAL_RECORDED_IN, FRAMEWORK_SHARED_TYPES_REQUIRED, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_OPTIONAL, MANIFEST_MEMBER_REQUIRED,
-  MANIFEST_OPTIONAL, MANIFEST_REQUIRED, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED,
+  MANIFEST_OPTIONAL, MANIFEST_REQUIRED, PUBLIC_DATA_BASIS_FILE, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED,
   type PackageOptions,
 } from '../runners/evidence-package';
+import { PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/benchmark-evidence';
+import { PILOT_ACCEPTANCE_CONTRACT, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY } from '../config/ta3-pq-cases';
 import { frameworkCommit, frameworkSharedTypes, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
 import {
-  tmfFilingText, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, SCRATCH_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE,
+  tmfFilingText, DECLARED_PUBLIC_DATA_FILING_LINE, NOT_RUN_OF_RECORD_LINE, RESTRICTED_FILING_LINE, SCRATCH_FILING_LINE, SYNTHETIC_FILING_LINE, TMF_FILING_FILE,
   VALIDATION_PACKAGE_REQUIREMENT,
 } from '../generators/helpers/tmf-filing';
 import { commitCheckout, generateAllDocuments, temporaryCheckout, temporaryDirectory } from './generated-documents';
@@ -282,6 +284,116 @@ test('a synthetic package needs the marked data root\'s package home, and a pack
   assert.ok(filing.startsWith('# eTMF Filing of Validation Evidence Package'), filing.slice(0, 200));
   assert.match(filing, /Only a package that is not synthetic is filed in the platform's production TMF/);
   assert.doesNotMatch(read(documents.dir, '12-validation-summary.md'), /SYNTHETIC/);
+});
+
+test('an imported run is a package that is not synthetic only when admitted under its filed declared-public-data basis (D-LE-14)', t => {
+  const qaRoot = temporaryDirectory(t, 'accura-package-qa-root-');
+  fs.writeFileSync(path.join(qaRoot, QA_RETENTION_ROOT_MARKER), 'Retention root for a contract test.\n');
+  const home = path.join(qaRoot, 'packages');
+  const basisFile = path.join(qaRoot, 'bases', 'r2-basis.json');
+  fs.mkdirSync(path.dirname(basisFile));
+  const basis = {
+    contract: PILOT_PUBLIC_DATA_BASIS_CONTRACT, study: PILOT_STUDY, runKind: 'R2', classification: 'declared-public-data', decisions: ['D-LE-1', 'D-LE-14'],
+    dataUseManifestSha256: 'a'.repeat(64), keySetManifestSha256: 'b'.repeat(64), filedBy: 'Test QA Owner', filedRole: 'QA owner', filedAt: '2026-11-01T00:00:00Z',
+  };
+  const basisBytes = Buffer.from(JSON.stringify(basis));
+  fs.writeFileSync(basisFile, basisBytes);
+  const pilot = (runKind: string, classification: Record<string, unknown>) => ({
+    contract: PILOT_ACCEPTANCE_CONTRACT,
+    pilot: { runKind, startedAt: '2026-11-02T00:00:00Z', classification,
+      keySet: { keySetId: 'keys', manifestSha256: 'b'.repeat(64), sealedAt: '2026-11-01T12:00:00Z', criticalInstancesDeclared: 300,
+        manifest: { path: 'keys/manifest.json', sha256: 'b'.repeat(64) }, seal: { path: 'keys/seal.json', sha256: 'e'.repeat(64) } }, cases: [], controls: [] },
+  });
+  const declared = { kind: 'declared-public-data', basisRef: 'bases/r2-basis.json', basisSha256: sha256(basisBytes) };
+  const run = temporaryDirectory(t, 'accura-package-r2-run-');
+  const writeSummary = (summary: unknown) => fs.writeFileSync(path.join(run, 'run-summary.json'), JSON.stringify(summary));
+  fs.writeFileSync(path.join(run, 'metrics.json'), '{"metrics":[]}');
+  const admit = (options: Partial<Parameters<typeof admitPublicDataRun>[0]> = {}) => {
+    const admission = admitPublicDataRun({ runDir: run, retainRoot: home, pilotImport: true, publicDataSwitch: true, ...options });
+    return admission.admitted ? 'admitted' : admission.code;
+  };
+
+  writeSummary(pilot('R2', declared));
+  assert.equal(admit(), 'admitted');
+  // The switches, the root and the run kind each refuse it.
+  assert.equal(admit({ publicDataSwitch: false }), 'PUBLIC_DATA_ADMISSION_OFF');
+  assert.equal(admit({ pilotImport: false }), 'PUBLIC_DATA_ADMISSION_OFF');
+  assert.equal(admit({ retainRoot: undefined }), 'PUBLIC_DATA_NOT_RETAINED');
+  assert.equal(admit({ otherSyntheticBases: ['synthetic-qualification'] }), 'PUBLIC_DATA_OTHER_SYNTHETIC_BASIS');
+  assert.equal(admit({ retainRoot: temporaryDirectory(t, 'accura-package-unmarked-') }), 'PUBLIC_DATA_NO_QA_ROOT');
+  // The basis must be filed in the QA tree with the SHA-256 the summary states, before the run started.
+  writeSummary(pilot('R2', { ...declared, basisSha256: 'c'.repeat(64) }));
+  assert.equal(admit(), 'PUBLIC_DATA_BASIS_HASH_MISMATCH');
+  for (const basisRef of ['bases/absent.json', '../outside.json', 'bases/../r2-basis.json', 'C:/outside.json']) {
+    writeSummary(pilot('R2', { ...declared, basisRef }));
+    assert.equal(admit(), 'PUBLIC_DATA_BASIS_NOT_FILED', basisRef);
+  }
+  writeSummary({ ...pilot('R2', declared), pilot: { ...pilot('R2', declared).pilot, startedAt: basis.filedAt } });
+  assert.equal(admit(), 'PUBLIC_DATA_BASIS_FILED_AFTER_RUN_START');
+  const otherKeys = pilot('R2', declared);
+  writeSummary({ ...otherKeys, pilot: { ...otherKeys.pilot, keySet: { ...otherKeys.pilot.keySet, manifestSha256: 'd'.repeat(64), manifest: { path: 'keys/manifest.json', sha256: 'd'.repeat(64) } } } });
+  assert.equal(admit(), 'PUBLIC_DATA_BASIS_KEY_SET_MISMATCH');
+  writeSummary(pilot('R1', declared));
+  assert.equal(admit(), 'PUBLIC_DATA_NOT_R2');
+  writeSummary(pilot('R2', { kind: 'synthetic-engineering' }));
+  assert.equal(admit(), 'PUBLIC_DATA_NOT_CLAIMED');
+  const otherBasis = Buffer.from(JSON.stringify({ ...basis, study: 'OTHER', extra: true }));
+  fs.writeFileSync(path.join(qaRoot, 'bases', 'other.json'), otherBasis);
+  writeSummary(pilot('R2', { ...declared, basisRef: 'bases/other.json', basisSha256: sha256(otherBasis) }));
+  assert.equal(admit(), 'PUBLIC_DATA_BASIS_UNSUPPORTED');
+
+  // Admitted: not synthetic, the basis kept, the notice on every document, and the rule recomputed from the retained bytes.
+  writeSummary(pilot('R2', declared));
+  const admission = admitPublicDataRun({ runDir: run, retainRoot: home, pilotImport: true, publicDataSwitch: true });
+  const inputs = [{ role: 'benchmark-run-summary', file: path.join(run, 'run-summary.json') }, { role: 'benchmark-metrics', file: path.join(run, 'metrics.json') }] as const;
+  const options = { retainRoot: home, executed: true, frameworkCheckout: FRAMEWORK, executor: 'Test QA Executor', inputs };
+  assert.throws(() => createPackage({ ...options, version: 'unadmitted', syntheticBasis: [] }), /synthetic unless the run is admitted/);
+  const admitted = createPackage({ ...options, version: 'admitted', syntheticBasis: [], publicData: admission });
+  assert.equal(currentEvidenceMarking()?.declaredPublicData, true);
+  const benchmarkRecord = (body: Record<string, unknown>) => record('BENCHMARK-RECONSTRUCTION', { method: 'OFFLINE', responseStatus: 0, responseBody: {
+    summarySha256: sha256(fs.readFileSync(path.join(run, 'run-summary.json'))), metricsSha256: sha256(fs.readFileSync(path.join(run, 'metrics.json'))), ...body } });
+  saveEvidence(admitted.dir, 'benchmark', [benchmarkRecord({ evidenceLevel: 'declared_public_data', publicDataBasis: { basisSha256: sha256(basisBytes) } })]);
+  fs.writeFileSync(path.join(admitted.dir, '12-validation-summary.md'), `> **${DECLARED_PUBLIC_DATA_NOTICE}**\n\n# Validation Summary\n`);
+  sealPackage(admitted);
+  assert.equal(verifyPackage(admitted.dir).ok, true);
+  assert.equal(read(admitted.dir, PUBLIC_DATA_BASIS_FILE), basisBytes.toString());
+  const manifest = JSON.parse(read(admitted.dir, MANIFEST_FILE));
+  assert.deepEqual([manifest.synthetic, manifest.syntheticBasis, 'syntheticNotice' in manifest], [false, [], false]);
+  assert.ok(read(admitted.dir, TMF_FILING_FILE).startsWith(DECLARED_PUBLIC_DATA_FILING_LINE));
+
+  // A wrong evidence level, or a basis the retained summary does not cite, does not seal.
+  const sealed = (version: string, body: Record<string, unknown>) => {
+    const evidencePackage = createPackage({ ...options, version, syntheticBasis: [], publicData: admission });
+    saveEvidence(evidencePackage.dir, 'benchmark', [benchmarkRecord(body)]);
+    try { sealPackage(evidencePackage); return ''; } catch (error) { return (error as Error).message; }
+  };
+  assert.match(sealed('wrong-level', { evidenceLevel: 'synthetic_engineering', publicDataBasis: { basisSha256: sha256(basisBytes) } }), /states evidence level "synthetic_engineering"/);
+  assert.match(sealed('no-basis', { evidenceLevel: 'declared_public_data' }), /does not state the retained basis/);
+
+  // A run stopped before the import saved its records seals and verifies with no benchmark row, as a synthetic run does.
+  const interrupted = createPackage({ ...options, version: 'interrupted', syntheticBasis: [], publicData: admission });
+  fs.writeFileSync(path.join(interrupted.dir, '12-validation-summary.md'), `> **${DECLARED_PUBLIC_DATA_NOTICE}**\n\n# Validation Summary\n`);
+  sealPackage(interrupted);
+  assert.deepEqual(verifyPackage(interrupted.dir).problems, []);
+
+  // The verifier refuses a package that imports a run, is not synthetic and holds no admitted basis, and one moved out of the QA tree.
+  const stripped = path.join(temporaryDirectory(t, 'accura-package-moved-'), 'moved');
+  fs.cpSync(admitted.dir, stripped, { recursive: true });
+  assert.match(verifyPackage(stripped).problems.join('\n'), /is retained only under a tree holding QA-RETENTION-ROOT/);
+
+  // A synthetic package keeps the rule off: no basis file, and its import is never admitted.
+  const { home: syntheticHome } = markedRoot(t);
+  assert.equal(admit({ retainRoot: syntheticHome }), 'PUBLIC_DATA_NO_QA_ROOT');
+  assert.throws(() => createPackage({ ...options, retainRoot: syntheticHome, version: 'contradiction', syntheticBasis: ['benchmark-import'], publicData: admission }),
+    /is not synthetic; this run is/);
+
+  // The schema requires exactly what the rule requires.
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'contracts', 'pilot-declared-public-data-basis-v1.schema.json'), 'utf8'));
+  assert.equal(schema.title, PILOT_PUBLIC_DATA_BASIS_CONTRACT);
+  assert.deepEqual(schema.required, [...PILOT_PUBLIC_DATA_BASIS_MEMBERS]);
+  assert.deepEqual(Object.keys(schema.properties), [...PILOT_PUBLIC_DATA_BASIS_MEMBERS]);
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.properties.study.const, PILOT_STUDY);
 });
 
 test('whether a package is synthetic is computed from the run, documents packages included', t => {

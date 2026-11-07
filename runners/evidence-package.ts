@@ -3,14 +3,17 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  canonicalJson, checkExecutorName, currentEvidenceMarking, isCredentialKey, isRecord, loadEvidence, setEvidenceMarking, strictObject,
-  DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceCategory, type EvidenceResult,
+  canonicalJson, checkExecutorName, currentEvidenceMarking, isCredentialKey, isInside, isRecord, isWithin, loadEvidence, setEvidenceMarking, strictObject,
+  DECLARED_PUBLIC_DATA_NOTICE, DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SHA256_HEX, SYNTHETIC_NOTICE, type EvidenceCategory, type EvidenceResult,
 } from './evidence-capture';
 import {
   currentReleaseIdentity, frameworkCommit, frameworkSharedTypes, releaseComponentNames, NO_RECEIPT, NOT_RESOLVED, RELEASE_CONTRACT_V1,
   RELEASE_CONTRACT_V2, type FrameworkSharedTypes, type ReleaseIdentity,
 } from './release-identity';
-import { BENCHMARK_RUN_FILES } from './benchmark-evidence';
+import {
+  publicDataAdmissionOf, publicDataClaim, BENCHMARK_RUN_FILES, PUBLIC_DATA_EVIDENCE_LEVEL, type PublicDataAdmission,
+} from './benchmark-evidence';
+import { PILOT_IMPORT_SWITCH, PILOT_PUBLIC_DATA_SWITCH } from '../config/ta3-pq-cases';
 import {
   configurationUnderTest, parseConfigurationUnderTest, parseTargetConfiguration,
   CONFIGURATION_MISMATCH_REQUIRED, CONFIGURATION_UNDER_TEST_REQUIRED, type ConfigurationUnderTest,
@@ -50,6 +53,13 @@ export const SYNTHETIC_PACKAGE_HOME = ['runs', 'validation-packages'] as const;
 /** The marker file QA places at the retention root it names for packages that are not synthetic.
  * No code creates it: without it such a package is refused (RF-070). */
 export const QA_RETENTION_ROOT_MARKER = 'QA-RETENTION-ROOT';
+/** Where a package keeps the byte copy of the filed declared-public-data basis it was admitted under (D-LE-14). Listed
+ * in the manifest like every other file; no manifest member or input role changes (validation-evidence-package/1). */
+export const PUBLIC_DATA_BASIS_FILE = 'evidence/public-data-basis.json';
+/** The platform summary a package holds (generators/22-platform-validation-summary.ts), and the words its evidence row
+ * carries for a cited package admitted under that basis; a package citing one carries the declared public data notice. */
+export const PLATFORM_SUMMARY_DOCUMENT = '22-platform-validation-summary.md';
+const PUBLIC_DATA_CITATION = 'declared public data under the filed basis';
 
 /** What a package retains in inputs/<role>.json. ta3-oq-plan is the --ta3-oq-plan file,
  * target-configuration the --target-config declaration and platform-evidence-plan the
@@ -151,6 +161,10 @@ export interface EvidencePackage {
   /** The framework checkout read when the package was created, and what it was then. */
   readonly frameworkCheckout?: string;
   readonly frameworkAtStart: { commit?: string; dirty?: boolean };
+  /** The filed basis the package was admitted under; absent for every package but an admitted R2 import (D-LE-14). */
+  readonly declaredPublicData?: { basisRef: string; basisSha256: string };
+  /** A package that is not synthetic and whose platform evidence plan cites a package admitted under that basis. */
+  readonly citesDeclaredPublicData?: true;
   sealed: boolean;
 }
 
@@ -161,6 +175,11 @@ export interface PackageOptions {
   executed: boolean;
   syntheticBasis: readonly SyntheticBasis[];
   inputs?: readonly PackageInputSource[];
+  /** An admission from admitPublicDataRun. Required for a package that imports a run and is not synthetic. */
+  publicData?: PublicDataAdmission;
+  /** The platform evidence plan cites a package admitted under the declared-public-data basis (checkPlatformEvidencePlan):
+   * a package that is not synthetic then carries the notice and the intended-use limit too. */
+  citesDeclaredPublicData?: boolean;
   /** generate.ts --allow-dirty-framework: retain a run from a framework checkout that is
    * dirty or unreadable; its TMF-FILING.md then says it is not a run of record. */
   allowDirtyFramework?: boolean;
@@ -176,7 +195,6 @@ export interface PackageOptions {
 
 const VERSION_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 const GIT_COMMIT = /^[0-9a-f]{40}$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 /** One path segment of a package file; the same characters a test case ID may use. */
@@ -202,8 +220,9 @@ export function manifestHash(manifest: Omit<PackageManifest, 'packageHash'> | Re
 }
 
 /** The VD-3 rule: synthetic when --synthetic-qualification is given, when an
- * import of synthetic engineering evidence ran (every benchmark import, and the
- * P13 attachment), or when an entry of the platform evidence plan is synthetic. */
+ * import of synthetic engineering evidence ran (every benchmark import but an
+ * admitted one, see admitPublicDataRun, and the P13 attachment), or when an entry
+ * of the platform evidence plan is synthetic. */
 export function syntheticBasis(run: {
   syntheticQualification: boolean; benchmarkImport: boolean; p13Import: boolean; platformEvidencePlan?: boolean;
 }): SyntheticBasis[] {
@@ -241,11 +260,6 @@ function osAccount(): string | null {
   }
 }
 
-function isWithin(base: string, target: string): boolean {
-  const relative = path.relative(base, target);
-  return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
-}
-
 const isFile = (file: string) => {
   try { return fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true; } catch { return false; }
 };
@@ -271,6 +285,59 @@ export function qaRetentionRoot(start: string): string | undefined {
     if (isFile(path.join(current, QA_RETENTION_ROOT_MARKER))) return current;
     if (path.dirname(current) === current) return undefined;
   }
+}
+
+/** The D-LE-14 decision on an imported run, taken before the package exists. A package that imports a run is synthetic
+ * engineering evidence unless this admits it, and it admits only: both switches exactly 'true' (D-P13), no other synthetic
+ * basis, a retain root inside a tree QA marked and outside any synthetic data root, and an R2 pilot summary classified
+ * declared-public-data whose basisRef is a file QA filed inside that tree (a relative path, links resolved) with the
+ * SHA-256 the summary states, in the basis contract, filed before the run started. The rule itself is
+ * publicDataAdmissionOf, which the package verifier recomputes from the retained bytes. Reads files; writes nothing. */
+export function admitPublicDataRun(options: {
+  runDir: string;
+  retainRoot?: string;
+  otherSyntheticBases?: readonly SyntheticBasis[];
+  /** The two switches; by default their environment variables, on only when exactly 'true'. */
+  pilotImport?: boolean;
+  publicDataSwitch?: boolean;
+}): PublicDataAdmission {
+  const refused = (code: string, reason: string): PublicDataAdmission => ({ admitted: false, claimed: true, code, reason });
+  let summary: Buffer;
+  try { summary = fs.readFileSync(path.join(path.resolve(options.runDir), BENCHMARK_RUN_FILES.summary)); }
+  catch { return { admitted: false, claimed: false, code: 'PUBLIC_DATA_NOT_CLAIMED', reason: `${BENCHMARK_RUN_FILES.summary} cannot be read` }; }
+  const claim = publicDataClaim(summary);
+  if (!claim.claimed) return { admitted: false, claimed: false, code: 'PUBLIC_DATA_NOT_CLAIMED', reason: 'the run summary claims no declared-public-data basis' };
+  if ('refusal' in claim) return claim.refusal;
+  const pilotImport = options.pilotImport ?? process.env[PILOT_IMPORT_SWITCH] === 'true';
+  const admission = options.publicDataSwitch ?? process.env[PILOT_PUBLIC_DATA_SWITCH] === 'true';
+  if (!pilotImport || !admission) return refused('PUBLIC_DATA_ADMISSION_OFF', `${PILOT_IMPORT_SWITCH} and ${PILOT_PUBLIC_DATA_SWITCH} must both be exactly 'true'`);
+  if (options.otherSyntheticBases?.length) return refused('PUBLIC_DATA_OTHER_SYNTHETIC_BASIS', `this run is also synthetic by ${options.otherSyntheticBases.join(', ')}`);
+  if (!options.retainRoot) return refused('PUBLIC_DATA_NOT_RETAINED', 'an admitted package is retained under a QA retention root; this run has no --retain-root');
+  const root = path.resolve(options.retainRoot);
+  const qaRoot = qaRetentionRoot(root);
+  if (!qaRoot) return refused('PUBLIC_DATA_NO_QA_ROOT', `${root} is in no tree holding ${QA_RETENTION_ROOT_MARKER}, which QA places`);
+  const dataRoot = markedDataRoot(root);
+  if (dataRoot) return refused('PUBLIC_DATA_NO_QA_ROOT', `${root} is inside the synthetic data root ${dataRoot}`);
+  const segments = claim.basisRef.split('/');
+  if (!claim.basisRef.endsWith('.json') || !segments.every(segment => SAFE_SEGMENT.test(segment))) {
+    return refused('PUBLIC_DATA_BASIS_NOT_FILED', `basisRef ${JSON.stringify(claim.basisRef)} is not a relative path of a .json file inside the QA retention root`);
+  }
+  const target = path.join(qaRoot, ...segments);
+  let bytes: Buffer;
+  try {
+    // A link inside the QA root that resolves outside it is not filed there.
+    if (!isInside(fs.realpathSync(qaRoot), fs.realpathSync(target))) {
+      return refused('PUBLIC_DATA_BASIS_NOT_FILED', `basisRef ${claim.basisRef} resolves outside the QA retention root ${qaRoot}`);
+    }
+    bytes = fs.readFileSync(target);
+  } catch (error) {
+    return refused('PUBLIC_DATA_BASIS_NOT_FILED', `basisRef ${claim.basisRef} is not a file in the QA retention root ${qaRoot} (${errorText(error)})`);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')); } catch { parsed = undefined; }
+  const credential = parsed === undefined ? undefined : credentialAt(parsed, '$');
+  if (credential) return refused('PUBLIC_DATA_BASIS_UNSUPPORTED', `the filed basis holds a credential at ${credential}`);
+  return publicDataAdmissionOf(summary, bytes);
 }
 
 /** A synthetic package lives only under the marked data root's runs/validation-packages;
@@ -423,6 +490,14 @@ export function createPackage(options: PackageOptions): EvidencePackage {
         + '--allow-dirty-framework for a package that is not a run of record.');
   const prepared = (options.inputs ?? []).map(prepareInput);
   packageCheck(new Set(prepared.map(input => input.role)).size === prepared.length, 'Each package input role is retained once.');
+  // Only the D-LE-14 admission makes an imported run a package that is not synthetic, and only for the summary it read.
+  const admitted = options.publicData?.admitted ? options.publicData : undefined;
+  const importedSummary = prepared.find(input => input.role === 'benchmark-run-summary');
+  packageCheck(!admitted || !synthetic, 'A package admitted under the declared-public-data basis is not synthetic; this run is.');
+  packageCheck(!admitted || importedSummary?.sha256 === admitted.summarySha256, 'The run summary changed after the declared-public-data admission read it.');
+  packageCheck(synthetic || !importedSummary || admitted, 'A package that imports a run is synthetic unless the run is admitted under its filed '
+    + 'declared-public-data basis (D-LE-14).');
+  const citing = !synthetic && !admitted && options.citesDeclaredPublicData === true;
   const packageId = options.packageId ?? randomUUID();
   packageCheck(UUID_V4.test(packageId), `Package ID ${JSON.stringify(packageId)} is not a UUID v4.`);
   const createdAt = (options.now ?? new Date()).toISOString();
@@ -431,10 +506,17 @@ export function createPackage(options: PackageOptions): EvidencePackage {
   const evidencePackage: EvidencePackage = {
     dir, packageId, version: options.version, createdAt, executed: options.executed, synthetic, syntheticBasis: basis, inputs: [],
     ...(executorName ? { executor: { name: executorName, osAccount: osAccount() } } : {}),
-    ...(options.frameworkCheckout ? { frameworkCheckout: options.frameworkCheckout } : {}), frameworkAtStart, sealed: false,
+    ...(options.frameworkCheckout ? { frameworkCheckout: options.frameworkCheckout } : {}), frameworkAtStart,
+    ...(admitted ? { declaredPublicData: { basisRef: admitted.basisRef, basisSha256: admitted.basisSha256 } } : {}),
+    ...(citing ? { citesDeclaredPublicData: true as const } : {}), sealed: false,
   };
   for (const input of prepared) writeInput(evidencePackage, input);
-  setEvidenceMarking({ synthetic, retained: true, ...(executorName ? { executor: executorName } : {}) });
+  if (admitted) {
+    const copy = path.join(dir, ...PUBLIC_DATA_BASIS_FILE.split('/'));
+    fs.mkdirSync(path.dirname(copy), { recursive: true });
+    fs.writeFileSync(copy, admitted.bytes, { flag: 'wx' });
+  }
+  setEvidenceMarking({ synthetic, retained: true, ...(executorName ? { executor: executorName } : {}), ...(admitted || citing ? { declaredPublicData: true } : {}) });
   return evidencePackage;
 }
 
@@ -552,6 +634,8 @@ export function sealPackage(evidencePackage: EvidencePackage, options: SealOptio
     const restricted = packageEntries(dir).files.some(isTrainingCaptureFile);
     fs.writeFileSync(path.join(dir, TMF_FILING_FILE), tmfFilingText({
       packageId: evidencePackage.packageId, version: evidencePackage.version, synthetic: evidencePackage.synthetic,
+      ...(evidencePackage.declaredPublicData ? { declaredPublicData: evidencePackage.declaredPublicData } : {}),
+      ...(evidencePackage.citesDeclaredPublicData ? { citesDeclaredPublicData: true } : {}),
       ...(notRunOfRecord(evidencePackage.frameworkAtStart, framework) ? { notRunOfRecord: true } : {}),
       ...(restricted ? { restricted: true } : {}),
     }), { flag: 'wx' });
@@ -783,11 +867,49 @@ export interface PackageVerification {
   restrictedNoticeMissing?: true;
 }
 
+/** What D-LE-14 requires of a package that imports a run and is not synthetic, recomputed from the bytes it retains (so
+ * no manifest member is needed): the retained summary and the retained basis satisfy publicDataAdmissionOf, every
+ * benchmark record states the declared-public-data level and that basis, and the package sits in a tree QA marked and
+ * outside any synthetic data root. */
+function publicDataPackageProblems(dir: string, manifest: PackageManifest, contents: ReadonlyMap<string, Buffer>): string[] {
+  const at = 'a package that imports a run and is not synthetic';
+  const problems: string[] = [];
+  const input = manifest.inputs.find(entry => entry.role === 'benchmark-run-summary');
+  const summary = input ? contents.get(input.path) : undefined;
+  const basis = contents.get(PUBLIC_DATA_BASIS_FILE);
+  if (!summary) problems.push(`${at} needs its verified benchmark-run-summary input`);
+  if (!basis) problems.push(`${at} needs its verified ${PUBLIC_DATA_BASIS_FILE}`);
+  if (summary && basis) {
+    const admission = publicDataAdmissionOf(summary, basis);
+    if (!admission.admitted) problems.push(`${at} must be admitted under its filed basis (D-LE-14): ${admission.code}: ${admission.reason}`);
+  }
+  let records: EvidenceResult[] = [];
+  try { records = loadEvidence(dir, 'benchmark'); } catch { records = []; }
+  // A run stopped before the import saved its category is sealed with no benchmark row, as the synthetic path does: it
+  // is retained, it passes nothing, and the import can run again from the retained summary and the run directory.
+  if (contents.has(resultsFile('benchmark')) && !records.some(record => record.testCaseId === 'BENCHMARK-RECONSTRUCTION')) problems.push(`${at} records no BENCHMARK-RECONSTRUCTION`);
+  for (const record of records) {
+    const body = isRecord(record.responseBody) ? record.responseBody : undefined;
+    if (body?.evidenceLevel !== undefined && body.evidenceLevel !== PUBLIC_DATA_EVIDENCE_LEVEL) {
+      problems.push(`benchmark record ${record.testCaseId} states evidence level ${JSON.stringify(body.evidenceLevel)}, not ${PUBLIC_DATA_EVIDENCE_LEVEL}`);
+    }
+    if (record.testCaseId === 'BENCHMARK-RECONSTRUCTION' && basis
+      && !(isRecord(body?.publicDataBasis) && body.publicDataBasis.basisSha256 === sha256(basis))) {
+      problems.push(`benchmark record ${record.testCaseId} does not state the retained basis ${sha256(basis)}`);
+    }
+  }
+  if (!qaRetentionRoot(dir)) problems.push(`${at} is retained only under a tree holding ${QA_RETENTION_ROOT_MARKER}; ${dir} is not in one`);
+  const dataRoot = markedDataRoot(dir);
+  if (dataRoot) problems.push(`${at} is never retained inside the synthetic data root ${dataRoot}`);
+  return problems;
+}
+
 /** Verifies a sealed package: every listed file is present with its byte count
  * and SHA-256, no unlisted file exists and the package hash recomputes. It also
  * checks what sealing promises: inputs and evidence counts match their files, a
  * synthetic package marks every record and document, and no record or document
- * of a package claims to be a development run. */
+ * of a package claims to be a development run. A package that imports a run and
+ * is not synthetic must also satisfy the D-LE-14 admission from its retained bytes. */
 export function verifyPackage(directory: string): PackageVerification {
   const dir = path.resolve(directory);
   let manifestBytes: Buffer;
@@ -862,6 +984,11 @@ export function verifyPackage(directory: string): PackageVerification {
       }
     }
   }
+  // An imported run in a package that is not synthetic is only the R2 pilot run admitted under its filed basis (D-LE-14).
+  const importsRun = manifest.inputs.some(input => input.role === 'benchmark-run-summary') || listed.has(resultsFile('benchmark'));
+  const admittedPackage = !manifest.synthetic && importsRun;
+  if (admittedPackage) problems.push(...publicDataPackageProblems(dir, manifest, contents));
+  else if (listed.has(PUBLIC_DATA_BASIS_FILE)) problems.push(`${PUBLIC_DATA_BASIS_FILE} is held by a package that was not admitted under it`);
   // Executed evidence that is not synthetic names who ran it (IR-090).
   if (manifest.executed && !manifest.synthetic && !manifest.executor) problems.push('an executed package that is not synthetic names no executor');
   const counted = new Set(manifest.categories.map(entry => entry.category));
@@ -893,10 +1020,13 @@ export function verifyPackage(directory: string): PackageVerification {
         : `evidence category ${entry.category} has records naming an executor the manifest does not record`);
     }
   }
+  // A package that is not synthetic and cites an admitted package carries its notice too: read from its own platform summary.
+  const citesPublicData = !manifest.synthetic && contents.get(PLATFORM_SUMMARY_DOCUMENT)?.toString('utf8').includes(PUBLIC_DATA_CITATION) === true;
   for (const [file, bytes] of contents) {
     if (!file.endsWith('.md')) continue;
     const text = bytes.toString('utf8');
     if (manifest.synthetic && !text.includes(SYNTHETIC_NOTICE)) problems.push(`${file} lacks the synthetic notice`);
+    if ((admittedPackage || citesPublicData) && !text.includes(DECLARED_PUBLIC_DATA_NOTICE)) problems.push(`${file} lacks the declared public data notice`);
     if (text.includes(DEVELOPMENT_RUN_NOTICE)) problems.push(`${file} is marked as a development run`);
   }
   const filing = contents.get(TMF_FILING_FILE)?.toString('utf8');
@@ -908,6 +1038,42 @@ export function verifyPackage(directory: string): PackageVerification {
   return { ok: problems.length === 0, dir, problems, manifestSha256, manifest, ...(notRecord ? { notRunOfRecord: NOT_RUN_OF_RECORD_LINE } : {}),
     ...(restricted ? { restricted: RESTRICTED_FILING_LINE } : {}),
     ...(restricted && opening[0] !== RESTRICTED_FILING_LINE ? { restrictedNoticeMissing: true as const } : {}) };
+}
+
+/** Re-hashes what a sealed import cites against the run directory kept beside it (npm run verify:package -- <package>
+ * --run-dir <dir>): the run summary, the metrics, and every evidence and key set file the pilot rows record. A package keeps
+ * those hashes, never the cited files, so this is what ties a retained run directory to a filed package years later. */
+export function verifyCitedRunFiles(packageDirectory: string, runDirectory: string): { checked: number; problems: string[] } {
+  const runDir = path.resolve(runDirectory);
+  const cited = new Map<string, string>();
+  const problems: string[] = [];
+  const cite = (file: unknown, sha: unknown) => {
+    if (typeof file !== 'string' || typeof sha !== 'string') return;
+    if (cited.has(file) && cited.get(file) !== sha) problems.push(`${file} is cited with two SHA-256 values`);
+    cited.set(file, sha);
+  };
+  const citeList = (list: unknown) => { if (Array.isArray(list)) for (const item of list) if (isRecord(item)) cite(item.path, item.sha256); };
+  let records: EvidenceResult[];
+  try { records = loadEvidence(path.resolve(packageDirectory), 'benchmark'); }
+  catch (error) { return { checked: 0, problems: [`the package's benchmark records cannot be read (${errorText(error)})`] }; }
+  if (!records.length) return { checked: 0, problems: ['the package holds no benchmark record, so it cites no run directory'] };
+  for (const record of records) {
+    const body = isRecord(record.responseBody) ? record.responseBody : undefined;
+    if (!body) continue;
+    cite(BENCHMARK_RUN_FILES.summary, body.summarySha256);
+    cite(BENCHMARK_RUN_FILES.metrics, body.metricsSha256);
+    citeList(body.evidence);
+    if (Array.isArray(body.systems)) for (const system of body.systems) if (isRecord(system)) citeList(system.evidence);
+    if (isRecord(body.keySet)) citeList([body.keySet.manifest, body.keySet.seal]);
+  }
+  for (const [file, sha] of cited) {
+    const target = path.resolve(runDir, file);
+    if (path.isAbsolute(file) || !isInside(runDir, target)) { problems.push(`${file} is outside the run directory`); continue; }
+    const actual = fileSha256(target);
+    if ('error' in actual) problems.push(`${file} ${actual.error}`);
+    else if (actual.sha256 !== sha) problems.push(`${file} is ${actual.sha256}, the package records ${sha}`);
+  }
+  return { checked: cited.size, problems };
 }
 
 // ---------------------------------------------------------------------------
@@ -929,6 +1095,8 @@ export interface CheckedPlatformEvidence {
   synthetic: boolean;
   /** A cited package whose manifest could be read; its files verified only when status is verified. */
   package?: { dir: string; manifestSha256: string; manifest: PackageManifest };
+  /** The cited manifest lists the retained declared-public-data basis: not synthetic, but not a real trial's data either. */
+  declaredPublicData?: true;
 }
 
 export interface CheckedPlatformEvidencePlan {
@@ -941,6 +1109,8 @@ export interface CheckedPlatformEvidencePlan {
   entries: CheckedPlatformEvidence[];
   /** True when an entry is synthetic, which makes a documents package synthetic (VD-3). */
   synthetic: boolean;
+  /** True when an entry cites a package admitted under the declared-public-data basis, whose notice the citing package carries. */
+  declaredPublicData: boolean;
 }
 
 /** The SHA-256 of a file read in slices, so a large evidence file is never held whole. */
@@ -975,6 +1145,12 @@ function citedManifest(file: string): PackageManifest | undefined {
   }
 }
 
+/** The words and the flag a citing row carries for a package admitted under the declared-public-data basis (D-LE-14). */
+function publicDataCitationOf(manifest: PackageManifest | undefined): { words: string; flag: { declaredPublicData?: true } } {
+  const basis = manifest?.files.find(file => file.path === PUBLIC_DATA_BASIS_FILE);
+  return basis ? { words: `; ${PUBLIC_DATA_CITATION}, SHA-256 ${basis.sha256}`, flag: { declaredPublicData: true } } : { words: '', flag: {} };
+}
+
 /** A plan entry checked against the bytes it names. */
 function checkPlatformEvidence(system: PlatformSystemId, entry: PlatformEvidenceEntry, at: string): CheckedPlatformEvidence {
   if (entry.kind !== PACKAGE_EVIDENCE_KIND) {
@@ -984,9 +1160,10 @@ function checkPlatformEvidence(system: PlatformSystemId, entry: PlatformEvidence
     const cited = citedManifest(entry.path);
     packageCheck(!cited || cited.synthetic === entry.synthetic, `${at} declares synthetic ${entry.synthetic}, but the package manifest `
       + `${entry.path} it cites by hash states synthetic ${cited?.synthetic}; correct the plan`);
+    const hashCitation = publicDataCitationOf(cited);
     return hashed.sha256 === entry.sha256
-      ? { system, entry, status: 'hash-only', detail: 'SHA-256 matches; admitted by hash only, not verified as a package', synthetic: entry.synthetic }
-      : { system, entry, status: 'mismatch', detail: `SHA-256 is ${hashed.sha256}, the plan states ${entry.sha256}`, synthetic: entry.synthetic };
+      ? { system, entry, status: 'hash-only', detail: `SHA-256 matches; admitted by hash only, not verified as a package${hashCitation.words}`, synthetic: entry.synthetic, ...hashCitation.flag }
+      : { system, entry, status: 'mismatch', detail: `SHA-256 is ${hashed.sha256}, the plan states ${entry.sha256}${hashCitation.words}`, synthetic: entry.synthetic, ...hashCitation.flag };
   }
   // A package is cited by its directory or by its package-manifest.json.
   const citesManifest = path.basename(entry.path) === MANIFEST_FILE && isFile(entry.path);
@@ -997,11 +1174,12 @@ function checkPlatformEvidence(system: PlatformSystemId, entry: PlatformEvidence
   packageCheck(!manifest || manifest.synthetic === entry.synthetic, `${at} declares synthetic ${entry.synthetic}, but the package `
     + `${verified.dir} states synthetic ${manifest?.synthetic}; correct the plan`);
   const cited = manifest ? { package: { dir: verified.dir, manifestSha256, manifest } } : {};
+  const citation = publicDataCitationOf(manifest);
   if (manifestSha256 !== entry.sha256) {
-    return { system, entry, status: 'mismatch', detail: `${MANIFEST_FILE} SHA-256 is ${manifestSha256}, the plan states ${entry.sha256}`, synthetic: manifest?.synthetic ?? entry.synthetic, ...cited };
+    return { system, entry, status: 'mismatch', detail: `${MANIFEST_FILE} SHA-256 is ${manifestSha256}, the plan states ${entry.sha256}${citation.words}`, synthetic: manifest?.synthetic ?? entry.synthetic, ...cited, ...citation.flag };
   }
   if (!verified.ok || !manifest) {
-    return { system, entry, status: 'mismatch', detail: `the package does not verify: ${verified.problems.slice(0, 5).join('; ')}`, synthetic: manifest?.synthetic ?? entry.synthetic, ...cited };
+    return { system, entry, status: 'mismatch', detail: `the package does not verify: ${verified.problems.slice(0, 5).join('; ')}${citation.words}`, synthetic: manifest?.synthetic ?? entry.synthetic, ...cited, ...citation.flag };
   }
   // A system that admits packages only for a category (the IL's p13, the Command Center's benchmark) needs one.
   const admitted: EvidenceAdmission = PLATFORM_SYSTEMS.find(item => item.id === system)!.evidence;
@@ -1009,9 +1187,9 @@ function checkPlatformEvidence(system: PlatformSystemId, entry: PlatformEvidence
   packageCheck(!categories || manifest.categories.some(item => categories.includes(item.category)),
     `${at} cites the package ${verified.dir} for ${system}, which holds no ${categories?.join(' or ')} evidence; the inventory admits a package for ${system} only with it`);
   return {
-    system, entry, status: 'verified', synthetic: manifest.synthetic, ...cited,
+    system, entry, status: 'verified', synthetic: manifest.synthetic, ...cited, ...citation.flag,
     detail: `${manifest.files.length} files verified (package ${manifest.packageId}, ${manifest.executed ? 'executed' : 'documents only'}`
-      + `${manifest.categories.length ? `, ${manifest.categories.map(item => item.category).join(', ')}` : ''})`,
+      + `${manifest.categories.length ? `, ${manifest.categories.map(item => item.category).join(', ')}` : ''}${citation.words})`,
   };
 }
 
@@ -1024,5 +1202,5 @@ export function checkPlatformEvidencePlan(file: string): CheckedPlatformEvidence
   const loaded = loadPlatformEvidencePlan(file);
   const entries = planEntries(loaded.plan).map(({ system, index, entry }) =>
     checkPlatformEvidence(system, entry, `The platform evidence plan ${loaded.file} systems.${system}.evidence[${index}]`));
-  return { ...loaded, entries, synthetic: entries.some(entry => entry.synthetic) };
+  return { ...loaded, entries, synthetic: entries.some(entry => entry.synthetic), declaredPublicData: entries.some(entry => entry.declaredPublicData === true) };
 }

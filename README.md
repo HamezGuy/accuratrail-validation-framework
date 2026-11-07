@@ -33,7 +33,7 @@ npx ts-node generate.ts --oq ... --ta3-oq-plan <file>    # OQ suites 13 to 18 ag
 npx ts-node generate.ts --oq ... --oq-suites 13-18       # Run only these OQ suites (1 to 12 go together)
 npx ts-node generate.ts --docs-only --platform-evidence <file>  # Platform summary (document 22) with the evidence a plan cites
 npx ts-node generate.ts --docs-only --platform-root <dir>       # Read the estate repositories under another root
-npm run verify:package -- <package directory>        # Recheck a sealed package; prints its manifest SHA-256
+npm run verify:package -- <package directory> [--run-dir <run directory>]   # Recheck a sealed package; prints its manifest SHA-256; --run-dir also re-hashes the files its benchmark rows cite
 ```
 
 ### Retained evidence packages
@@ -64,9 +64,10 @@ then prints the SHA-256 of `package-manifest.json`. A package sets no
 
 Whether a package is synthetic is computed, never chosen: it is synthetic when
 `--synthetic-qualification` is given, when a `--benchmark-run` or `--p13-plan`
-import ran (both are synthetic engineering evidence), or when an entry of the
-platform evidence plan (`--platform-evidence`) is synthetic; this holds for
-documents packages too. A synthetic package is retained only under
+import ran (both are synthetic engineering evidence; the one exception is an R2
+pilot run admitted under its filed declared-public-data basis, see "Lab-to-endpoint
+pilot"), or when an entry of the platform evidence plan (`--platform-evidence`) is
+synthetic; this holds for documents packages too. A synthetic package is retained only under
 the `runs/validation-packages` directory of a synthetic data root (a tree
 holding `SYNTHETIC-TRIAL-DATA-ROOT`, searched upwards from the retain root),
 that is `C:/Projects/.synthetic-trial-data/runs/validation-packages`. A package
@@ -577,6 +578,126 @@ executed (for example NO_TA3_PLAN) reads as not executed, never as passed or
 failed. The regulatory map is generated again after the runners, as the summary
 is. `tests/requirements.contract.test.ts` checks all of it.
 
+### Lab-to-endpoint pilot (document 23, LE-7.2)
+
+`23-pilot-validation-plan.md` is the validation plan and system risk assessment
+for the CDISCPILOT01 lab-to-endpoint pilot's intended use (ALT change from
+baseline at Week 24 by arm; plan revision 3 sections 9 and 10; backlog item
+LE-7.2 in CommandCenter `docs/lab-to-endpoint-backlog-2026-11-06`). It prints the
+intended use, scope, evidence classification of R1 and R2, the risk register
+(five critical failure classes and the quality factors behind them, GAMP 5 class
+and priority computed from severity, probability and detectability), the
+requirement-to-test matrix with each case's state in the package, the four
+computerised-system controls, stage exits, revalidation triggers, roles with the
+forbidden combinations, and the CSL PR-13 mirror. Its data is
+`config/pilot-validation.ts`; approval is the QA owner's (James Gui, interim)
+governance decision in the eTMF, and `TMF-FILING.md` lists the document for
+reading.
+
+The requirements are `PILOT_REQUIREMENTS` in `config/ta3-requirements.ts`:
+URS-102 to URS-121 are the acceptance cases A1 to A20, URS-122 the G3 bound (zero
+critical failures in at least 300 scored critical instances fixed in the sealed
+key), URS-123 to URS-126 the security test of every pilot leg, the backup and
+restore test, signature-to-record linking (21 CFR 11.70) and the access and
+account-change log census; FRS-108 to FRS-132 one each. The URS, FRS and
+traceability matrix print them in their "Lab-to-Endpoint Pilot (CDISCPILOT01)"
+category through the TA3 code. Each cites exactly one case of `PILOT_PQ_CASES`
+(`config/ta3-pq-cases.ts`): PQA-001 to PQA-020 (A1 to A20), PQA-021 (G3) and
+PQC-001 to PQC-004 (the controls), printed in the PQ protocol (09).
+
+The cases are recorded only by `--benchmark-run` of a pilot directory whose
+`run-summary.json` names `cdisc-pilot-acceptance-summary/1`, and only while
+`VALIDATION_PILOT_ACCEPTANCE_IMPORT` is exactly `true` (off by default; off, such
+a run imports as a plain benchmark run with its two rows). The directory is the
+LE-7.3 observer's, not the scorer's output directory: the scorer writes its own
+`run-summary.json` once, and `synthetic-trial/evaluate/reconstruct.mjs` compares
+that file byte for byte with a fresh scoring, so it can never accept a pilot
+summary. The import reconstructs a pilot run through the CommandCenter entry
+`synthetic-trial/evaluate/reconstruct-pilot.mjs`, which LE-7.3 owns: it reconstructs
+the scored run the summary names, compares the summary's evaluator, gates and metrics
+with that run's, re-hashes every cited file and re-derives the pilot block. Until
+that entry exists BENCHMARK-RECONSTRUCTION fails with its path named and every
+pilot case is recorded not executed (RECONSTRUCTION_FAILED).
+
+`derivePilotResults` (`runners/benchmark-evidence.ts`) reads the summary's `pilot`
+member: the run kind, start, classification (R1 synthetic-engineering, R2
+declared-public-data with its basis, else CLASSIFICATION_MISMATCH), the sealed key
+set, what the run does not claim, one result per acceptance case (requirement,
+verdict, coverage, scored and critical instances, critical failures, key basis,
+evidence) and one result per control (each of edc, csl, cc and bw with its counts
+and evidence). Every evidence file must lie inside the run directory with its
+recorded SHA-256. A pass needs complete coverage, a scored instance and no critical
+failure; an inconclusive or incomplete result never passes; a case the run did not
+run or report is recorded not executed, so an R1 at the Stage B exit shows its Stage
+C cases not executed. An unrecognised member or value records
+UNSUPPORTED_PILOT_SUMMARY.
+
+The key checks read the key set's own bytes, not the summary's word for them. The
+summary cites the sealed manifest and the seal record (`pilot.keySet.manifest` and
+`seal`, each a path inside the run directory with its SHA-256); no key file is opened
+and no gold enters the framework. Absent or outside the run: KEY_MANIFEST_MISSING. The
+bytes differ, or they state another key set id, seal time, study or N than the summary:
+KEY_MANIFEST_MISMATCH. Sealed at or after the run start: KEY_NOT_SEALED_BEFORE_RUN.
+A case the manifest's `coverage.held` still lists, whole or in part (`A13-overlay`):
+KEY_CASE_HELD. For R2 the manifest's `adjudication.countersignatures` must name the
+case, not only the summary's `keyBasis`: KEY_NOT_COUNTERSIGNED. The rows record what was
+read as `sealedKeySet`.
+
+An R1 summary must state `pilot.nonClaims`: the governed lane not exercised (OD-23),
+OSB strict and the IL source-fact consumer not applicable (OD-24). No status means
+passed, and R2 exercises the governed lane, so it cannot state that one. A summary that
+breaks this records UNSUPPORTED_PILOT_SUMMARY on every case; the import copies the
+list into every pilot row and document 23 prints it.
+
+A package keeps the summary, the metrics and the SHA-256 of every cited file, not the
+files. `npm run verify:package -- <package> --run-dir <run directory>` re-hashes them
+against the rows, so the R2 run directory the QA owner keeps under the QA retention
+root can be tied to the filed package. The records go to `evidence/benchmark/`, like the O-7
+PQT cases; no evidence category or contract byte changes. The import admits the
+run's verdicts and never re-judges the evidence content, which the LE-7.3
+observer produces.
+
+The evidence classification is D-LE-14. An R1 run keeps the synthetic
+classification. An import of an R2 run makes a package that is not synthetic only
+when `admitPublicDataRun` (`runners/evidence-package.ts`) admits it, before the
+package exists, and it admits only:
+
+- `VALIDATION_PILOT_ACCEPTANCE_IMPORT` and `VALIDATION_PILOT_PUBLIC_DATA_ADMISSION`
+  both exactly `true` (the second is off by default; off, every import stays
+  synthetic);
+- no other synthetic basis in the run, and a `--retain-root` inside a tree holding
+  `QA-RETENTION-ROOT` and outside any synthetic data root;
+- a summary stating `pilot.runKind` R2 and `pilot.classification`
+  `{kind: "declared-public-data", basisRef, basisSha256}`;
+- a `pilot-declared-public-data-basis/1` record the QA owner filed: `basisRef` is a
+  relative path inside that tree (links resolved), its bytes have `basisSha256`, it
+  names the study, run kind, decisions D-LE-1 and D-LE-14, the data-use manifest
+  SHA-256, the sealed key set the run states (`pilot.keySet.manifestSha256`) and who
+  filed it, in what role and when, and it was filed before `pilot.startedAt`.
+
+No code creates the marker or the record. The admitted package needs `--executor`
+like any executed package that is not synthetic, keeps a byte copy of the record as
+`evidence/public-data-basis.json`, opens every document and category summary with
+"DECLARED PUBLIC DATA. ...", and its benchmark records state `evidenceLevel:
+declared_public_data` with the basis. No manifest member, input role or evidence
+category changes: `npm run verify:package` recomputes the rule from the retained
+summary and basis bytes and refuses a package that imports a run, is not synthetic and
+does not satisfy it, or that sits outside a QA-marked tree. An R2 run that is not
+admitted stays synthetic (a retain root in a QA-marked tree is then refused, as for any
+synthetic package), the CLI prints the refusal code, and each of its acceptance cases and
+controls records `PUBLIC_DATA_BASIS_NOT_ADMITTED` (G3 records
+`CRITICAL_FAILURE_BOUND_NOT_MET`), so a pass is never recorded for an R2 run in a
+synthetic package. The outcome of the run does not decide the classification: a failed
+R2 run is retained the same way, and a run stopped before the import saved its records
+seals and verifies with no benchmark row. A package that is not synthetic and whose
+platform evidence plan cites an admitted package says so in document 22's evidence row
+and carries the same notice and intended-use limit; `npm run verify:package` checks it.
+
+A pilot import of a correct R1 at the Stage B exit prints `[FAIL]` and exits 1, because
+its Stage C rows have not passed: read the rows (method CONTRACT with CASE_NOT_RUN,
+CASE_NOT_REPORTED, CONTROL_NOT_REPORTED or CASES_NOT_RUN means not executed), not the exit
+code.
+
 ## Output
 
 A run with `--retain-root` writes a retained package (see "Retained evidence
@@ -714,8 +835,9 @@ substitute today's scores. Historical reconstruction may require the original
 Evidence appears under `evidence/benchmark/`, in the execution records, master
 evidence index, and supplemental validation summary. Reconstruction success and
 engineering gate success are separate checks. All other gates and the original
-metrics remain authoritative. An import is synthetic engineering evidence; it
-does not establish independent clinical validation or achievement of SURPASS
+metrics remain authoritative. An import is synthetic engineering evidence (the
+one exception, an R2 pilot run admitted under its filed basis, is described under
+"Lab-to-endpoint pilot"); it does not establish independent clinical validation or achievement of SURPASS
 targets. Preserve the retained run and its evaluator alongside the qualification
 package: the import links and hashes the originals rather than copying sealed
 case-level answer keys.
