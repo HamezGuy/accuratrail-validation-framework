@@ -13,7 +13,9 @@ import {
 import { OQ_SUITES, oqSuiteCaseIds } from '../config/oq-case-registry';
 import { ICH_E6_R3, E6_R3_SECTION_STATUS, e6r3 } from '../config/regulatory-scope';
 import { RELEASE_PQ_CASE } from '../config/ta3-pq-cases';
-import { checkPlatformEvidencePlan, PLATFORM_EVIDENCE_STATUSES, PLATFORM_SUMMARY_DOCUMENT, type CheckedPlatformEvidence, type PlatformEvidenceStatus } from '../runners/evidence-package';
+import {
+  checkPlatformEvidencePlan, PLATFORM_EVIDENCE_STATUSES, PLATFORM_SUMMARY_DOCUMENT, PLATFORM_SUMMARY_FILE, type CheckedPlatformEvidence, type PlatformEvidenceStatus,
+} from '../runners/evidence-package';
 import { currentEvidenceMarking, isRecord, DEVELOPMENT_RUN_NOTICE, SYNTHETIC_NOTICE } from '../runners/evidence-capture';
 import { frameworkCommit, parseReleaseComponent, type ReleaseComponent } from '../runners/release-identity';
 import { dotenvEnvironment, sourceFlagValue, type FlagValue } from '../runners/target-configuration';
@@ -34,8 +36,7 @@ import { approvalBlock, documentHeader, hr, markdownTable, section } from './hel
 // Repositories are only read: git rev-parse and git status, never a write.
 
 export const PLATFORM_SUMMARY_CONTRACT = 'platform-validation-summary/1';
-export { PLATFORM_SUMMARY_DOCUMENT };
-export const PLATFORM_SUMMARY_FILE = 'platform-validation-summary.json';
+export { PLATFORM_SUMMARY_DOCUMENT, PLATFORM_SUMMARY_FILE };
 
 /** Required members of the summary and of its objects; the contract test compares them with the schema. */
 export const PLATFORM_SUMMARY_REQUIRED = [
@@ -50,7 +51,7 @@ export const PLATFORM_SUMMARY_MEMBERS = {
   e6r3: { required: ['citation', 'sectionVerification', 'sectionStatus'], optional: [] },
   system: { required: ['id', 'name', 'repo', 'head', 'dirty', 'ta3Uses', 'statement', 'evidenceAdmitted', 'evidence', 'gaps', 'status'], optional: [] },
   quotedLine: { required: ['file', 'line', 'text', 'fileSha256'], optional: [] },
-  evidence: { required: ['kind', 'path', 'sha256', 'synthetic', 'status', 'detail'], optional: ['note'] },
+  evidence: { required: ['kind', 'path', 'sha256', 'synthetic', 'status', 'detail'], optional: ['note', 'declaredPublicData'] },
   gap: { required: ['id', 'text', 'item', 'probe'], optional: [] },
   probe: { required: ['file', 'rule', 'literal', 'status'], optional: ['line'] },
   releaseConsistency: { required: ['status', 'detail', 'oq', 'o7'], optional: [] },
@@ -85,6 +86,9 @@ export interface EvidenceRow {
   status: PlatformEvidenceStatus;
   detail: string;
   note?: string;
+  /** The cited package was admitted under the declared-public-data basis (D-LE-14); a package holding this summary carries the
+   * declared public data notice, which verifyPackage reads from here. */
+  declaredPublicData?: true;
 }
 
 export interface ProbeResult { file: string; rule: GapProbe['rule']; literal: string; status: ProbeStatus; line?: number }
@@ -270,6 +274,7 @@ function evidenceRow(checked: CheckedPlatformEvidence): EvidenceRow {
   return {
     kind: entry.kind, path: entry.path, sha256: entry.sha256, synthetic: checked.synthetic, status: checked.status, detail: checked.detail,
     ...(entry.note !== undefined ? { note: entry.note } : {}),
+    ...(checked.declaredPublicData ? { declaredPublicData: true as const } : {}),
   };
 }
 

@@ -122,8 +122,10 @@ line that states its qualification status quoted exactly from the current
 bytes with the file's SHA-256 and line number (`not-found` when the inventory
 is stale, `not-stated` when the repository states none), the evidence the plan
 cites with each entry's status (`verified`, `hash-only`, `mismatch`,
-`unreadable`), and its gaps with the plan item and the probe result (`open`,
-`probe-not-matched`, `file-missing`, or null for a stated gap). A system's
+`unreadable`) and, for a cited package admitted under the declared-public-data
+basis (D-LE-14), `declaredPublicData: true`, and its gaps with the plan item
+and the probe result (`open`, `probe-not-matched`, `file-missing`, or null for a
+stated gap). A system's
 status is `evidence-present-unapproved` when an admitted entry verified or
 matched by hash, else `gap`; it is never "qualified", and approval is recorded
 in the eTMF. `releaseConsistency` compares the EDC API release of each cited
@@ -134,7 +136,11 @@ with the production profile lines of its settings, the OQ cases it needs, how
 many of them passed in each cited OQ package, the SOP-CC-001 category row and
 the status `no-change-control-record`. A synthetic or development run adds
 `synthetic`, `syntheticNotice` or `retention`, as evidence summaries do. The
-summary holds no subject, site or arm data.
+summary holds no subject, site or arm data. A package that holds a summary with a
+`declaredPublicData` entry and is not synthetic carries the declared public data
+notice in every document; `npm run verify:package` reads that requirement from the
+retained JSON, never from the document's words. The member was added to version 1
+while its only consumer, CommandCenter W-5 readiness, is not built.
 
 ## Read, not owned: synthetic-trial.deviation-detection-summary/1
 

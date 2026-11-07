@@ -17,7 +17,7 @@ import {
   PLATFORM_EVIDENCE_PLAN_CONTRACT, PLATFORM_EVIDENCE_PLAN_MEMBERS, PLATFORM_EVIDENCE_PLAN_REQUIRED, parsePlatformEvidencePlan,
 } from '../runners/platform-evidence-plan';
 import {
-  checkPlatformEvidencePlan, createPackage, sealPackage, MANIFEST_FILE, PLATFORM_EVIDENCE_STATUSES, SYNTHETIC_ROOT_MARKER,
+  checkPlatformEvidencePlan, createPackage, sealPackage, MANIFEST_FILE, PLATFORM_EVIDENCE_STATUSES, PUBLIC_DATA_BASIS_FILE, SYNTHETIC_ROOT_MARKER,
 } from '../runners/evidence-package';
 import { saveEvidence, setEvidenceMarking, SYNTHETIC_NOTICE, type EvidenceResult } from '../runners/evidence-capture';
 import { releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
@@ -402,6 +402,28 @@ test('release consistency is same only when every OQ and O-7 pair compares', t =
   });
   assert.equal(summary.releaseConsistency.status, 'not-comparable');
   assert.match(summary.releaseConsistency.detail, /^1 of 2 OQ package and O-7 import pairs cannot be compared: .*; the 1 pairs that compare state the same release \(git-commit a{40}\)\.$/);
+});
+
+test('an entry citing a package admitted under the declared-public-data basis carries declaredPublicData in the summary JSON (design review 2026-11-08, Major 6)', t => {
+  const { platformRoot } = fakePlatform(t);
+  const home = markedHome(t);
+  const sources = temporaryDirectory(t, 'accura-platform-public-data-');
+  const oq = oqPackage(home, API_A);
+  // A copy of a sealed manifest that also lists the retained basis, cited by hash: the flag is read from the manifest's file list.
+  const manifest = JSON.parse(fs.readFileSync(path.join(oq.dir, MANIFEST_FILE), 'utf8'));
+  manifest.files = [...manifest.files, { path: PUBLIC_DATA_BASIS_FILE, bytes: 2, sha256: 'a'.repeat(64) }].sort((a, b) => (a.path < b.path ? -1 : 1));
+  const admittedDir = path.join(sources, 'admitted');
+  fs.mkdirSync(admittedDir);
+  const cited = path.join(admittedDir, MANIFEST_FILE);
+  fs.writeFileSync(cited, JSON.stringify(manifest));
+  const entry = { kind: 'bw-formal-qualification/1', path: cited, sha256: sha256(fs.readFileSync(cited)), synthetic: true };
+  const plain = { kind: 'bw-formal-qualification/1', path: path.join(oq.dir, MANIFEST_FILE), sha256: oq.manifestSha256, synthetic: true };
+  const summary = buildPlatformSummary(path.join(platformRoot, 'EDCProject'), { platformRoot, now: NOW,
+    platformEvidencePlan: planFile(sources, { workbench: { evidence: [entry, plain] } }) });
+  const [admitted, other] = row(summary, 'workbench').evidence;
+  assert.equal(admitted.declaredPublicData, true);
+  assert.match(admitted.detail, /declared public data under the filed basis/);
+  assert.equal('declaredPublicData' in other, false);
 });
 
 test('a hash-only entry that is a package manifest must declare the synthetic flag the manifest states', t => {

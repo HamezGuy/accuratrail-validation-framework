@@ -120,7 +120,8 @@
         "synthetic": { "description": "The cited manifest's flag for a package whose manifest could be read; otherwise the plan's declaration.", "type": "boolean" },
         "status": { "enum": ["verified", "hash-only", "mismatch", "unreadable"] },
         "detail": { "type": "string", "minLength": 1 },
-        "note": { "type": "string", "minLength": 1 }
+        "note": { "type": "string", "minLength": 1 },
+        "declaredPublicData": { "description": "Present when the cited package was admitted under the declared-public-data basis (D-LE-14, it lists evidence/public-data-basis.json); a package holding this summary must carry the declared public data notice, and npm run verify:package reads that requirement from this member.", "const": true }
       }
     },
     "gap": {

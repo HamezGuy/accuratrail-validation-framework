@@ -57,9 +57,13 @@ export const QA_RETENTION_ROOT_MARKER = 'QA-RETENTION-ROOT';
 /** Where a package keeps the byte copy of the filed declared-public-data basis it was admitted under (D-LE-14). Listed
  * in the manifest like every other file; no manifest member or input role changes (validation-evidence-package/1). */
 export const PUBLIC_DATA_BASIS_FILE = 'evidence/public-data-basis.json';
-/** The platform summary a package holds (generators/22-platform-validation-summary.ts), and the words its evidence row
- * carries for a cited package admitted under that basis; a package citing one carries the declared public data notice. */
+/** The platform summary a package holds (generators/22-platform-validation-summary.ts): the document, and its
+ * platform-validation-summary/1 JSON, whose evidence entries carry declaredPublicData for a cited package admitted under
+ * that basis. A package holding such an entry carries the declared public data notice; verifyPackage reads that from the
+ * JSON, never from the document's words. */
 export const PLATFORM_SUMMARY_DOCUMENT = '22-platform-validation-summary.md';
+export const PLATFORM_SUMMARY_FILE = 'platform-validation-summary.json';
+/** The words a citing evidence row's detail carries for the reader of the document. */
 const PUBLIC_DATA_CITATION = 'declared public data under the filed basis';
 
 /** What a package retains in inputs/<role>.json. ta3-oq-plan is the --ta3-oq-plan file,
@@ -905,6 +909,19 @@ function publicDataPackageProblems(dir: string, manifest: PackageManifest, conte
   return problems;
 }
 
+/** Whether a retained platform-validation-summary/1 cites a package admitted under the declared-public-data basis: an
+ * evidence entry of a system holding declaredPublicData true. A summary that cannot be read that way is a problem. */
+function summaryCitesPublicData(bytes: Buffer): { cites: boolean } | { problem: string } {
+  let summary: unknown;
+  try { summary = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')); }
+  catch { return { problem: `${PLATFORM_SUMMARY_FILE} is not JSON` }; }
+  const systems = isRecord(summary) ? summary.systems : undefined;
+  if (!Array.isArray(systems) || !systems.every(system => isRecord(system) && Array.isArray(system.evidence) && system.evidence.every(isRecord))) {
+    return { problem: `${PLATFORM_SUMMARY_FILE} holds no systems with evidence lists` };
+  }
+  return { cites: systems.some(system => (system.evidence as Record<string, unknown>[]).some(entry => entry.declaredPublicData === true)) };
+}
+
 /** Verifies a sealed package: every listed file is present with its byte count
  * and SHA-256, no unlisted file exists and the package hash recomputes. It also
  * checks what sealing promises: inputs and evidence counts match their files, a
@@ -1021,8 +1038,11 @@ export function verifyPackage(directory: string): PackageVerification {
         : `evidence category ${entry.category} has records naming an executor the manifest does not record`);
     }
   }
-  // A package that is not synthetic and cites an admitted package carries its notice too: read from its own platform summary.
-  const citesPublicData = !manifest.synthetic && contents.get(PLATFORM_SUMMARY_DOCUMENT)?.toString('utf8').includes(PUBLIC_DATA_CITATION) === true;
+  // A package that is not synthetic and cites an admitted package carries its notice too: read from its own platform summary's JSON.
+  const summaryBytes = manifest.synthetic ? undefined : contents.get(PLATFORM_SUMMARY_FILE);
+  const citation = summaryBytes ? summaryCitesPublicData(summaryBytes) : { cites: false };
+  if ('problem' in citation) problems.push(citation.problem);
+  const citesPublicData = 'cites' in citation && citation.cites;
   for (const [file, bytes] of contents) {
     if (!file.endsWith('.md')) continue;
     const text = bytes.toString('utf8');

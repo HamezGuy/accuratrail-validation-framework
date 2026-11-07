@@ -12,8 +12,8 @@ import {
   admitPublicDataRun, benchmarkRunInputs, createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis,
   verifyCitedRunFiles, verifyPackage,
   APPROVAL_RECORDED_IN, FRAMEWORK_SHARED_TYPES_REQUIRED, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_OPTIONAL, MANIFEST_MEMBER_REQUIRED,
-  MANIFEST_OPTIONAL, MANIFEST_REQUIRED, PUBLIC_DATA_BASIS_FILE, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED,
-  type PackageOptions,
+  MANIFEST_OPTIONAL, MANIFEST_REQUIRED, PLATFORM_SUMMARY_DOCUMENT, PLATFORM_SUMMARY_FILE, PUBLIC_DATA_BASIS_FILE, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES,
+  SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED, type PackageOptions,
 } from '../runners/evidence-package';
 import { derivePilotResults, PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/benchmark-evidence';
 import {
@@ -462,6 +462,27 @@ test('--run-dir rechecks each file in the state a pilot row recorded, so a faile
   const changedBytes = bytesOf(changed.path);
   assert.match(altered(rewrite(changed.path, bytesOf(second.path)), rewrite(changed.path, changedBytes)), /evidence\/changed\.json is [0-9a-f]{64}, the package records/);
   assert.deepEqual(verifyCitedRunFiles(evidencePackage.dir, run).problems, []);
+});
+
+test('a package citing an admitted package carries the declared public data notice, read from its summary JSON, never its words (design review 2026-11-08, Major 6)', t => {
+  const qaRoot = temporaryDirectory(t, 'accura-package-citing-');
+  fs.writeFileSync(path.join(qaRoot, QA_RETENTION_ROOT_MARKER), 'Retention root for a contract test.\n');
+  t.after(() => setEvidenceMarking(undefined));
+  // createPackage is told the plan cites an admitted package, as generate.ts tells it, when the filing must carry the notice too.
+  const sealed = (version: string, summary: unknown, document: string, citesDeclaredPublicData = false) => {
+    const evidencePackage = createPackage({ retainRoot: path.join(qaRoot, 'packages'), version, executed: false, syntheticBasis: [],
+      frameworkCheckout: FRAMEWORK, citesDeclaredPublicData });
+    fs.writeFileSync(path.join(evidencePackage.dir, PLATFORM_SUMMARY_FILE), JSON.stringify(summary));
+    fs.writeFileSync(path.join(evidencePackage.dir, PLATFORM_SUMMARY_DOCUMENT), document);
+    try { sealPackage(evidencePackage); return ''; } catch (error) { return (error as Error).message; }
+  };
+  const summary = (flag: boolean) => ({ systems: [{ evidence: [{ detail: 'verified', ...(flag ? { declaredPublicData: true } : {}) }] }] });
+  const notice = `> **${DECLARED_PUBLIC_DATA_NOTICE}**\n\n# Platform Validation Summary\n`;
+  assert.match(sealed('flag-without-notice', summary(true), '# Platform Validation Summary\n'), /22-platform-validation-summary\.md lacks the declared public data notice/);
+  assert.equal(sealed('flag-with-notice', summary(true), notice, true), '');
+  // The document's words decide nothing: the phrase a citing row's detail carries, without the member, needs no notice.
+  assert.equal(sealed('words-only', summary(false), '# Platform Validation Summary\n\n| x | declared public data under the filed basis |\n'), '');
+  assert.match(sealed('not-a-summary', { systems: 'none' }, '# Platform Validation Summary\n'), /platform-validation-summary\.json holds no systems with evidence lists/);
 });
 
 test('whether a package is synthetic is computed from the run, documents packages included', t => {
