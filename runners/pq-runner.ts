@@ -180,6 +180,13 @@ export async function runStudySetup(baseUrl: string, state: WorkflowState, quali
       }
       return configured;
     }) : { evidence: evidence('PQ-005', '/api/forms', 'POST', 0, null, false, 'Blocked: no verified qualification visit') };
+  // The fixture writes its range directly, as one person: a field's min and max, then a validation rule. So PQ runs against
+  // an EDC with ENABLE_EDIT_CHECK_SECOND_PERSON off, its default (libreclinicaapi docs/EDIT_CHECK_SECOND_PERSON.md, README
+  // here). With the switch on the EDC refuses that write, and this case says why instead of reading as a defect of the form.
+  if (!configured.evidence.passed && configured.evidence.notes.includes('EDIT_CHECK_SECOND_PERSON_REQUIRED')) {
+    configured.evidence.outcomeCode = 'EDIT_CHECK_SECOND_PERSON_ON_AT_TARGET';
+    configured.evidence.notes += ' This qualification runs with ENABLE_EDIT_CHECK_SECOND_PERSON off: its fixture writes a range as one person, and the switch is on at this target.';
+  }
   results.push(enrichResult(configured.evidence, {
     regulatoryRef: '21 CFR 11.10(a)', testDescription: 'Create, assign and independently read back the synthetic CRF',
     acceptanceCriteria: qualification
