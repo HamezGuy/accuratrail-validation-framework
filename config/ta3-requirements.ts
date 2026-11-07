@@ -543,7 +543,7 @@ export function ta3RequirementCases(requirement: Ta3Requirement): string[] {
 /** What every pilot case leaves to the evidence it admits, stated once in each planned verification. */
 const ADMITS_BY_HASH = 'The framework admits the run\'s verdict for this case only with every cited evidence file verified by SHA-256, '
   + 'complete coverage and a key sealed before the run; it does not re-judge the evidence content, which the LE-7.3 observer produces.';
-const DERIVATION = 'accuratrail-validation-framework runners/benchmark-evidence.ts (derivePilotResults, behind VALIDATION_PILOT_ACCEPTANCE_IMPORT)';
+const DERIVATION = 'accuratrail-validation-framework runners/pilot-evidence.ts (derivePilotResults, behind VALIDATION_PILOT_ACCEPTANCE_IMPORT)';
 
 interface PilotRequirementInput {
   id: string;

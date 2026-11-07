@@ -15,7 +15,8 @@ import {
   MANIFEST_OPTIONAL, MANIFEST_REQUIRED, PLATFORM_SUMMARY_DOCUMENT, PLATFORM_SUMMARY_FILE, PUBLIC_DATA_BASIS_FILE, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES,
   SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED, type PackageOptions,
 } from '../runners/evidence-package';
-import { derivePilotResults, PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/benchmark-evidence';
+import { derivePilotResults } from '../runners/pilot-evidence';
+import { PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/public-data-admission';
 import {
   PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_NON_CLAIMS, PILOT_PQ_CASES, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY,
 } from '../config/ta3-pq-cases';

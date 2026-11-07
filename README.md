@@ -619,7 +619,7 @@ with that run's, re-hashes every cited file and re-derives the pilot block. Unti
 that entry exists BENCHMARK-RECONSTRUCTION fails with its path named and every
 pilot case is recorded not executed (RECONSTRUCTION_FAILED).
 
-`derivePilotResults` (`runners/benchmark-evidence.ts`) reads the summary's `pilot`
+`derivePilotResults` (`runners/pilot-evidence.ts`) reads the summary's `pilot`
 member: the run kind, start, classification (R1 synthetic-engineering, R2
 declared-public-data with its basis, else CLASSIFICATION_MISMATCH), the sealed key
 set, what the run does not claim, one result per acceptance case (requirement,
@@ -806,7 +806,10 @@ IQ-005, IQ-006 and IQ-008 on the real trees.
 - **collectors/** — Read-only codebase introspection (routes, services, migrations, SOPs, tests)
 - **generators/** — Document generators producing formal markdown from collector data
 - **runners/** — Live test executors for IQ/OQ/PQ evidence capture
-- **runners/benchmark-evidence.ts** — Offline reconstructed CommandCenter evidence and scoped read-only native P13 attachment, preserving each authoritative evaluator's metrics
+- **runners/benchmark-evidence.ts**: Offline reconstructed CommandCenter evidence and scoped read-only native P13 attachment, preserving each authoritative evaluator's metrics; `SUMMARY_CONTRACTS` holds, per summary contract, its reconstruction entry, wait, metrics binding and derivation (the O-7 PQT cases here)
+- **runners/pilot-evidence.ts**: the lab-to-endpoint pilot cases derived from a reconstructed pilot run, and what a pilot row records about each run file (`verify:package --run-dir`)
+- **runners/public-data-admission.ts**: the D-LE-14 declared-public-data admission rule, on the bytes of a run summary and its filed basis
+- **runners/summary-reading.ts**: the strict summary readers and the case outcome both derivations share
 - **runners/evidence-package.ts**: retained packages: exclusive creation, inputs, sealing and verification
 - **contracts/**: the versioned JSON Schema contracts the framework produces (contracts/README.md)
 - **scripts/verify-package.ts**: `npm run verify:package`

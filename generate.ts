@@ -12,7 +12,7 @@ import {
   admitPublicDataRun, benchmarkRunInputs, checkExecutorName, checkPlatformEvidencePlan, checkTa3OqPlan, checkTargetConfiguration, createPackage, createScratchRun, markDevelopmentRun,
   sealPackage, syntheticBasis, DEVELOPMENT_RUN_NOTICE, PLATFORM_EVIDENCE_STATUSES, type EvidencePackage, type PackageInputSource,
 } from './runners/evidence-package';
-import type { PublicDataAdmission } from './runners/benchmark-evidence';
+import type { PublicDataAdmission } from './runners/public-data-admission';
 import { ALL_OQ_SUITES, OQ_CASE_IDS, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');

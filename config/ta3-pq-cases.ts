@@ -173,7 +173,7 @@ export function ta3PqCase(id: string): Ta3PqCase {
  * PQC-001 to PQC-004 are the computerised-system validation controls plan section 9 names as missing: security,
  * backup and disaster recovery, signature-to-record linking (21 CFR 11.70) and the access and account-change log
  * census. Data only. The PQ protocol (09) and the pilot validation plan (23) print them; the benchmark import
- * (runners/benchmark-evidence.ts, `derivePilotResults`) records them from a reconstructed run of the qualification
+ * (runners/pilot-evidence.ts, `derivePilotResults`, registered in SUMMARY_CONTRACTS) records them from a reconstructed run of the qualification
  * estate whose summary states PILOT_ACCEPTANCE_CONTRACT, and only while PILOT_IMPORT_SWITCH is exactly 'true'.
  * Every case names one requirement of PILOT_REQUIREMENTS (config/ta3-requirements.ts), which cites it back.
  */

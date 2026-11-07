@@ -330,7 +330,7 @@ export const RUNNER_CASE_CHECKS: Readonly<Record<string, RunnerCaseCheck>> = {
   'PQ-038': { check: 'Synthetic fixture: reads the owned query back and requires the same form and closed status 4.' },
   'PQ-039': { check: 'Synthetic fixture: the final signature proof must be signed, integrity-valid and verified, with the latest '
     + 'signature active (same run).' },
-  // The lab-to-endpoint pilot cases (LE-7.2; runners/benchmark-evidence.ts derivePilotResults), recorded only by a
+  // The lab-to-endpoint pilot cases (LE-7.2; runners/pilot-evidence.ts derivePilotResults), recorded only by a
   // --benchmark-run import of a reconstructed run whose summary contract is cdisc-pilot-acceptance-summary/1, while
   // VALIDATION_PILOT_ACCEPTANCE_IMPORT is exactly true; nothing is re-scored and no evidence content is re-judged.
   ...Object.fromEntries(PILOT_PQ_CASES.map(pqCase => [pqCase.id, { check: pilotCaseCheck(pqCase) }])),

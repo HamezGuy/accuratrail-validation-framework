@@ -10,10 +10,9 @@ import {
   currentReleaseIdentity, frameworkCommit, frameworkSharedTypes, releaseComponentNames, NO_RECEIPT, NOT_RESOLVED, RELEASE_CONTRACT_V1,
   RELEASE_CONTRACT_V2, type FrameworkSharedTypes, type ReleaseIdentity,
 } from './release-identity';
-import {
-  citedRunFile, pilotRowRunFiles, publicDataAdmissionOf, publicDataClaim, BENCHMARK_RUN_FILES, PUBLIC_DATA_EVIDENCE_LEVEL,
-  type PublicDataAdmission, type RecordedRunFile,
-} from './benchmark-evidence';
+import { BENCHMARK_RUN_FILES, PUBLIC_DATA_EVIDENCE_LEVEL } from './benchmark-evidence';
+import { citedRunFile, pilotRowRunFiles, type RecordedRunFile } from './pilot-evidence';
+import { publicDataAdmissionOf, publicDataClaim, type PublicDataAdmission } from './public-data-admission';
 import { PILOT_IMPORT_SWITCH, PILOT_PUBLIC_DATA_SWITCH } from '../config/ta3-pq-cases';
 import {
   configurationUnderTest, parseConfigurationUnderTest, parseTargetConfiguration,

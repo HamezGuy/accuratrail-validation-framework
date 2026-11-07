@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://schemas.accuratrials.com/validation-framework/pilot-declared-public-data-basis/1",
   "title": "pilot-declared-public-data-basis/1",
-  "description": "The declared-public-data basis of the lab-to-endpoint pilot's run of record (D-LE-14). Owner: this framework, runners/benchmark-evidence.ts (publicDataAdmissionOf). Producer: the QA owner, by hand, as a file in the tree holding QA-RETENTION-ROOT; no code creates it. An R2 run summary cites it by relative path (pilot.classification.basisRef) and SHA-256 (pilot.classification.basisSha256). A package admitted under it keeps a byte copy as evidence/public-data-basis.json. The basis carries no signature; it records who filed it, and approval stays a governance decision in the eTMF.",
+  "description": "The declared-public-data basis of the lab-to-endpoint pilot's run of record (D-LE-14). Owner: this framework, runners/public-data-admission.ts (publicDataAdmissionOf). Producer: the QA owner, by hand, as a file in the tree holding QA-RETENTION-ROOT; no code creates it. An R2 run summary cites it by relative path (pilot.classification.basisRef) and SHA-256 (pilot.classification.basisSha256). A package admitted under it keeps a byte copy as evidence/public-data-basis.json. The basis carries no signature; it records who filed it, and approval stays a governance decision in the eTMF.",
   "type": "object",
   "additionalProperties": false,
   "required": [
