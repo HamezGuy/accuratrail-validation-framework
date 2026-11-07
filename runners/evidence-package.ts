@@ -11,7 +11,8 @@ import {
   RELEASE_CONTRACT_V2, type FrameworkSharedTypes, type ReleaseIdentity,
 } from './release-identity';
 import {
-  publicDataAdmissionOf, publicDataClaim, BENCHMARK_RUN_FILES, PUBLIC_DATA_EVIDENCE_LEVEL, type PublicDataAdmission,
+  citedRunFile, pilotRowRunFiles, publicDataAdmissionOf, publicDataClaim, BENCHMARK_RUN_FILES, PUBLIC_DATA_EVIDENCE_LEVEL,
+  type PublicDataAdmission, type RecordedRunFile,
 } from './benchmark-evidence';
 import { PILOT_IMPORT_SWITCH, PILOT_PUBLIC_DATA_SWITCH } from '../config/ta3-pq-cases';
 import {
@@ -1040,40 +1041,52 @@ export function verifyPackage(directory: string): PackageVerification {
     ...(restricted && opening[0] !== RESTRICTED_FILING_LINE ? { restrictedNoticeMissing: true as const } : {}) };
 }
 
-/** Re-hashes what a sealed import cites against the run directory kept beside it (npm run verify:package -- <package>
- * --run-dir <dir>): the run summary, the metrics, and every evidence and key set file the pilot rows record. A package keeps
- * those hashes, never the cited files, so this is what ties a retained run directory to a filed package years later. */
-export function verifyCitedRunFiles(packageDirectory: string, runDirectory: string): { checked: number; problems: string[] } {
+/** Rechecks what a sealed import recorded about the run directory kept beside it (npm run verify:package -- <package>
+ * --run-dir <dir>): the run summary and the metrics by SHA-256, and each file a pilot row recorded in the state it recorded
+ * (pilotRowRunFiles): a verified file, and a mismatched one, re-hashed to the bytes the import found; a missing file still
+ * absent; a path still outside the directory. A package keeps those hashes, never the cited files, so this is what ties a
+ * retained run directory to a filed package years later, the directory of a failed run included. */
+export function verifyCitedRunFiles(packageDirectory: string, runDirectory: string): { checked: number; rehashed: number; problems: string[] } {
   const runDir = path.resolve(runDirectory);
-  const cited = new Map<string, string>();
+  const recorded = new Map<string, RecordedRunFile>();
   const problems: string[] = [];
-  const cite = (file: unknown, sha: unknown) => {
-    if (typeof file !== 'string' || typeof sha !== 'string') return;
-    if (cited.has(file) && cited.get(file) !== sha) problems.push(`${file} is cited with two SHA-256 values`);
-    cited.set(file, sha);
+  const record = (file: RecordedRunFile) => {
+    const known = recorded.get(file.path);
+    if (!known) { recorded.set(file.path, file); return; }
+    if (known.state === 'bytes' && file.state === 'bytes' && known.sha256 !== file.sha256) problems.push(`${file.path} is cited with two SHA-256 values`);
+    else if (known.state !== file.state) problems.push(`${file.path} is recorded both ${known.state} and ${file.state}`);
   };
-  const citeList = (list: unknown) => { if (Array.isArray(list)) for (const item of list) if (isRecord(item)) cite(item.path, item.sha256); };
   let records: EvidenceResult[];
   try { records = loadEvidence(path.resolve(packageDirectory), 'benchmark'); }
-  catch (error) { return { checked: 0, problems: [`the package's benchmark records cannot be read (${errorText(error)})`] }; }
-  if (!records.length) return { checked: 0, problems: ['the package holds no benchmark record, so it cites no run directory'] };
-  for (const record of records) {
-    const body = isRecord(record.responseBody) ? record.responseBody : undefined;
+  catch (error) { return { checked: 0, rehashed: 0, problems: [`the package's benchmark records cannot be read (${errorText(error)})`] }; }
+  if (!records.length) return { checked: 0, rehashed: 0, problems: ['the package holds no benchmark record, so it cites no run directory'] };
+  for (const result of records) {
+    const body = isRecord(result.responseBody) ? result.responseBody : undefined;
     if (!body) continue;
-    cite(BENCHMARK_RUN_FILES.summary, body.summarySha256);
-    cite(BENCHMARK_RUN_FILES.metrics, body.metricsSha256);
-    citeList(body.evidence);
-    if (Array.isArray(body.systems)) for (const system of body.systems) if (isRecord(system)) citeList(system.evidence);
-    if (isRecord(body.keySet)) citeList([body.keySet.manifest, body.keySet.seal]);
+    if (typeof body.summarySha256 === 'string') record({ path: BENCHMARK_RUN_FILES.summary, state: 'bytes', sha256: body.summarySha256 });
+    if (typeof body.metricsSha256 === 'string') record({ path: BENCHMARK_RUN_FILES.metrics, state: 'bytes', sha256: body.metricsSha256 });
+    const cited = pilotRowRunFiles(body);
+    problems.push(...cited.problems.map(problem => `benchmark record ${result.testCaseId}: ${problem}`));
+    cited.files.forEach(record);
   }
-  for (const [file, sha] of cited) {
-    const target = path.resolve(runDir, file);
-    if (path.isAbsolute(file) || !isInside(runDir, target)) { problems.push(`${file} is outside the run directory`); continue; }
+  let rehashed = 0;
+  for (const file of recorded.values()) {
+    const target = citedRunFile(runDir, file.path);
+    if (file.state === 'outside') {
+      if (target) problems.push(`${file.path} was recorded outside the run directory and is inside it`);
+      continue;
+    }
+    if (!target) { problems.push(`${file.path} is outside the run directory`); continue; }
     const actual = fileSha256(target);
-    if ('error' in actual) problems.push(`${file} ${actual.error}`);
-    else if (actual.sha256 !== sha) problems.push(`${file} is ${actual.sha256}, the package records ${sha}`);
+    if (file.state === 'absent') {
+      if (!('error' in actual)) problems.push(`${file.path} was recorded missing and the run directory holds it (${actual.sha256})`);
+      continue;
+    }
+    rehashed++;
+    if ('error' in actual) problems.push(`${file.path} ${actual.error}`);
+    else if (actual.sha256 !== file.sha256) problems.push(`${file.path} is ${actual.sha256}, the package records ${file.sha256}`);
   }
-  return { checked: cited.size, problems };
+  return { checked: recorded.size, rehashed, problems };
 }
 
 // ---------------------------------------------------------------------------

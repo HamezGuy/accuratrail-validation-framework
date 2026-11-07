@@ -667,7 +667,22 @@ export function publicDataAdmissionOf(summaryBytes: Buffer, basisBytes: Buffer):
     filedBy: basis.filedBy as string, filedAt: basis.filedAt as string, bytes: basisBytes };
 }
 
-interface PilotEvidenceCheck { path: string; sha256: string; status: 'verified' | 'missing' | 'mismatch' | 'outside'; actualSha256?: string }
+/** What the import found for one file a pilot result cites: verified (inside the run directory with the recorded SHA-256),
+ * missing (inside, but nothing readable there), mismatch (inside, other bytes: actualSha256) or outside (not inside the run
+ * directory, so never read). */
+export const PILOT_EVIDENCE_STATUSES = ['verified', 'missing', 'mismatch', 'outside'] as const;
+export type PilotEvidenceStatus = typeof PILOT_EVIDENCE_STATUSES[number];
+export interface PilotEvidenceCheck { path: string; sha256: string; status: PilotEvidenceStatus; actualSha256?: string }
+
+/** The file a cited relative path names inside the run directory, or undefined when it is outside: an absolute path, a
+ * path that leaves the directory, or a link inside it that resolves outside it. */
+export function citedRunFile(runDir: string, relative: string): string | undefined {
+  const target = path.resolve(runDir, relative);
+  // A link inside the run directory that resolves outside it is outside too.
+  let resolvedOutside = false;
+  try { resolvedOutside = !isInside(fs.realpathSync(runDir), fs.realpathSync(target)); } catch { /* absent: the reader reports it missing */ }
+  return path.isAbsolute(relative) || !isInside(runDir, target) || resolvedOutside ? undefined : target;
+}
 
 /** Verifies each evidence file a result cites: a relative path inside the run directory whose bytes have the recorded
  * SHA-256. Returns undefined checks when the list is not in the recognised shape. */
@@ -682,11 +697,8 @@ function pilotEvidence(runDir: string, value: unknown, at: string, read: (absolu
     if (!isText(relative, 1024) || typeof sha256 !== 'string' || !SHA256_HEX.test(sha256)) {
       return { problem: `${at}[${index}] is not a path with a SHA-256 hex` };
     }
-    const target = path.resolve(runDir, relative);
-    // A link inside the run directory that resolves outside it is outside too.
-    let resolvedOutside = false;
-    try { resolvedOutside = !isInside(fs.realpathSync(runDir), fs.realpathSync(target)); } catch { /* absent: reported missing below */ }
-    if (path.isAbsolute(relative) || !isInside(runDir, target) || resolvedOutside) {
+    const target = citedRunFile(runDir, relative);
+    if (!target) {
       checks.push({ path: relative, sha256, status: 'outside' });
       continue;
     }
@@ -696,6 +708,57 @@ function pilotEvidence(runDir: string, value: unknown, at: string, read: (absolu
     checks.push(actual === sha256 ? { path: relative, sha256, status: 'verified' } : { path: relative, sha256, status: 'mismatch', actualSha256: actual });
   }
   return { checks };
+}
+
+/** What a run directory kept beside a package must still show for one file a pilot row recorded (verify:package --run-dir):
+ * the bytes of a verified file, the other bytes of a mismatched one, nothing readable where a file was missing, and a path
+ * still outside the run directory. */
+export type RecordedRunFile =
+  | { path: string; state: 'bytes'; sha256: string }
+  | { path: string; state: 'absent' }
+  | { path: string; state: 'outside' };
+
+/** The recorded state of one evidence check, read as pilotEvidence wrote it; a problem when the entry is not such a check. */
+function recordedCheck(entry: unknown, at: string): RecordedRunFile | { problem: string } {
+  if (!isRecord(entry) || typeof entry.path !== 'string' || typeof entry.sha256 !== 'string'
+    || !(PILOT_EVIDENCE_STATUSES as readonly unknown[]).includes(entry.status)) {
+    return { problem: `${at} is not an evidence check with a path, a SHA-256 and one of the statuses ${PILOT_EVIDENCE_STATUSES.join(', ')}` };
+  }
+  switch (entry.status as PilotEvidenceStatus) {
+    case 'verified': return { path: entry.path, state: 'bytes', sha256: entry.sha256 };
+    case 'mismatch': return typeof entry.actualSha256 === 'string'
+      ? { path: entry.path, state: 'bytes', sha256: entry.actualSha256 } : { problem: `${at} is a mismatch without the SHA-256 found` };
+    case 'missing': return { path: entry.path, state: 'absent' };
+    case 'outside': return { path: entry.path, state: 'outside' };
+  }
+}
+
+/** Every run file a pilot row recorded, with the state the run directory must still show: each evidence check of the case
+ * or of a control's systems, each key set file check a key set refusal recorded (keySetFiles), and the key set manifest and
+ * seal record only when the row holds the sealed key set read from them. The summary's own claims (keySet) are never
+ * re-hashed on their own: a claim the import refused is recorded by its check. */
+export function pilotRowRunFiles(body: Record<string, unknown>): { files: RecordedRunFile[]; problems: string[] } {
+  const files: RecordedRunFile[] = [], problems: string[] = [];
+  const read = (list: unknown, at: string) => {
+    if (list === undefined) return;
+    if (!Array.isArray(list)) { problems.push(`${at} is not a list of evidence checks`); return; }
+    for (const [index, entry] of list.entries()) {
+      const recorded = recordedCheck(entry, `${at}[${index}]`);
+      if ('problem' in recorded) problems.push(recorded.problem); else files.push(recorded);
+    }
+  };
+  read(body.evidence, 'evidence');
+  if (Array.isArray(body.systems)) for (const [index, system] of body.systems.entries()) if (isRecord(system)) read(system.evidence, `systems[${index}].evidence`);
+  read(body.keySetFiles, 'keySetFiles');
+  if (body.sealedKeySet !== undefined) {
+    const keySet = isRecord(body.keySet) ? body.keySet : {};
+    for (const member of ['manifest', 'seal']) {
+      const file = keySet[member];
+      if (isRecord(file) && typeof file.path === 'string' && typeof file.sha256 === 'string') files.push({ path: file.path, state: 'bytes', sha256: file.sha256 });
+      else problems.push(`the row holds sealedKeySet but keySet.${member} is not a path with a SHA-256`);
+    }
+  }
+  return { files, problems };
 }
 
 /** The refusal an evidence list gives, the worst first; undefined when every file verified. */

@@ -8,9 +8,11 @@ import { verifyCitedRunFiles, verifyPackage, PUBLIC_DATA_BASIS_FILE } from '../r
 // contentHash the eTMF must show for the filed manifest (TMF-FILING.md). A
 // package whose framework checkout was dirty or changed during the run verifies
 // too, and the output says it is not a run of record. With --run-dir it also
-// re-hashes what the package's benchmark rows cite against that run directory (the
-// run summary, the metrics, every evidence and key set file), because a package
-// keeps those hashes and never the cited files: exit 1 when any differs.
+// rechecks what the package's benchmark rows recorded about that run directory,
+// because a package keeps hashes and never the cited files: the run summary, the
+// metrics and every file a row verified are re-hashed, and a file a row refused
+// (missing, mismatched or outside the run) must still show what was recorded, so the
+// directory of a failed run verifies too. Exit 1 when anything differs.
 
 const [directory, ...rest] = process.argv.slice(2);
 const runDirectory = rest[0] === '--run-dir' && rest.length === 2 ? rest[1] : undefined;
@@ -45,7 +47,8 @@ if (!directory || directory.startsWith('--') || (rest.length && !runDirectory)) 
         for (const problem of cited.problems) console.error(`  [FAIL] ${problem}`);
         process.exitCode = 1;
       } else {
-        console.log(`Run directory verified: ${cited.checked} files the package cites re-hashed, every SHA-256 matches`);
+        console.log(`Run directory verified: ${cited.checked} files the package cites rechecked; ${cited.rehashed} re-hashed to the SHA-256 recorded, `
+          + `${cited.checked - cited.rehashed} refused by the import still missing or outside the run, as recorded`);
       }
     }
   } else {

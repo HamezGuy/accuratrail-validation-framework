@@ -57,7 +57,7 @@ export const PILOT_PLAN = {
     + `while ${PILOT_IMPORT_SWITCH}=true, admits each verdict only with its evidence verified by SHA-256 and seals one validation-evidence-package/1. `
     + 'The framework classifies the package itself: an imported replay run is synthetic engineering evidence unless it is admitted under the declared-public-data basis.',
   retention: 'A package keeps the run summary, the metrics and the SHA-256 of every cited evidence and key set file, not those files. The run directory holds them, so for R2 the QA owner keeps a copy of it '
-    + 'under the QA retention root beside the package, and npm run verify:package -- <package> --run-dir <run directory> re-hashes every file against the rows before the package is filed.',
+    + 'under the QA retention root beside the package, and npm run verify:package -- <package> --run-dir <run directory> rechecks every file against the rows before the package is filed: each file a row verified is re-hashed, and each one it refused must still be missing, mismatched or outside as recorded, so the directory of a failed run verifies too.',
   publicDataAdmission: `A package that imports a run is not synthetic only when ${PILOT_IMPORT_SWITCH} and ${PILOT_PUBLIC_DATA_SWITCH} are both exactly true, no other synthetic basis applies, the `
     + 'retain root is inside a tree holding QA-RETENTION-ROOT and outside any synthetic data root, the run summary states runKind R2 with classification '
     + `declared-public-data, and its basisRef and basisSha256 name a ${PILOT_PUBLIC_DATA_BASIS_CONTRACT} record the QA owner filed in that tree (a relative path, links resolved) before the run `

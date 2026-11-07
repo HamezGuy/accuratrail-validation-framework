@@ -33,7 +33,7 @@ npx ts-node generate.ts --oq ... --ta3-oq-plan <file>    # OQ suites 13 to 18 ag
 npx ts-node generate.ts --oq ... --oq-suites 13-18       # Run only these OQ suites (1 to 12 go together)
 npx ts-node generate.ts --docs-only --platform-evidence <file>  # Platform summary (document 22) with the evidence a plan cites
 npx ts-node generate.ts --docs-only --platform-root <dir>       # Read the estate repositories under another root
-npm run verify:package -- <package directory> [--run-dir <run directory>]   # Recheck a sealed package; prints its manifest SHA-256; --run-dir also re-hashes the files its benchmark rows cite
+npm run verify:package -- <package directory> [--run-dir <run directory>]   # Recheck a sealed package; prints its manifest SHA-256; --run-dir also rechecks the run files its benchmark rows recorded
 ```
 
 ### Retained evidence packages
@@ -650,9 +650,14 @@ breaks this records UNSUPPORTED_PILOT_SUMMARY on every case; the import copies t
 list into every pilot row and document 23 prints it.
 
 A package keeps the summary, the metrics and the SHA-256 of every cited file, not the
-files. `npm run verify:package -- <package> --run-dir <run directory>` re-hashes them
+files. `npm run verify:package -- <package> --run-dir <run directory>` rechecks them
 against the rows, so the R2 run directory the QA owner keeps under the QA retention
-root can be tied to the filed package. The records go to `evidence/benchmark/`, like the O-7
+root can be tied to the filed package: each file a row recorded verified (the key set
+files only when the row holds the sealed key set read from them) is re-hashed, a file a
+row recorded mismatched must still hash to the bytes the import found, a missing one must
+still be absent and an outside one still outside. The directory of a failed run, whose
+rows recorded EVIDENCE_MISSING, EVIDENCE_HASH_MISMATCH, EVIDENCE_PATH_OUTSIDE_RUN or a key
+set refusal, verifies the same way. The records go to `evidence/benchmark/`, like the O-7
 PQT cases; no evidence category or contract byte changes. The import admits the
 run's verdicts and never re-judges the evidence content, which the LE-7.3
 observer produces.

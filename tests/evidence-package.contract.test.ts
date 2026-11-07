@@ -9,13 +9,16 @@ import {
   DECLARED_PUBLIC_DATA_NOTICE, DEVELOPMENT_RUN_NOTICE, EVIDENCE_CATEGORIES, SYNTHETIC_NOTICE, type EvidenceResult,
 } from '../runners/evidence-capture';
 import {
-  admitPublicDataRun, createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis, verifyPackage,
+  admitPublicDataRun, benchmarkRunInputs, createPackage, createScratchRun, manifestHash, markDevelopmentRun, retainInput, sealPackage, syntheticBasis,
+  verifyCitedRunFiles, verifyPackage,
   APPROVAL_RECORDED_IN, FRAMEWORK_SHARED_TYPES_REQUIRED, INPUT_ROLES, MANIFEST_FILE, MANIFEST_MEMBER_OPTIONAL, MANIFEST_MEMBER_REQUIRED,
   MANIFEST_OPTIONAL, MANIFEST_REQUIRED, PUBLIC_DATA_BASIS_FILE, QA_RETENTION_ROOT_MARKER, SYNTHETIC_BASES, SYNTHETIC_ROOT_MARKER, VENDORED_BUILD_REQUIRED,
   type PackageOptions,
 } from '../runners/evidence-package';
-import { PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/benchmark-evidence';
-import { PILOT_ACCEPTANCE_CONTRACT, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY } from '../config/ta3-pq-cases';
+import { derivePilotResults, PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/benchmark-evidence';
+import {
+  PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_NON_CLAIMS, PILOT_PQ_CASES, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY,
+} from '../config/ta3-pq-cases';
 import { frameworkCommit, frameworkSharedTypes, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
@@ -394,6 +397,71 @@ test('an imported run is a package that is not synthetic only when admitted unde
   assert.deepEqual(Object.keys(schema.properties), [...PILOT_PUBLIC_DATA_BASIS_MEMBERS]);
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.study.const, PILOT_STUDY);
+});
+
+test('--run-dir rechecks each file in the state a pilot row recorded, so a failed run\'s directory verifies (design review 2026-11-08, Major 1)', t => {
+  const { home } = markedRoot(t);
+  const run = temporaryDirectory(t, 'accura-package-pilot-run-');
+  const file = (relative: string, bytes: string) => {
+    fs.mkdirSync(path.dirname(path.join(run, relative)), { recursive: true });
+    fs.writeFileSync(path.join(run, relative), bytes);
+    return { path: relative, sha256: sha256(bytes) };
+  };
+  const first = file('evidence/first.json', '{"first":true}\n'), second = file('evidence/second.json', '{"second":true}\n');
+  // Cited with the second file's SHA-256 and holding other bytes: recorded mismatch.
+  file('evidence/changed.json', '{"changed":true}\n');
+  const changed = { path: 'evidence/changed.json', sha256: second.sha256 };
+  const absent = { path: 'evidence/absent.json', sha256: 'e'.repeat(64) }, outside = { path: '../outside.json', sha256: 'f'.repeat(64) };
+  // The key set refusal: the summary cites the manifest with a SHA-256 its bytes do not have; the seal record verifies.
+  file('keys/manifest.json', '{"keySetId":"keys"}\n');
+  const seal = file('keys/seal.json', '{"status":"COMPLETE"}\n');
+  const keySet = { keySetId: 'keys', manifestSha256: 'd'.repeat(64), sealedAt: '2026-11-01T00:00:00Z', criticalInstancesDeclared: 320,
+    manifest: { path: 'keys/manifest.json', sha256: 'd'.repeat(64) }, seal };
+  const caseEvidence: Record<string, unknown[]> = { A1: [first, absent], A2: [second, outside], A3: [changed] };
+  const summaryBytes = `${JSON.stringify({ contract: PILOT_ACCEPTANCE_CONTRACT, evaluator: {}, gateGroups: [], localEngineering: 'passed', pilot: {
+    runKind: 'R1', startedAt: '2026-11-02T00:00:00Z', classification: { kind: 'synthetic-engineering' }, keySet,
+    cases: PILOT_PQ_CASES.filter(item => /^A\d+$/.test(item.acceptanceCase ?? '')).map(item => ({ case: item.acceptanceCase, requirement: item.requirement,
+      verdict: 'pass', coverage: 'complete', scoredInstances: 20, criticalInstances: 16, criticalFailures: 0, keyBasis: 'mechanical',
+      evidence: caseEvidence[item.acceptanceCase!] ?? [first] })),
+    controls: [{ control: 'security', requirement: PILOT_PQ_CASES.find(item => item.acceptanceCase === 'security')!.requirement,
+      systems: PILOT_CONTROL_SYSTEMS.map(system => ({ system, counts: { probes: 1, refusedAsExpected: 1, unexpectedAcceptances: 0 },
+        evidence: system === 'cc' ? [absent] : [second] })) }],
+    nonClaims: PILOT_NON_CLAIMS.map(({ claim, status, decision }) => ({ claim, status, decision })),
+  } })}\n`;
+  file('run-summary.json', summaryBytes);
+  const metrics = file('metrics.json', '{"metrics":[]}\n');
+  const rows = derivePilotResults({ runDir: run, timestamp: '2026-11-02T01:00:00Z', summary: JSON.parse(summaryBytes),
+    summarySha256: sha256(summaryBytes), metricsSha256: metrics.sha256 });
+  const code = (id: string) => rows.find(row => row.testCaseId === id)?.outcomeCode;
+  assert.deepEqual([code('PQA-001'), code('PQA-020'), code('PQC-001')], ['KEY_MANIFEST_MISMATCH', 'KEY_MANIFEST_MISMATCH', 'EVIDENCE_MISSING']);
+  assert.deepEqual((rows[0].responseBody as { evidence: { status: string }[] }).evidence.map(check => check.status), ['verified', 'missing']);
+
+  const evidencePackage = createPackage(syntheticPackage(home, { version: 'pilot-run-dir', syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(run) }));
+  saveEvidence(evidencePackage.dir, 'benchmark', rows);
+  sealPackage(evidencePackage);
+  // The directory the package was built from verifies, refusals included; the summary, the metrics, the two evidence files and the
+  // seal record are re-hashed, the mismatched evidence and manifest files hash to the bytes the import found.
+  const unchanged = verifyCitedRunFiles(evidencePackage.dir, run);
+  assert.deepEqual(unchanged.problems, []);
+  assert.deepEqual([unchanged.checked, unchanged.rehashed], [9, 7]);
+  // Any change to what a row recorded fails: a verified file, a missing file that appears, a mismatched file put back to its
+  // claimed bytes, and the key set files the refusal recorded.
+  const altered = (edit: () => void, undo: () => void) => {
+    edit();
+    try { return verifyCitedRunFiles(evidencePackage.dir, run).problems.join('\n'); } finally { undo(); }
+  };
+  const bytesOf = (relative: string) => fs.readFileSync(path.join(run, relative));
+  const rewrite = (relative: string, bytes: Buffer | string) => () => fs.writeFileSync(path.join(run, relative), bytes);
+  for (const [relative, pattern] of [['evidence/first.json', /evidence\/first\.json is [0-9a-f]{64}, the package records/],
+    ['keys/seal.json', /keys\/seal\.json is [0-9a-f]{64}, the package records/], ['keys/manifest.json', /keys\/manifest\.json is [0-9a-f]{64}, the package records/],
+    ['run-summary.json', /run-summary\.json is [0-9a-f]{64}, the package records/]] as const) {
+    const original = bytesOf(relative);
+    assert.match(altered(rewrite(relative, Buffer.concat([original, Buffer.from(' ')])), rewrite(relative, original)), pattern, relative);
+  }
+  assert.match(altered(rewrite(absent.path, '{}\n'), () => fs.unlinkSync(path.join(run, absent.path))), /evidence\/absent\.json was recorded missing and the run directory holds it/);
+  const changedBytes = bytesOf(changed.path);
+  assert.match(altered(rewrite(changed.path, bytesOf(second.path)), rewrite(changed.path, changedBytes)), /evidence\/changed\.json is [0-9a-f]{64}, the package records/);
+  assert.deepEqual(verifyCitedRunFiles(evidencePackage.dir, run).problems, []);
 });
 
 test('whether a package is synthetic is computed from the run, documents packages included', t => {
