@@ -18,7 +18,7 @@
     "verify:package": "ts-node scripts/verify-package.ts"
   },
   "dependencies": {
-    "@accura-trial/shared-types": "file:vendor/accura-trial-shared-types-0.2.0.d786631b516b95fc.tgz",
+    "@accura-trial/shared-types": "file:vendor/accura-trial-shared-types-0.2.0.614a1214e3480c66.tgz",
     "glob": "^10.3.0",
     "pdfjs-dist": "4.10.38"
   },

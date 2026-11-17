@@ -773,7 +773,7 @@ output/20260502T091500Z-v1.0-1a2b3c4d/
 
 The framework builds on the same `@accura-trial/shared-types` build as the EDC
 API: `vendor/` holds byte copies of the API's archive and its
-`edc-study-contract-package/1` receipt (0.2.0 build `d786631b516b95fc`), and
+`edc-study-contract-package/1` receipt (0.2.0 build `614a1214e3480c66`), and
 `package.json` and the lockfile name that archive with the receipt's integrity.
 Install with `npm install --offline`. `tests/shared-types-parity.contract.test.ts`
 (in `test:contracts`) checks the archive against its receipt, the lockfile and
@@ -789,8 +789,8 @@ IQ checks the installations, not a source folder. IQ-008 runs the EDC's own
 nothing and connects to nothing) on the API, the frontend (EDCProjectCompliant)
 and this framework, each against the receipt beside its vendored archive, and
 requires the framework's archive to be the API receipt's build. Consumers on
-different builds (today the frontend runs 81eafbc49259f4f1 and the API
-d786631b516b95fc) are recorded, not failed; a missing verifier, archive or
+different builds are recorded, not failed (since 2026-11-17 the frontend and the
+API both run 614a1214e3480c66); a missing verifier, archive or
 receipt fails the case naming its path. IQ-005 compares the frontend's
 `@angular/core` major with `config/system-info.ts` (20), IQ-006 reads the
 TypeScript major of the API and the frontend. Sibling checkouts resolve through

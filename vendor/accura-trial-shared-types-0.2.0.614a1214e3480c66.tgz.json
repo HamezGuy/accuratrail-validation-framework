@@ -1,0 +1,12 @@
+{
+  "contract": "edc-study-contract-package/1",
+  "packageName": "@accura-trial/shared-types",
+  "version": "0.2.0",
+  "filename": "accura-trial-shared-types-0.2.0.614a1214e3480c66.tgz",
+  "byteLength": 4836128,
+  "sha256": "614a1214e3480c6618964bdd76a0487dea3dce0100db0cf6bf4b97d08a7e560d",
+  "integrity": "sha512-yHaCVwCdok1OW1H7ygkIN+n+tHmKNro4MPJD+hs3fMsapNwulPJv2pS1SSqINWO5zXr9+uucWH3lE17reAqBBw==",
+  "sourceTreeSha256": "274434b9c373f812c5c111b5fbe33029acf747e5c665d122006d50c56997032a",
+  "runtimeTreeSha256": "68a0488a71562570c51285d7396ca07841d78d2fc17685fea75952ba172cbbdb",
+  "manifestSha256": "6f741a233d365db58c8513f82879a134c774dc11b135cbbd55cc8fe8177da2fc"
+}
