@@ -14,6 +14,7 @@ import {
 } from './runners/evidence-package';
 import type { PublicDataAdmission } from './runners/public-data-admission';
 import { ALL_OQ_SUITES, OQ_CASE_IDS, parseOqSuiteSelection, type OqSuiteSelection } from './config/oq-case-registry';
+import { pilotSwitches } from './config/pilot-cases';
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..');
 
@@ -367,6 +368,8 @@ function packageInputs(args: CliArgs): PackageInputSource[] {
 
 async function main(): Promise<void> {
   const args = parseArgs();
+  // The pilot switches (D-P13), read here once beside the arguments; every runner takes them as inputs.
+  const switches = pilotSwitches(process.env);
   if (!args.docsOnly && args.targetConfig) {
     // Refused before anything runs: a declaration that breaks its contract or describes another target.
     const declared = checkTargetConfiguration(args.targetConfig, args.baseUrl as string);
@@ -400,7 +403,8 @@ async function main(): Promise<void> {
     platformEvidencePlan: platformEvidenceSynthetic,
   };
   const publicData = !args.docsOnly && args.benchmarkRun
-    ? admitPublicDataRun({ runDir: args.benchmarkRun, retainRoot: args.retainRoot, otherSyntheticBases: syntheticBasis({ ...syntheticFacts, benchmarkImport: false }) })
+    ? admitPublicDataRun({ runDir: args.benchmarkRun, retainRoot: args.retainRoot, otherSyntheticBases: syntheticBasis({ ...syntheticFacts, benchmarkImport: false }),
+      pilotImport: switches.pilotImport, publicDataSwitch: switches.publicDataAdmission })
     : undefined;
   if (publicData?.claimed) {
     console.log(publicData.admitted
@@ -418,7 +422,7 @@ async function main(): Promise<void> {
     });
     const stopOnSignal = onInterrupt(evidencePackage.dir, () => sealRetainedPackage(evidencePackage, args));
     try {
-      await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage }, publicData);
+      await generateInto(args, evidencePackage.dir, { kind: 'package', evidencePackage }, switches.pilotImport, publicData);
     } finally {
       stopOnSignal();
       // Sealed whatever the outcome, so a failed run is retained too, with every category it journaled.
@@ -438,7 +442,7 @@ async function main(): Promise<void> {
   // Every scratch run writes into a new folder of its own, with a scratch TMF-FILING.md (IR-034, RF-013).
   const scratch = createScratchRun({ outputRoot: path.join(__dirname, 'output'), version });
   const stopOnSignal = onInterrupt(scratch.dir);
-  try { await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' }, publicData); }
+  try { await generateInto(args, scratch.dir, { kind: notRetained ? 'not-retained' : 'scratch' }, switches.pilotImport, publicData); }
   finally { stopOnSignal(); }
 }
 
@@ -489,7 +493,7 @@ function sealRetainedPackage(evidencePackage: EvidencePackage, args: CliArgs): v
   }
 }
 
-async function generateInto(args: CliArgs, outputDir: string, retention: Retention, publicData?: PublicDataAdmission): Promise<void> {
+async function generateInto(args: CliArgs, outputDir: string, retention: Retention, pilotImport: boolean, publicData?: PublicDataAdmission): Promise<void> {
   // Documents and evidence of this run carry the release under test.
   setReleaseIdentity(args.releaseIdentity);
 
@@ -603,7 +607,7 @@ async function generateInto(args: CliArgs, outputDir: string, retention: Retenti
       try {
         const { importBenchmarkEvidence } = require('./runners/benchmark-evidence') as typeof import('./runners/benchmark-evidence');
         const results = await importBenchmarkEvidence(outputDir, {
-          runDir: args.benchmarkRun, evaluatorRoot: args.benchmarkEvaluatorRoot, ...(publicData ? { publicData } : {}),
+          runDir: args.benchmarkRun, evaluatorRoot: args.benchmarkEvaluatorRoot, pilotImport, ...(publicData ? { publicData } : {}),
         });
         const notPassed = failedRunnerCases(results);
         if (notPassed.length) {

@@ -3,7 +3,7 @@ import { sha256 as hash } from './vendored-archive';
 import { summaryContractOf } from './benchmark-evidence';
 import { pilotRunBlock } from './pilot-evidence';
 import { isInstant, isText, membersProblem } from './summary-reading';
-import { PILOT_ACCEPTANCE_CONTRACT, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY } from '../config/ta3-pq-cases';
+import { PILOT_ACCEPTANCE_CONTRACT, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY } from '../config/pilot-cases';
 
 /*
  * The D-LE-14 admission rule of the lab-to-endpoint pilot (contracts/pilot-declared-public-data-basis-v1.schema.json): which

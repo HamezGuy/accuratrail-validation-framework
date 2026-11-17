@@ -13,7 +13,7 @@ import {
 import { BENCHMARK_RUN_FILES, PUBLIC_DATA_EVIDENCE_LEVEL } from './benchmark-evidence';
 import { citedRunFile, pilotRowRunFiles, type RecordedRunFile } from './pilot-evidence';
 import { publicDataAdmissionOf, publicDataClaim, type PublicDataAdmission } from './public-data-admission';
-import { PILOT_IMPORT_SWITCH, PILOT_PUBLIC_DATA_SWITCH } from '../config/ta3-pq-cases';
+import { PILOT_IMPORT_SWITCH, PILOT_PUBLIC_DATA_SWITCH } from '../config/pilot-cases';
 import {
   configurationUnderTest, parseConfigurationUnderTest, parseTargetConfiguration,
   CONFIGURATION_MISMATCH_REQUIRED, CONFIGURATION_UNDER_TEST_REQUIRED, type ConfigurationUnderTest,
@@ -301,9 +301,9 @@ export function admitPublicDataRun(options: {
   runDir: string;
   retainRoot?: string;
   otherSyntheticBases?: readonly SyntheticBasis[];
-  /** The two switches; by default their environment variables, on only when exactly 'true'. */
-  pilotImport?: boolean;
-  publicDataSwitch?: boolean;
+  /** The two switches as the composition root read them, once (pilotSwitches, generate.ts). */
+  pilotImport: boolean;
+  publicDataSwitch: boolean;
 }): PublicDataAdmission {
   const refused = (code: string, reason: string): PublicDataAdmission => ({ admitted: false, claimed: true, code, reason });
   let summary: Buffer;
@@ -312,9 +312,7 @@ export function admitPublicDataRun(options: {
   const claim = publicDataClaim(summary);
   if (!claim.claimed) return { admitted: false, claimed: false, code: 'PUBLIC_DATA_NOT_CLAIMED', reason: 'the run summary claims no declared-public-data basis' };
   if ('refusal' in claim) return claim.refusal;
-  const pilotImport = options.pilotImport ?? process.env[PILOT_IMPORT_SWITCH] === 'true';
-  const admission = options.publicDataSwitch ?? process.env[PILOT_PUBLIC_DATA_SWITCH] === 'true';
-  if (!pilotImport || !admission) return refused('PUBLIC_DATA_ADMISSION_OFF', `${PILOT_IMPORT_SWITCH} and ${PILOT_PUBLIC_DATA_SWITCH} must both be exactly 'true'`);
+  if (!options.pilotImport || !options.publicDataSwitch) return refused('PUBLIC_DATA_ADMISSION_OFF', `${PILOT_IMPORT_SWITCH} and ${PILOT_PUBLIC_DATA_SWITCH} must both be exactly 'true'`);
   if (options.otherSyntheticBases?.length) return refused('PUBLIC_DATA_OTHER_SYNTHETIC_BASIS', `this run is also synthetic by ${options.otherSyntheticBases.join(', ')}`);
   if (!options.retainRoot) return refused('PUBLIC_DATA_NOT_RETAINED', 'an admitted package is retained under a QA retention root; this run has no --retain-root');
   const root = path.resolve(options.retainRoot);

@@ -36,7 +36,7 @@ function fixture(dir: string) {
 test('real retained scoring evidence reconstructs and preserves blocked engineering gates', async t => {
   const dir = workspace(t), runDir = fixture(dir), output = path.join(dir, 'qualification');
   const original = fs.readFileSync(path.join(runDir, 'run-summary.json'));
-  const results = await importBenchmarkEvidence(output, { runDir });
+  const results = await importBenchmarkEvidence(output, { runDir, pilotImport: false });
   // Regression of the O-7 dispatch (spec P20 4.7): a run of the benchmark evaluator still reconstructs through
   // reconstruct.mjs and yields exactly its two rows, with no summary contract and no PQT row.
   assert.deepEqual(summaryContractOf(original), {});
@@ -53,7 +53,7 @@ test('real retained scoring evidence reconstructs and preserves blocked engineer
   assert.match(document, /BENCHMARK-RECONSTRUCTION/);
   assert.doesNotMatch(document, /Send OFFLINE request/);
   assert.deepEqual(fs.readFileSync(path.join(runDir, 'run-summary.json')), original);
-  await assert.rejects(importBenchmarkEvidence(output, { runDir }), /already exists/);
+  await assert.rejects(importBenchmarkEvidence(output, { runDir, pilotImport: false }), /already exists/);
 });
 
 test('the benchmark category stays exclusive inside a retained package, which keeps the run summary and metrics as inputs', async t => {
@@ -62,9 +62,9 @@ test('the benchmark category stays exclusive inside a retained package, which ke
   t.after(() => setEvidenceMarking(undefined));
   const evidencePackage = createPackage({ retainRoot: path.join(dir, 'runs', 'validation-packages'), version: 'benchmark-v1',
     executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir), frameworkCheckout: FRAMEWORK });
-  const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir });
+  const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir, pilotImport: false });
   assert.equal(results[0].passed, true, JSON.stringify(results[0].responseBody));
-  await assert.rejects(importBenchmarkEvidence(evidencePackage.dir, { runDir }), /already exists/);
+  await assert.rejects(importBenchmarkEvidence(evidencePackage.dir, { runDir, pilotImport: false }), /already exists/);
   sealPackage(evidencePackage);
   const verified = verifyPackage(evidencePackage.dir);
   assert.deepEqual(verified.problems, []);
@@ -87,7 +87,7 @@ for (const tamper of ['metrics', 'summary', 'missing', 'wrong-evaluator']) {
     }
     if (tamper === 'missing') fs.unlinkSync(path.join(runDir, 'run-summary.json'));
     const results = await importBenchmarkEvidence(path.join(dir, 'qualification'), {
-      runDir, ...(tamper === 'wrong-evaluator' ? { evaluatorRoot: dir } : {}),
+      runDir, pilotImport: false, ...(tamper === 'wrong-evaluator' ? { evaluatorRoot: dir } : {}),
     });
     assert.equal(results.length, 2);
     assert(results.every(result => result.passed === false));

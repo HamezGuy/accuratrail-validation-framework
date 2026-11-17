@@ -1,7 +1,7 @@
 import {
-  PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_IMPORT_SWITCH, PILOT_MIN_CRITICAL_INSTANCES, PILOT_PQ_CASES, PILOT_PUBLIC_DATA_BASIS_CONTRACT,
-  PILOT_PUBLIC_DATA_SWITCH, PILOT_RECONSTRUCTION_ENTRY, PILOT_STUDY, PUBLIC_DATA_BASIS_NOT_ADMITTED, type Ta3PqCase,
-} from './ta3-pq-cases';
+  PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_IMPORT_SWITCH, PILOT_MIN_CRITICAL_INSTANCES, PILOT_OUTCOME_CODES, PILOT_PQ_CASES,
+  PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_PUBLIC_DATA_SWITCH, PILOT_RECONSTRUCTION_ENTRY, PILOT_STUDY, type PilotPqCase,
+} from './pilot-cases';
 import { PILOT_REQUIREMENTS } from './ta3-requirements';
 
 /**
@@ -9,7 +9,7 @@ import { PILOT_REQUIREMENTS } from './ta3-requirements';
  * revision 3 section 9 "Computerised-system validation" and section 10). Data only: the pilot validation plan
  * (generators/23-pilot-validation-plan.ts) prints it, and `pilotCslMirror` derives the CSL PR-13 follow-up from the
  * same catalog. The requirements and cases are PILOT_REQUIREMENTS (config/ta3-requirements.ts) and PILOT_PQ_CASES
- * (config/ta3-pq-cases.ts); nothing here restates a pass criterion. Decision ids are those of the backlog's
+ * (config/pilot-cases.ts); nothing here restates a pass criterion. Decision ids are those of the backlog's
  * DECISIONS.md (CommandCenter docs/lab-to-endpoint-backlog-2026-11-06).
  */
 
@@ -63,7 +63,7 @@ export const PILOT_PLAN = {
     + `declared-public-data, and its basisRef and basisSha256 name a ${PILOT_PUBLIC_DATA_BASIS_CONTRACT} record the QA owner filed in that tree (a relative path, links resolved) before the run `
     + `started. The record names study ${PILOT_STUDY}, run kind R2, the decisions D-LE-1 and D-LE-14, the data-use manifest SHA-256, the sealed key set the run states, who filed it, in what role and when. No code creates it or the `
     + 'marker. The package keeps a byte copy (evidence/public-data-basis.json), every summary and document carries the declared public data notice, and npm run verify:package recomputes the rule '
-    + `from the retained bytes. An R2 run not so admitted stays synthetic; each of its acceptance cases and controls records ${PUBLIC_DATA_BASIS_NOT_ADMITTED} and G3 records CRITICAL_FAILURE_BOUND_NOT_MET, so a pass is never recorded for an R2 run in a synthetic package. `
+    + `from the retained bytes. An R2 run not so admitted stays synthetic; each of its acceptance cases and controls records ${PILOT_OUTCOME_CODES.PUBLIC_DATA_BASIS_NOT_ADMITTED} and G3 records ${PILOT_OUTCOME_CODES.CRITICAL_FAILURE_BOUND_NOT_MET}, so a pass is never recorded for an R2 run in a synthetic package. `
     + 'R1 is never admitted, whatever it states. Outcomes do not decide the classification: a failed R2 run is retained the same way.',
   approval: 'The QA owner (James Gui, interim, DECISIONS.md section 3) approves this plan in the eTMF as a governance decision on the filing of the '
     + 'documents package that holds it. The framework signs nothing, and the plan is not in force until that decision exists.',
@@ -299,15 +299,15 @@ export interface CslMirror {
 
 /** The CSL PR-13 mirror of the acceptance cases, derived from the catalog (the follow-up for the CSL lane). */
 export function pilotCslMirror(): CslMirror {
-  const acceptanceCases = PILOT_PQ_CASES.filter(entry => /^A\d+$/.test(entry.acceptanceCase ?? ''));
-  const entry = (pqCase: Ta3PqCase): CslMirrorCase => ({
-    caseId: pqCase.acceptanceCase!, frameworkCaseId: pqCase.id, requirementId: pqCase.requirement, stage: pqCase.stage!,
+  const acceptanceCases = PILOT_PQ_CASES.filter(entry => /^A\d+$/.test(entry.acceptanceCase));
+  const entry = (pqCase: PilotPqCase): CslMirrorCase => ({
+    caseId: pqCase.acceptanceCase, frameworkCaseId: pqCase.id, requirementId: pqCase.requirement, stage: pqCase.stage,
     title: pqCase.title, passesWhen: pqCase.passesWhen,
   });
   const byFeature = new Map<string, CslMirrorCase[]>();
   const chainCases: (CslMirrorCase & { reason: string })[] = [];
   for (const pqCase of acceptanceCases) {
-    const mapping = PILOT_CSL_FEATURES[pqCase.acceptanceCase!];
+    const mapping = PILOT_CSL_FEATURES[pqCase.acceptanceCase];
     if (!mapping) throw new Error(`${pqCase.acceptanceCase} has no CSL feature mapping.`);
     if (!mapping.features.length) {
       if (!mapping.reason) throw new Error(`${pqCase.acceptanceCase} is on the chain row with no reason.`);
@@ -331,7 +331,7 @@ export function pilotCslMirror(): CslMirror {
 }
 
 /** Every pilot case paired with its requirement; a case without one, or a requirement citing another case, is a defect. */
-export function pilotTraceability(): { pqCase: Ta3PqCase; requirementId: string; frsId: string; title: string }[] {
+export function pilotTraceability(): { pqCase: PilotPqCase; requirementId: string; frsId: string; title: string }[] {
   return PILOT_PQ_CASES.map(pqCase => {
     const requirement = PILOT_REQUIREMENTS.find(candidate => candidate.id === pqCase.requirement);
     if (!requirement) throw new Error(`${pqCase.id} names ${pqCase.requirement}, which PILOT_REQUIREMENTS lacks.`);

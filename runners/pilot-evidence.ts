@@ -7,8 +7,8 @@ import type { PublicDataAdmission } from './public-data-admission';
 import { ta3RegulatoryRef } from '../config/ta3-oq-cases';
 import {
   PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_CONTROLS, PILOT_MIN_CRITICAL_INSTANCES, PILOT_NON_CLAIMS, PILOT_NON_CLAIM_STATUSES,
-  PILOT_PQ_CASES, PILOT_STUDY, PUBLIC_DATA_BASIS_NOT_ADMITTED, UNSUPPORTED_PILOT_SUMMARY, type PilotControl, type Ta3PqCase,
-} from '../config/ta3-pq-cases';
+  PILOT_OUTCOME_CODES, PILOT_PQ_CASES, PILOT_STUDY, type PilotControl, type PilotPqCase,
+} from '../config/pilot-cases';
 
 /*
  * The lab-to-endpoint pilot cases (LE-7.2): PQA-001 to PQA-021 and PQC-001 to PQC-004, derived from a reconstructed run whose
@@ -20,8 +20,17 @@ import {
 export interface PilotDerivationInput extends SummaryDerivationInput {
   /** Reads one evidence file the summary cites, by absolute path; injected so the derivation reads nothing else. */
   readEvidence?: (absolutePath: string) => Buffer;
+  /** Resolves links in a path (fs.realpathSync by default), so a link inside the run directory that resolves outside it is
+   * outside; injected beside readEvidence. */
+  resolveReal?: (file: string) => string;
   /** The D-LE-14 decision on this run; an R2 run passes no case without an admission. */
   publicData?: PublicDataAdmission;
+}
+
+/** How the derivation reaches the run directory: the two injected readers, and nothing else. */
+interface RunFileReader {
+  read: (absolutePath: string) => Buffer;
+  resolveReal: (file: string) => string;
 }
 
 const PILOT_SCOPE = 'Derived from the reconstructed pilot run without re-scoring: the import admits the run\'s verdict for a case only with every '
@@ -149,12 +158,12 @@ export function pilotRunBlock(summary: Record<string, unknown>): { run?: PilotRu
 function classificationFailure(run: PilotRunBlock, publicData?: PublicDataAdmission): CaseOutcome | undefined {
   const expected = run.runKind === 'R1' ? 'synthetic-engineering' : 'declared-public-data';
   if (run.classification.kind !== expected) {
-    return caseFail('CLASSIFICATION_MISMATCH', `A ${run.runKind} run must be classified ${expected} (D-LE-14); it states ${run.classification.kind}.`,
+    return caseFail(PILOT_OUTCOME_CODES.CLASSIFICATION_MISMATCH, `A ${run.runKind} run must be classified ${expected} (D-LE-14); it states ${run.classification.kind}.`,
       { classification: run.classification });
   }
   if (run.runKind !== 'R2' || publicData?.admitted) return undefined;
   const why = publicData && !publicData.admitted ? `${publicData.code}: ${publicData.reason}` : 'no admission was decided for this import';
-  return caseFail(PUBLIC_DATA_BASIS_NOT_ADMITTED, `The R2 run was not admitted under a filed declared-public-data basis (D-LE-14). ${why}`,
+  return caseFail(PILOT_OUTCOME_CODES.PUBLIC_DATA_BASIS_NOT_ADMITTED, `The R2 run was not admitted under a filed declared-public-data basis (D-LE-14). ${why}`,
     { classification: run.classification });
 }
 
@@ -168,20 +177,22 @@ export interface PilotEvidenceCheck { path: string; sha256: string; status: Pilo
 
 /** The file a cited relative path names inside the run directory, or undefined when it is outside: an absolute path, a
  * path that leaves the directory, or a link inside it that resolves outside it. */
-export function citedRunFile(runDir: string, relative: string): string | undefined {
+export function citedRunFile(runDir: string, relative: string, resolveReal: (file: string) => string = file => fs.realpathSync(file)): string | undefined {
   const target = path.resolve(runDir, relative);
   // A link inside the run directory that resolves outside it is outside too.
   let resolvedOutside = false;
-  try { resolvedOutside = !isInside(fs.realpathSync(runDir), fs.realpathSync(target)); } catch { /* absent: the reader reports it missing */ }
+  try { resolvedOutside = !isInside(resolveReal(runDir), resolveReal(target)); } catch { /* absent: the reader reports it missing */ }
   return path.isAbsolute(relative) || !isInside(runDir, target) || resolvedOutside ? undefined : target;
 }
 
 /** Verifies each evidence file a result cites: a relative path inside the run directory whose bytes have the recorded
- * SHA-256. Returns undefined checks when the list is not in the recognised shape. */
-function pilotEvidence(runDir: string, value: unknown, at: string, read: (absolutePath: string) => Buffer):
-  { checks?: PilotEvidenceCheck[]; problem?: string } {
+ * SHA-256. Returns undefined checks when the list is not in the recognised shape, and the bytes of each verified file, so a
+ * reader of their content parses exactly the bytes that were hashed. */
+function pilotEvidence(runDir: string, value: unknown, at: string, files: RunFileReader):
+  { checks?: PilotEvidenceCheck[]; verified?: ReadonlyMap<string, Buffer>; problem?: string } {
   if (!Array.isArray(value)) return { problem: `${at} is not an array` };
   const checks: PilotEvidenceCheck[] = [];
+  const verified = new Map<string, Buffer>();
   for (const [index, entry] of value.entries()) {
     const problem = membersProblem(entry, `${at}[${index}]`, ['path', 'sha256']);
     if (problem) return { problem };
@@ -189,17 +200,18 @@ function pilotEvidence(runDir: string, value: unknown, at: string, read: (absolu
     if (!isText(relative, 1024) || typeof sha256 !== 'string' || !SHA256_HEX.test(sha256)) {
       return { problem: `${at}[${index}] is not a path with a SHA-256 hex` };
     }
-    const target = citedRunFile(runDir, relative);
+    const target = citedRunFile(runDir, relative, files.resolveReal);
     if (!target) {
       checks.push({ path: relative, sha256, status: 'outside' });
       continue;
     }
     let bytes: Buffer;
-    try { bytes = read(target); } catch { checks.push({ path: relative, sha256, status: 'missing' }); continue; }
+    try { bytes = files.read(target); } catch { checks.push({ path: relative, sha256, status: 'missing' }); continue; }
     const actual = hash(bytes);
+    if (actual === sha256) verified.set(relative, bytes);
     checks.push(actual === sha256 ? { path: relative, sha256, status: 'verified' } : { path: relative, sha256, status: 'mismatch', actualSha256: actual });
   }
-  return { checks };
+  return { checks, verified };
 }
 
 /** What a run directory kept beside a package must still show for one file a pilot row recorded (verify:package --run-dir):
@@ -257,9 +269,9 @@ export function pilotRowRunFiles(body: Record<string, unknown>): { files: Record
 function evidenceFailure(checks: readonly PilotEvidenceCheck[], at: string): CaseOutcome | undefined {
   const named = (status: PilotEvidenceCheck['status']) => checks.filter(check => check.status === status).map(check => check.path);
   const body = { evidence: checks };
-  if (named('outside').length) return caseFail('EVIDENCE_PATH_OUTSIDE_RUN', `${at} cites files outside the run directory: ${named('outside').join(', ')}.`, body);
-  if (named('mismatch').length) return caseFail('EVIDENCE_HASH_MISMATCH', `${at} cites files whose bytes differ from the recorded SHA-256: ${named('mismatch').join(', ')}.`, body);
-  if (named('missing').length) return caseFail('EVIDENCE_MISSING', `${at} cites files the run directory lacks: ${named('missing').join(', ')}.`, body);
+  if (named('outside').length) return caseFail(PILOT_OUTCOME_CODES.EVIDENCE_PATH_OUTSIDE_RUN, `${at} cites files outside the run directory: ${named('outside').join(', ')}.`, body);
+  if (named('mismatch').length) return caseFail(PILOT_OUTCOME_CODES.EVIDENCE_HASH_MISMATCH, `${at} cites files whose bytes differ from the recorded SHA-256: ${named('mismatch').join(', ')}.`, body);
+  if (named('missing').length) return caseFail(PILOT_OUTCOME_CODES.EVIDENCE_MISSING, `${at} cites files the run directory lacks: ${named('missing').join(', ')}.`, body);
   return undefined;
 }
 
@@ -279,25 +291,29 @@ interface SealedKeySet {
 /** Reads the key set a run states from the two files it cites, the sealed manifest and the seal record (the key set's
  * root COMPLETE marker), both inside the run directory with the recorded SHA-256. A cited file that is absent or outside
  * the run records KEY_MANIFEST_MISSING; bytes or facts that differ from what the summary states record KEY_MANIFEST_MISMATCH. */
-function sealedKeySetOf(run: PilotRunBlock, runDir: string, read: (absolutePath: string) => Buffer): { sealed?: SealedKeySet; failure?: CaseOutcome } {
+function sealedKeySetOf(run: PilotRunBlock, runDir: string, files: RunFileReader): { sealed?: SealedKeySet; failure?: CaseOutcome } {
   const { manifest: manifestFile, seal: sealFile } = run.keySet;
-  const checks = pilotEvidence(runDir, [manifestFile, sealFile], 'pilot.keySet', read).checks ?? [];
+  const keyFiles = pilotEvidence(runDir, [manifestFile, sealFile], 'pilot.keySet', files);
+  const checks = keyFiles.checks ?? [];
   const body = { keySetFiles: checks };
   const named = (...statuses: PilotEvidenceCheck['status'][]) => checks.filter(check => statuses.includes(check.status)).map(check => check.path);
   if (named('missing', 'outside').length) {
-    return { failure: caseFail('KEY_MANIFEST_MISSING', `The run cites a key set manifest or seal record it does not hold inside the run directory: ${named('missing', 'outside').join(', ')}.`, body) };
+    return { failure: caseFail(PILOT_OUTCOME_CODES.KEY_MANIFEST_MISSING, `The run cites a key set manifest or seal record it does not hold inside the run directory: ${named('missing', 'outside').join(', ')}.`, body) };
   }
   if (named('mismatch').length) {
-    return { failure: caseFail('KEY_MANIFEST_MISMATCH', `The key set files differ from the SHA-256 the summary records: ${named('mismatch').join(', ')}.`, body) };
+    return { failure: caseFail(PILOT_OUTCOME_CODES.KEY_MANIFEST_MISMATCH, `The key set files differ from the SHA-256 the summary records: ${named('mismatch').join(', ')}.`, body) };
   }
+  // The facts are parsed from the bytes just hashed, never read a second time.
   const parsed = (file: { path: string }): Record<string, unknown> | undefined => {
+    const bytes = keyFiles.verified?.get(file.path);
+    if (!bytes) return undefined;
     try {
-      const value: unknown = JSON.parse(read(path.resolve(runDir, file.path)).toString('utf8').replace(/^\uFEFF/, ''));
+      const value: unknown = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
       return isRecord(value) ? value : undefined;
     } catch { return undefined; }
   };
   const manifest = parsed(manifestFile), seal = parsed(sealFile);
-  if (!manifest || !seal) return { failure: caseFail('KEY_MANIFEST_MISMATCH', 'The key set manifest or seal record is not a JSON object.', body) };
+  if (!manifest || !seal) return { failure: caseFail(PILOT_OUTCOME_CODES.KEY_MANIFEST_MISMATCH, 'The key set manifest or seal record is not a JSON object.', body) };
   const bare = (value: unknown) => (typeof value === 'string' ? value.replace(/^sha256:/, '') : '');
   const stated = run.keySet;
   const coverage = isRecord(manifest.coverage) ? manifest.coverage : undefined;
@@ -318,7 +334,7 @@ function sealedKeySetOf(run: PilotRunBlock, runDir: string, read: (absolutePath:
     ...(countersignatures?.every(entry => isRecord(entry) && isText(entry.case, 64) && isText(entry.by, 200) && isText(entry.role, 200) && isInstant(entry.at))
       ? [] : ['the manifest has no adjudication.countersignatures list of case, by, role and at']),
   ];
-  if (gaps.length) return { failure: caseFail('KEY_MANIFEST_MISMATCH', `The sealed key set does not say what the summary states: ${gaps.join('; ')}.`, { ...body, problems: gaps }) };
+  if (gaps.length) return { failure: caseFail(PILOT_OUTCOME_CODES.KEY_MANIFEST_MISMATCH, `The sealed key set does not say what the summary states: ${gaps.join('; ')}.`, { ...body, problems: gaps }) };
   return { sealed: {
     keySetId: stated.keySetId, manifestSha256: manifestFile.sha256, sealedAt: seal.sealedAt as string, criticalInstancesDeclared: manifest.criticalInstancesDeclared as number,
     held: (held as Record<string, unknown>[]).map(entry => entry.case as string),
@@ -332,11 +348,11 @@ const keySetHolds = (sealed: SealedKeySet, acceptanceCase: string) => sealed.hel
 /** One acceptance case's result as admitted, or not executed (`executed: false`) when the run did not run or report it. */
 interface PilotCaseOutcome { executed: boolean; outcome: CaseOutcome; criticalInstances?: number; criticalFailures?: number }
 
-function acceptanceOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, keys: ReturnType<typeof sealedKeySetOf>, runDir: string, read: (absolutePath: string) => Buffer, publicData?: PublicDataAdmission): PilotCaseOutcome {
+function acceptanceOutcome(pqCase: PilotPqCase, run: PilotRunBlock, keys: ReturnType<typeof sealedKeySetOf>, runDir: string, files: RunFileReader, publicData?: PublicDataAdmission): PilotCaseOutcome {
   const at = `pilot.cases ${pqCase.acceptanceCase}`;
   const result = run.cases.find(entry => entry.case === pqCase.acceptanceCase);
   if (!result) {
-    return { executed: false, outcome: caseFail('CASE_NOT_REPORTED', `The run reports no result for ${pqCase.acceptanceCase}; nothing is admitted.`) };
+    return { executed: false, outcome: caseFail(PILOT_OUTCOME_CODES.CASE_NOT_REPORTED, `The run reports no result for ${pqCase.acceptanceCase}; nothing is admitted.`) };
   }
   const shape = membersProblem(result, at, PILOT_CASE_MEMBERS, ['reason']);
   if (shape) return { executed: true, outcome: unsupportedPilot([shape]) };
@@ -351,7 +367,7 @@ function acceptanceOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, keys: ReturnTy
     problems.push(`${at}: criticalFailures ${result.criticalFailures}, criticalInstances ${result.criticalInstances} and scoredInstances ${result.scoredInstances} are not nested`);
   }
   if (result.reason !== undefined && !isText(result.reason)) problems.push(`${at}.reason is not text`);
-  const evidence = pilotEvidence(runDir, result.evidence, `${at}.evidence`, read);
+  const evidence = pilotEvidence(runDir, result.evidence, `${at}.evidence`, files);
   if (evidence.problem) problems.push(evidence.problem);
   if (problems.length) return { executed: true, outcome: unsupportedPilot(problems) };
   const counts = { scoredInstances: result.scoredInstances, criticalInstances: result.criticalInstances, criticalFailures: result.criticalFailures };
@@ -362,32 +378,32 @@ function acceptanceOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, keys: ReturnTy
   const tally = { criticalInstances: result.criticalInstances as number, criticalFailures: result.criticalFailures as number };
   const decided = (outcome: CaseOutcome, executed = true): PilotCaseOutcome => ({ executed, outcome: { ...outcome, body: { ...body, ...outcome.body } }, ...tally });
   if (result.requirement !== pqCase.requirement) {
-    return decided(caseFail('REQUIREMENT_MISMATCH', `${pqCase.acceptanceCase} names requirement ${result.requirement}; the catalog names ${pqCase.requirement}.`));
+    return decided(caseFail(PILOT_OUTCOME_CODES.REQUIREMENT_MISMATCH, `${pqCase.acceptanceCase} names requirement ${result.requirement}; the catalog names ${pqCase.requirement}.`));
   }
   const classification = classificationFailure(run, publicData);
   if (classification) return decided(classification);
   if (!keys.sealed) return decided(keys.failure!);
   if (Date.parse(keys.sealed.sealedAt) >= Date.parse(run.startedAt)) {
-    return decided(caseFail('KEY_NOT_SEALED_BEFORE_RUN', `The answer key ${keys.sealed.keySetId} was sealed at ${keys.sealed.sealedAt}, not before the run started at ${run.startedAt}.`));
+    return decided(caseFail(PILOT_OUTCOME_CODES.KEY_NOT_SEALED_BEFORE_RUN, `The answer key ${keys.sealed.keySetId} was sealed at ${keys.sealed.sealedAt}, not before the run started at ${run.startedAt}.`));
   }
-  if (result.verdict === 'not-run') return decided(caseFail('CASE_NOT_RUN', `The run did not run ${pqCase.acceptanceCase}${result.reason ? `: ${result.reason}` : ''}.`), false);
+  if (result.verdict === 'not-run') return decided(caseFail(PILOT_OUTCOME_CODES.CASE_NOT_RUN, `The run did not run ${pqCase.acceptanceCase}${result.reason ? `: ${result.reason}` : ''}.`), false);
   const evidenceRefusal = evidenceFailure(evidence.checks!, at);
   if (evidenceRefusal) return decided(evidenceRefusal);
   if (result.verdict === 'fail' || (result.criticalFailures as number) > 0) {
-    return decided(caseFail(pqCase.failureCode ?? 'CASE_FAILED', `${pqCase.acceptanceCase} failed in the run (verdict ${result.verdict}, ${result.criticalFailures} critical failure(s))${result.reason ? `: ${result.reason}` : ''}.`));
+    return decided(caseFail(pqCase.failureCode, `${pqCase.acceptanceCase} failed in the run (verdict ${result.verdict}, ${result.criticalFailures} critical failure(s))${result.reason ? `: ${result.reason}` : ''}.`));
   }
   if (result.verdict === 'inconclusive' || result.coverage !== 'complete' || (result.scoredInstances as number) < 1 || !evidence.checks!.length) {
-    return decided(caseFail('INCONCLUSIVE', `${pqCase.acceptanceCase} is inconclusive (verdict ${result.verdict}, coverage ${result.coverage}, `
+    return decided(caseFail(PILOT_OUTCOME_CODES.INCONCLUSIVE, `${pqCase.acceptanceCase} is inconclusive (verdict ${result.verdict}, coverage ${result.coverage}, `
       + `${result.scoredInstances} scored instance(s), ${evidence.checks!.length} evidence file(s)); an inconclusive result never passes.`));
   }
-  if (keySetHolds(keys.sealed, pqCase.acceptanceCase!)) {
-    return decided(caseFail('KEY_CASE_HELD', `The sealed key set ${keys.sealed.keySetId} still holds ${pqCase.acceptanceCase} (coverage.held), so a pass has no key to rest on.`));
+  if (keySetHolds(keys.sealed, pqCase.acceptanceCase)) {
+    return decided(caseFail(PILOT_OUTCOME_CODES.KEY_CASE_HELD, `The sealed key set ${keys.sealed.keySetId} still holds ${pqCase.acceptanceCase} (coverage.held), so a pass has no key to rest on.`));
   }
   if (run.runKind === 'R2' && result.keyBasis !== 'countersigned') {
-    return decided(caseFail('KEY_NOT_COUNTERSIGNED', `The R2 key of ${pqCase.acceptanceCase} is ${result.keyBasis}; the run of record needs a countersigned key (D-LE-21).`));
+    return decided(caseFail(PILOT_OUTCOME_CODES.KEY_NOT_COUNTERSIGNED, `The R2 key of ${pqCase.acceptanceCase} is ${result.keyBasis}; the run of record needs a countersigned key (D-LE-21).`));
   }
-  if (run.runKind === 'R2' && !keys.sealed.countersignedCases.includes(pqCase.acceptanceCase!)) {
-    return decided(caseFail('KEY_NOT_COUNTERSIGNED', `The summary says the R2 key of ${pqCase.acceptanceCase} is countersigned; the sealed manifest records no countersignature for it (D-LE-21).`));
+  if (run.runKind === 'R2' && !keys.sealed.countersignedCases.includes(pqCase.acceptanceCase)) {
+    return decided(caseFail(PILOT_OUTCOME_CODES.KEY_NOT_COUNTERSIGNED, `The summary says the R2 key of ${pqCase.acceptanceCase} is countersigned; the sealed manifest records no countersignature for it (D-LE-21).`));
   }
   const keyNote = result.keyBasis === 'countersigned' ? 'its key countersigned' : `its key ${result.keyBasis}, admitted for R1 only (D-LE-21)`;
   return decided(casePass(`${pqCase.acceptanceCase} passed in the ${run.runKind} run with ${result.scoredInstances} scored instance(s), `
@@ -395,15 +411,15 @@ function acceptanceOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, keys: ReturnTy
 }
 
 const unsupportedPilot = (problems: string[], body: Record<string, unknown> = {}): CaseOutcome =>
-  caseFail(UNSUPPORTED_PILOT_SUMMARY, `The pilot summary is not in a shape the import recognises: ${problems.join('; ')}.`, { ...body, problems });
+  caseFail(PILOT_OUTCOME_CODES.UNSUPPORTED_PILOT_SUMMARY, `The pilot summary is not in a shape the import recognises: ${problems.join('; ')}.`, { ...body, problems });
 
 /** PQA-021, the G3 bound, from the admitted A1 to A20 outcomes. */
 function criticalBoundOutcome(run: PilotRunBlock, outcomes: ReadonlyMap<string, PilotCaseOutcome>): PilotCaseOutcome {
-  const acceptance = PILOT_PQ_CASES.filter(entry => /^A\d+$/.test(entry.acceptanceCase ?? ''));
+  const acceptance = PILOT_PQ_CASES.filter(entry => /^A\d+$/.test(entry.acceptanceCase));
   const notRun = acceptance.filter(entry => !outcomes.get(entry.id)!.executed).map(entry => entry.acceptanceCase);
   const declared = run.keySet.criticalInstancesDeclared;
   if (notRun.length) {
-    return { executed: false, outcome: caseFail('CASES_NOT_RUN', `G3 needs every acceptance case executed; not executed: ${notRun.join(', ')}.`, { notRun, declared }) };
+    return { executed: false, outcome: caseFail(PILOT_OUTCOME_CODES.CASES_NOT_RUN, `G3 needs every acceptance case executed; not executed: ${notRun.join(', ')}.`, { notRun, declared }) };
   }
   const notPassed = acceptance.filter(entry => !outcomes.get(entry.id)!.outcome.passed).map(entry => entry.acceptanceCase);
   const instances = acceptance.reduce((sum, entry) => sum + (outcomes.get(entry.id)!.criticalInstances ?? 0), 0);
@@ -415,7 +431,7 @@ function criticalBoundOutcome(run: PilotRunBlock, outcomes: ReadonlyMap<string, 
     ...(declared < PILOT_MIN_CRITICAL_INSTANCES ? [`the key declares ${declared} critical instances, fewer than ${PILOT_MIN_CRITICAL_INSTANCES}`] : []),
     ...(failures > 0 ? [`${failures} critical failure(s)`] : []),
   ];
-  if (gaps.length) return { executed: true, outcome: caseFail('CRITICAL_FAILURE_BOUND_NOT_MET', `G3 is not met: ${gaps.join('; ')}.`, body) };
+  if (gaps.length) return { executed: true, outcome: caseFail(PILOT_OUTCOME_CODES.CRITICAL_FAILURE_BOUND_NOT_MET, `G3 is not met: ${gaps.join('; ')}.`, body) };
   return { executed: true, outcome: casePass(`G3 holds: zero critical failures in ${instances} scored critical instances; 95% upper bound ${(3 / instances).toFixed(4)} (3/N).`, body) };
 }
 
@@ -475,11 +491,11 @@ function controlSystemVerdict(control: PilotControl, counts: Record<string, unkn
 }
 
 /** PQC-001 to PQC-004: one control's per-system results. */
-function controlOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, runDir: string, read: (absolutePath: string) => Buffer, publicData?: PublicDataAdmission): PilotCaseOutcome {
+function controlOutcome(pqCase: PilotPqCase, run: PilotRunBlock, runDir: string, files: RunFileReader, publicData?: PublicDataAdmission): PilotCaseOutcome {
   const control = pqCase.acceptanceCase as PilotControl;
   const at = `pilot.controls ${control}`;
   const entry = run.controls.find(candidate => candidate.control === control);
-  if (!entry) return { executed: false, outcome: caseFail('CONTROL_NOT_REPORTED', `The run reports no ${control} result; nothing is admitted.`) };
+  if (!entry) return { executed: false, outcome: caseFail(PILOT_OUTCOME_CODES.CONTROL_NOT_REPORTED, `The run reports no ${control} result; nothing is admitted.`) };
   const shape = membersProblem(entry, at, PILOT_CONTROL_MEMBERS);
   if (shape) return { executed: true, outcome: unsupportedPilot([shape]) };
   if (!Array.isArray(entry.systems)) return { executed: true, outcome: unsupportedPilot([`${at}.systems is not an array`]) };
@@ -496,7 +512,7 @@ function controlOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, runDir: string, r
     seen.add(name);
     const countsShape = membersProblem(counts, `${where}.counts`, PILOT_CONTROL_COUNTS[control]);
     if (countsShape) { problems.push(countsShape); continue; }
-    const checked = pilotEvidence(runDir, evidence, `${where}.evidence`, read);
+    const checked = pilotEvidence(runDir, evidence, `${where}.evidence`, files);
     if (checked.problem) { problems.push(checked.problem); continue; }
     evidenceChecks.push(...checked.checks!);
     const verdict = controlSystemVerdict(control, counts as Record<string, unknown>, run);
@@ -509,32 +525,35 @@ function controlOutcome(pqCase: Ta3PqCase, run: PilotRunBlock, runDir: string, r
   const body = { control, requirement: entry.requirement, systems };
   const decided = (outcome: CaseOutcome): PilotCaseOutcome => ({ executed: true, outcome: { ...outcome, body: { ...body, ...outcome.body } } });
   if (entry.requirement !== pqCase.requirement) {
-    return decided(caseFail('REQUIREMENT_MISMATCH', `The ${control} result names requirement ${String(entry.requirement)}; the catalog names ${pqCase.requirement}.`));
+    return decided(caseFail(PILOT_OUTCOME_CODES.REQUIREMENT_MISMATCH, `The ${control} result names requirement ${String(entry.requirement)}; the catalog names ${pqCase.requirement}.`));
   }
   const classification = classificationFailure(run, publicData);
   if (classification) return decided(classification);
   const evidenceRefusal = evidenceFailure(evidenceChecks, at);
   if (evidenceRefusal) return decided({ ...evidenceRefusal, body: {} });
   const failed = verdicts.filter(item => item.kind === 'fail');
-  if (failed.length) return decided(caseFail(pqCase.failureCode!, `${control} failed: ${failed.map(item => `${item.system} (${item.detail})`).join('; ')}.`));
+  if (failed.length) return decided(caseFail(pqCase.failureCode, `${control} failed: ${failed.map(item => `${item.system} (${item.detail})`).join('; ')}.`));
   const missing = PILOT_CONTROL_SYSTEMS.filter(name => !seen.has(name));
   const inconclusive = verdicts.filter(item => item.kind === 'inconclusive');
   if (missing.length || inconclusive.length) {
-    return decided(caseFail('INCONCLUSIVE', `${control} is inconclusive: ${[...missing.map(name => `${name} not reported`),
+    return decided(caseFail(PILOT_OUTCOME_CODES.INCONCLUSIVE, `${control} is inconclusive: ${[...missing.map(name => `${name} not reported`),
       ...inconclusive.map(item => `${item.system} (${item.detail})`)].join('; ')}; an inconclusive control never passes.`, { missingSystems: missing }));
   }
   return decided(casePass(`${control} passed for ${PILOT_CONTROL_SYSTEMS.join(', ')}, each with its evidence verified.`, {}));
 }
 
 /** PQA-001 to PQA-021 and PQC-001 to PQC-004 of a pilot run (LE-7.2), derived from the reconstructed summary without
- * re-scoring. It reads only the evidence files the summary cites, through `readEvidence`, and no clock or process.
+ * re-scoring. It reads only the evidence files the summary cites, through `readEvidence` and `resolveReal`, and no clock or process.
  * Without a reconstruction every case is not executed (RECONSTRUCTION_FAILED); a summary the import does not
  * recognise records UNSUPPORTED_PILOT_SUMMARY on every case, never a guess; a case the run did not run or report is
  * recorded not executed, so an R1 at the Stage B exit shows its Stage C cases not executed, never failed. */
 export function derivePilotResults(input: PilotDerivationInput): EvidenceResult[] {
-  const read = input.readEvidence ?? ((absolutePath: string) => fs.readFileSync(absolutePath));
+  const files: RunFileReader = {
+    read: input.readEvidence ?? (absolutePath => fs.readFileSync(absolutePath)),
+    resolveReal: input.resolveReal ?? (file => fs.realpathSync(file)),
+  };
   const identity = { summaryContract: PILOT_ACCEPTANCE_CONTRACT, summarySha256: input.summarySha256, metricsSha256: input.metricsSha256 };
-  const row = (pqCase: Ta3PqCase, executed: boolean, outcome: CaseOutcome, runBody: Record<string, unknown>): EvidenceResult => ({
+  const row = (pqCase: PilotPqCase, executed: boolean, outcome: CaseOutcome, runBody: Record<string, unknown>): EvidenceResult => ({
     testCaseId: pqCase.id, timestamp: input.timestamp, endpoint: input.runDir, method: executed ? 'OFFLINE' : 'CONTRACT', responseStatus: 0,
     responseBody: { ...identity, ...runBody, ...outcome.body }, passed: outcome.passed,
     notes: `${executed ? '' : 'Not executed: '}${outcome.detail} ${PILOT_SCOPE}`,
@@ -543,18 +562,18 @@ export function derivePilotResults(input: PilotDerivationInput): EvidenceResult[
   });
   const summary = input.summary;
   if (!summary) {
-    return PILOT_PQ_CASES.map(pqCase => row(pqCase, false, caseFail('RECONSTRUCTION_FAILED',
+    return PILOT_PQ_CASES.map(pqCase => row(pqCase, false, caseFail(PILOT_OUTCOME_CODES.RECONSTRUCTION_FAILED,
       `the run did not reconstruct (${input.reconstructionError ?? 'no reconstruction'}), so no pilot result is admitted.`), {}));
   }
   const { run, problems } = pilotRunBlock(summary);
   if (!run) return PILOT_PQ_CASES.map(pqCase => row(pqCase, true, unsupportedPilot(problems), {}));
-  const keys = sealedKeySetOf(run, input.runDir, read);
+  const keys = sealedKeySetOf(run, input.runDir, files);
   const runBody = { runKind: run.runKind, startedAt: run.startedAt, classification: run.classification, keySet: run.keySet,
     ...(keys.sealed ? { sealedKeySet: keys.sealed } : {}), nonClaims: run.nonClaims ?? [] };
   const outcomes = new Map<string, PilotCaseOutcome>();
   for (const pqCase of PILOT_PQ_CASES) {
-    if (/^A\d+$/.test(pqCase.acceptanceCase ?? '')) outcomes.set(pqCase.id, acceptanceOutcome(pqCase, run, keys, input.runDir, read, input.publicData));
-    else if (pqCase.acceptanceCase !== 'G3') outcomes.set(pqCase.id, controlOutcome(pqCase, run, input.runDir, read, input.publicData));
+    if (/^A\d+$/.test(pqCase.acceptanceCase)) outcomes.set(pqCase.id, acceptanceOutcome(pqCase, run, keys, input.runDir, files, input.publicData));
+    else if (pqCase.acceptanceCase !== 'G3') outcomes.set(pqCase.id, controlOutcome(pqCase, run, input.runDir, files, input.publicData));
   }
   const bound = PILOT_PQ_CASES.find(entry => entry.acceptanceCase === 'G3')!;
   outcomes.set(bound.id, criticalBoundOutcome(run, outcomes));

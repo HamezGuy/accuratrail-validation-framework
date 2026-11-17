@@ -602,7 +602,7 @@ restore test, signature-to-record linking (21 CFR 11.70) and the access and
 account-change log census; FRS-108 to FRS-132 one each. The URS, FRS and
 traceability matrix print them in their "Lab-to-Endpoint Pilot (CDISCPILOT01)"
 category through the TA3 code. Each cites exactly one case of `PILOT_PQ_CASES`
-(`config/ta3-pq-cases.ts`): PQA-001 to PQA-020 (A1 to A20), PQA-021 (G3) and
+(`config/pilot-cases.ts`, typed `PilotPqCase`, with the outcome codes the cases record in `PILOT_OUTCOME_CODES`): PQA-001 to PQA-020 (A1 to A20), PQA-021 (G3) and
 PQC-001 to PQC-004 (the controls), printed in the PQ protocol (09).
 
 The cases are recorded only by `--benchmark-run` of a pilot directory whose

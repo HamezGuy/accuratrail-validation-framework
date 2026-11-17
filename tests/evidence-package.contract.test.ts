@@ -19,7 +19,7 @@ import { derivePilotResults } from '../runners/pilot-evidence';
 import { PILOT_PUBLIC_DATA_BASIS_MEMBERS } from '../runners/public-data-admission';
 import {
   PILOT_ACCEPTANCE_CONTRACT, PILOT_CONTROL_SYSTEMS, PILOT_NON_CLAIMS, PILOT_PQ_CASES, PILOT_PUBLIC_DATA_BASIS_CONTRACT, PILOT_STUDY,
-} from '../config/ta3-pq-cases';
+} from '../config/pilot-cases';
 import { frameworkCommit, frameworkSharedTypes, releaseIdentityFromInputs, setReleaseIdentity } from '../runners/release-identity';
 import { documentHeader } from '../generators/helpers/markdown-writer';
 import { getDocumentMeta, stampDocument } from '../generators/helpers/version-stamper';
@@ -421,9 +421,9 @@ test('--run-dir rechecks each file in the state a pilot row recorded, so a faile
   const caseEvidence: Record<string, unknown[]> = { A1: [first, absent], A2: [second, outside], A3: [changed] };
   const summaryBytes = `${JSON.stringify({ contract: PILOT_ACCEPTANCE_CONTRACT, evaluator: {}, gateGroups: [], localEngineering: 'passed', pilot: {
     runKind: 'R1', startedAt: '2026-11-02T00:00:00Z', classification: { kind: 'synthetic-engineering' }, keySet,
-    cases: PILOT_PQ_CASES.filter(item => /^A\d+$/.test(item.acceptanceCase ?? '')).map(item => ({ case: item.acceptanceCase, requirement: item.requirement,
+    cases: PILOT_PQ_CASES.filter(item => /^A\d+$/.test(item.acceptanceCase)).map(item => ({ case: item.acceptanceCase, requirement: item.requirement,
       verdict: 'pass', coverage: 'complete', scoredInstances: 20, criticalInstances: 16, criticalFailures: 0, keyBasis: 'mechanical',
-      evidence: caseEvidence[item.acceptanceCase!] ?? [first] })),
+      evidence: caseEvidence[item.acceptanceCase] ?? [first] })),
     controls: [{ control: 'security', requirement: PILOT_PQ_CASES.find(item => item.acceptanceCase === 'security')!.requirement,
       systems: PILOT_CONTROL_SYSTEMS.map(system => ({ system, counts: { probes: 1, refusedAsExpected: 1, unexpectedAcceptances: 0 },
         evidence: system === 'cc' ? [absent] : [second] })) }],

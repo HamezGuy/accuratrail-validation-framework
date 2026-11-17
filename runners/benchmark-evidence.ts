@@ -13,18 +13,18 @@ import type { PublicDataAdmission } from './public-data-admission';
 import { ta3RegulatoryRef } from '../config/ta3-oq-cases';
 import {
   BENCHMARK_RECONSTRUCTION_ENTRY, CRITICAL_EXPLAINED_GATE, CRITICAL_MISS_EXPLANATIONS, DEVIATION_DETECTION_CONTRACT,
-  DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY, PILOT_ACCEPTANCE_CONTRACT, PILOT_IMPORT_SWITCH,
-  PILOT_RECONSTRUCTION_ENTRY, PILOT_RECONSTRUCTION_TIMEOUT_MS, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, type Ta3PqCase,
+  DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, type Ta3PqCase,
 } from '../config/ta3-pq-cases';
+import { PILOT_ACCEPTANCE_CONTRACT, PILOT_RECONSTRUCTION_ENTRY, PILOT_RECONSTRUCTION_TIMEOUT_MS } from '../config/pilot-cases';
 
 export interface BenchmarkEvidenceOptions {
   runDir: string;
   /** Canonical CommandCenter checkout; historical evaluators use evaluatorRoot. */
   commandCenterRoot?: string;
   evaluatorRoot?: string;
-  /** Derive the pilot cases from a run naming PILOT_ACCEPTANCE_CONTRACT; by default the PILOT_IMPORT_SWITCH
-   * environment variable, on only when it is exactly 'true' (D-P13). */
-  pilotImport?: boolean;
+  /** Derive the pilot cases from a run naming PILOT_ACCEPTANCE_CONTRACT: the PILOT_IMPORT_SWITCH the composition root read
+   * once (pilotSwitches, generate.ts; D-P13). */
+  pilotImport: boolean;
   /** The D-LE-14 decision on this run (admitPublicDataRun, taken before the package exists). Absent, an R2 pilot run
    * is not admitted and the import stays synthetic engineering evidence. */
   publicData?: PublicDataAdmission;
@@ -124,7 +124,6 @@ function requireMetricsBinding(summary: Record<string, unknown>, metrics: Buffer
  * entry (BENCHMARK_RUN) and keeps exactly those two rows.
  */
 export async function importBenchmarkEvidence(outputDir: string, options: BenchmarkEvidenceOptions): Promise<EvidenceResult[]> {
-  const pilotImport = options.pilotImport ?? process.env[PILOT_IMPORT_SWITCH] === 'true';
   const runDir = path.resolve(options.runDir);
   const root = path.resolve(options.commandCenterRoot ?? path.join(__dirname, '..', '..', '..', 'CommandCenter'));
   const timestamp = new Date().toISOString();
@@ -155,7 +154,7 @@ export async function importBenchmarkEvidence(outputDir: string, options: Benchm
     const summaryPath = path.join(runDir, BENCHMARK_RUN_FILES.summary);
     const metricsPath = path.join(runDir, BENCHMARK_RUN_FILES.metrics);
     const beforeSummary = fs.readFileSync(summaryPath);
-    const dispatch = summaryContractOf(beforeSummary, { pilot: pilotImport });
+    const dispatch = summaryContractOf(beforeSummary, { pilot: options.pilotImport });
     contract = dispatch.contract;
     const spec: SummaryContract = contract ? SUMMARY_CONTRACTS[contract] : BENCHMARK_RUN;
     summarySha256 = hash(beforeSummary);

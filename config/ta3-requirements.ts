@@ -1,5 +1,5 @@
 import { e6r3, type E6R3Key } from './regulatory-scope';
-import { pilotPqCase } from './ta3-pq-cases';
+import { pilotPqCase } from './pilot-cases';
 
 /**
  * The TA3 platform requirements, URS-081 to URS-101, each with its functional
@@ -533,7 +533,7 @@ export function ta3RequirementCases(requirement: Ta3Requirement): string[] {
  * FRS-132 (backlog LE-7.2; plan revision 3 sections 9 and 10; the TA3 plan item VAL-1 extended to the pilot's
  * intended use). URS-102 to URS-121 are the acceptance cases A1 to A20, URS-122 the G3 bound and URS-123 to
  * URS-126 the computerised-system validation controls. Each cites exactly one pilot case of PILOT_PQ_CASES
- * (config/ta3-pq-cases.ts), whose risk, Part 11 sections, ICH E6(R3) topics and pass criterion it takes, so the
+ * (config/pilot-cases.ts), whose risk, Part 11 sections, ICH E6(R3) topics and pass criterion it takes, so the
  * criterion is written once. The URS (03), FRS (04) and traceability matrix (06) print them in their
  * "Lab-to-Endpoint Pilot (CDISCPILOT01)" category through the same code as the TA3 requirements; the pilot
  * validation plan (23) prints the requirement-to-test matrix. Implementation references name the owning

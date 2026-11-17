@@ -15,9 +15,11 @@ import {
 import { RECORDED_AT_EXECUTION, getDocumentMeta, recordedTargetUrl, stampDocument } from './helpers/version-stamper';
 import { ta3RegulatoryRef } from '../config/ta3-oq-cases';
 import {
-  DEVIATION_DETECTION_CONTRACT, DEVIATION_RECONSTRUCTION_ENTRY, PILOT_ACCEPTANCE_CONTRACT, PILOT_IMPORT_SWITCH,
-  PILOT_PQ_CASES, PILOT_RECONSTRUCTION_ENTRY, PUBLIC_DATA_BASIS_NOT_ADMITTED, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, UNSUPPORTED_PILOT_SUMMARY, type Ta3PqCase,
+  DEVIATION_DETECTION_CONTRACT, DEVIATION_RECONSTRUCTION_ENTRY, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY, type Ta3PqCase,
 } from '../config/ta3-pq-cases';
+import {
+  PILOT_ACCEPTANCE_CONTRACT, PILOT_IMPORT_SWITCH, PILOT_OUTCOME_CODES, PILOT_PQ_CASES, PILOT_RECONSTRUCTION_ENTRY, type PilotPqCase,
+} from '../config/pilot-cases';
 
 interface PqTestCase {
   id: string;
@@ -528,12 +530,12 @@ function archiveRecoveryCases(): PqTestCase[] {
 /** The section title of the TA3 PQ cases tied to the O-7 run (spec P20 3.5). */
 export const TA3_PQ_SECTION = 'TA3 Deviation Detection on Public Protocols (PQT-001 to PQT-006)';
 
-function pqtCaseBlock(tc: Ta3PqCase, importName = 'O-7'): string {
+function pqtCaseBlock(tc: Ta3PqCase | PilotPqCase, importName = 'O-7'): string {
   const lines: string[] = [
     `### ${tc.id}: ${tc.title}`,
     '',
     `- **Requirement:** ${tc.requirement}`,
-    ...(tc.acceptanceCase ? [`- **Acceptance Case:** ${tc.acceptanceCase}; stage ${tc.stage} exit; runs on ${tc.source} data; evidence produced by ${(tc.items ?? []).join(', ')}`] : []),
+    ...('acceptanceCase' in tc ? [`- **Acceptance Case:** ${tc.acceptanceCase}; stage ${tc.stage} exit; runs on ${tc.source} data; evidence produced by ${tc.items.join(', ')}`] : []),
     `- **Regulatory Reference:** ${ta3RegulatoryRef(tc)}`,
     `- **Risk Level:** ${riskBadge(tc.riskLevel)}`,
     `- **Method:** ${tc.method === 'MANUAL' ? 'Manual: a qualified person\'s act; the import records it and never passes it' : `Derived by the ${importName} import from the reconstructed run, without re-scoring`}`,
@@ -581,15 +583,15 @@ function pilotPqSection(): string {
     + `whose run-summary.json states \`${PILOT_ACCEPTANCE_CONTRACT}\`, imported with \`--benchmark-run\` while \`${PILOT_IMPORT_SWITCH}=true\`. `
     + `The import reconstructs the run through \`${PILOT_RECONSTRUCTION_ENTRY}\`, the CommandCenter entry LE-7.3 owns; until that entry exists every case is recorded not executed. It admits each case's verdict only with every evidence `
     + 'file it cites verified by SHA-256 inside the run directory, complete coverage and an answer key whose own manifest and seal record show it sealed before the run; it never '
-    + `re-judges the evidence content. An unrecognised member or value records \`${UNSUPPORTED_PILOT_SUMMARY}\`, never a guess; a case the `
+    + `re-judges the evidence content. An unrecognised member or value records \`${PILOT_OUTCOME_CODES.UNSUPPORTED_PILOT_SUMMARY}\`, never a guess; a case the `
     + 'run did not run or report is recorded not executed, so an R1 at the Stage B exit shows its Stage C cases not executed.\n\n';
   content += 'An R1 run is synthetic engineering evidence (D-LE-14) with mechanical or builder-declared keys (D-LE-21). Only an R2 run '
     + 'with countersigned keys, admitted under the declared-public-data basis the QA owner filed and retained under QA-RETENTION-ROOT, is the run of '
-    + `record; an R2 run not so admitted records \`${PUBLIC_DATA_BASIS_NOT_ADMITTED}\` on its acceptance cases and controls and stays synthetic. The pilot validation plan (document 23) holds `
+    + `record; an R2 run not so admitted records \`${PILOT_OUTCOME_CODES.PUBLIC_DATA_BASIS_NOT_ADMITTED}\` on its acceptance cases and controls and stays synthetic. The pilot validation plan (document 23) holds `
     + 'the intended use, the system risk assessment and the requirement-to-test matrix.\n\n';
   content += markdownTable(
     ['Case', 'Acceptance case', 'Requirement', 'Stage', 'Title', 'Outcome code otherwise'],
-    PILOT_PQ_CASES.map(tc => [tc.id, tc.acceptanceCase ?? '', tc.requirement, tc.stage ?? '', tc.title, tc.failureCode ?? 'none (manual)']),
+    PILOT_PQ_CASES.map(tc => [tc.id, tc.acceptanceCase, tc.requirement, tc.stage, tc.title, tc.failureCode]),
   );
   content += '\n';
   for (const tc of PILOT_PQ_CASES) content += pqtCaseBlock(tc, 'pilot');

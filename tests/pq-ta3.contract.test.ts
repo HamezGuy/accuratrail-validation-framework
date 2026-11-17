@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { derivePqtResults, importBenchmarkEvidence, summaryContractOf, type PqtDerivationInput } from '../runners/benchmark-evidence';
 import { loadEvidence, setEvidenceMarking, type EvidenceResult } from '../runners/evidence-capture';
 import { benchmarkRunInputs, createPackage, sealPackage, verifyPackage, SYNTHETIC_ROOT_MARKER } from '../runners/evidence-package';
-import { loadRunnerEvidence, mappedCaseState, RUNNER_CASE_CHECKS } from '../generators/helpers/evidence-linker';
+import { loadRunnerEvidence, mappedCaseState, runnerCaseCheck, RUNNER_CASE_CHECKS } from '../generators/helpers/evidence-linker';
 import { recordedPqRelease } from '../generators/22-platform-validation-summary';
 import { generate as generatePqProtocol, TA3_PQ_SECTION } from '../generators/09-pq-protocol';
 import { generate as generateSummary } from '../generators/12-validation-summary';
@@ -15,6 +15,9 @@ import {
   BENCHMARK_RECONSTRUCTION_ENTRY, DEVIATION_DETECTION_CONTRACT, DEVIATION_MACHINE_CLASSES, DEVIATION_RECONSTRUCTION_ENTRY,
   RELEASE_PQ_CASE, TA3_PQ_CASES, UNSUPPORTED_DEVIATION_SUMMARY,
 } from '../config/ta3-pq-cases';
+import { PILOT_CONTROL_SYSTEMS, PILOT_CONTROLS, PILOT_NON_CLAIMS, PILOT_OUTCOME_CODES, PILOT_PQ_CASES, PILOT_STUDY } from '../config/pilot-cases';
+import { derivePilotResults } from '../runners/pilot-evidence';
+import type { PublicDataAdmission } from '../runners/public-data-admission';
 import { temporaryCheckout, temporaryDirectory } from './generated-documents';
 
 /** A clean framework checkout the packages here are created from, so no test depends on this checkout's state. */
@@ -81,7 +84,7 @@ const pqt = (results: EvidenceResult[], id: string) => results.find(result => re
 test('a deviation detection summary selects the deviation entry and records the two benchmark rows, then PQT-001 to PQT-006', async t => {
   const dir = temporaryDirectory(t, 'accura-pqt-'), cc = fakeCommandCenter(dir), runDir = deviationRun(dir);
   const output = path.join(dir, 'qualification');
-  const results = await importBenchmarkEvidence(output, { runDir, commandCenterRoot: cc });
+  const results = await importBenchmarkEvidence(output, { runDir, commandCenterRoot: cc, pilotImport: false });
   assert.deepEqual(results.map(result => result.testCaseId), ['BENCHMARK-RECONSTRUCTION', 'BENCHMARK-ENGINEERING-GATES', ...PQT_IDS]);
   assert.deepEqual(results.map(result => result.passed), [true, true, true, true, true, true, true, false], JSON.stringify(results.map(r => r.notes)));
   assert.deepEqual(invocations(cc), [[path.join(cc, ...DEVIATION_RECONSTRUCTION_ENTRY.split('/')), '--dir', runDir]]);
@@ -108,13 +111,13 @@ test('a deviation detection summary selects the deviation entry and records the 
   assert.deepEqual(recordedPqRelease(releaseRecord), { kind: 'git-commit', identity: API });
   assert.deepEqual(releaseRecord.responseBody.release, { api: API, training: '89abcdef0123456789abcdef0123456789abcdef',
     il: 'fedcba9876543210fedcba9876543210fedcba98', csl: 'csl-release-synthetic-0001' });
-  await assert.rejects(importBenchmarkEvidence(output, { runDir, commandCenterRoot: cc }), /already exists/);
+  await assert.rejects(importBenchmarkEvidence(output, { runDir, commandCenterRoot: cc, pilotImport: false }), /already exists/);
 });
 
 test('a run of any other contract keeps its entry and exactly its two rows', async t => {
   const dir = temporaryDirectory(t, 'accura-pqt-'), cc = fakeCommandCenter(dir);
   const runDir = deviationRun(dir, summary => { delete summary.contract; summary.schema = 'synthetic-trial.run-summary/3'; });
-  const results = await importBenchmarkEvidence(path.join(dir, 'qualification'), { runDir, commandCenterRoot: cc });
+  const results = await importBenchmarkEvidence(path.join(dir, 'qualification'), { runDir, commandCenterRoot: cc, pilotImport: false });
   assert.deepEqual(results.map(result => [result.testCaseId, result.passed]), [['BENCHMARK-RECONSTRUCTION', false], ['BENCHMARK-ENGINEERING-GATES', false]]);
   // The fake root holds no benchmark evaluator: the import asked for it, by path, and never ran the deviation stub.
   assert.equal((results[0].responseBody as any).error, `Benchmark reconstruction entry not found: ${path.join(cc, ...BENCHMARK_RECONSTRUCTION_ENTRY.split('/'))}`);
@@ -134,7 +137,7 @@ test('the summary contract is read from contract, schema or schemaVersion, and a
 
   const dir = temporaryDirectory(t, 'accura-pqt-'), cc = fakeCommandCenter(dir);
   const runDir = deviationRun(dir, summary => { summary.schema = 'synthetic-trial.run-summary/3'; });
-  const results = await importBenchmarkEvidence(path.join(dir, 'qualification'), { runDir, commandCenterRoot: cc });
+  const results = await importBenchmarkEvidence(path.join(dir, 'qualification'), { runDir, commandCenterRoot: cc, pilotImport: false });
   assert.deepEqual(results.map(result => result.testCaseId), ['BENCHMARK-RECONSTRUCTION', 'BENCHMARK-ENGINEERING-GATES', ...PQT_IDS]);
   assert.match((results[0].responseBody as any).error, /Unsupported deviation detection summary: run-summary\.json names another contract in schema/);
   assert.equal(pqt(results, 'PQT-001').outcomeCode, 'RECONSTRUCTION_FAILED');
@@ -145,7 +148,7 @@ test('a missing deviation entry fails BENCHMARK-RECONSTRUCTION with its path nam
   const dir = temporaryDirectory(t, 'accura-pqt-'), runDir = deviationRun(dir), empty = path.join(dir, 'command-center-empty');
   fs.mkdirSync(empty);
   const output = path.join(dir, 'qualification');
-  const results = await importBenchmarkEvidence(output, { runDir, commandCenterRoot: empty });
+  const results = await importBenchmarkEvidence(output, { runDir, commandCenterRoot: empty, pilotImport: false });
   assert.equal(results.length, 8);
   assert.equal(results[0].passed, false);
   assert.equal((results[0].responseBody as any).error, `Benchmark reconstruction entry not found: ${path.join(empty, ...DEVIATION_RECONSTRUCTION_ENTRY.split('/'))}`);
@@ -174,7 +177,7 @@ test('a metrics hash mismatch, a summary that binds no metrics, or a refusing en
     ['refused', refused, refusing, /RECONSTRUCTION_MISMATCH from the test stub/],
   ];
   for (const [name, runDir, root, error] of cases) {
-    const results = await importBenchmarkEvidence(path.join(dir, `qualification-${name}`), { runDir, commandCenterRoot: root });
+    const results = await importBenchmarkEvidence(path.join(dir, `qualification-${name}`), { runDir, commandCenterRoot: root, pilotImport: false });
     assert.equal(results.length, 8, name);
     assert.match((results[0].responseBody as any).error, error, name);
     assert.deepEqual(results.filter(result => result.passed).map(result => result.testCaseId), [], name);
@@ -290,7 +293,7 @@ test('a retained package keeps the O-7 import, its eight rows and its inputs, an
   t.after(() => setEvidenceMarking(undefined));
   const evidencePackage = createPackage({ retainRoot: path.join(dir, 'runs', 'validation-packages'), version: 'pqt-v1',
     executed: true, syntheticBasis: ['benchmark-import'], inputs: benchmarkRunInputs(runDir), frameworkCheckout: FRAMEWORK });
-  const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir, commandCenterRoot: cc });
+  const results = await importBenchmarkEvidence(evidencePackage.dir, { runDir, commandCenterRoot: cc, pilotImport: false });
   sealPackage(evidencePackage);
   const verified = verifyPackage(evidencePackage.dir);
   assert.deepEqual(verified.problems, []);
@@ -322,7 +325,7 @@ test('the PQ protocol, the validation summary and the execution records carry th
   assert.match(fs.readFileSync(path.join(empty, '20-test-execution-records.md'), 'utf8'), /No O-7 import is in this package: PQT-001 to PQT-006 are not executed\./);
 
   const dir = temporaryDirectory(t, 'accura-pqt-'), cc = fakeCommandCenter(dir), output = path.join(dir, 'qualification');
-  await importBenchmarkEvidence(output, { runDir: deviationRun(dir), commandCenterRoot: cc });
+  await importBenchmarkEvidence(output, { runDir: deviationRun(dir), commandCenterRoot: cc, pilotImport: false });
   generateSummary(output, output);
   const summary = fs.readFileSync(path.join(output, '12-validation-summary.md'), 'utf8');
   assert.match(summary, /\| PQT-001 \| Deviation Detection Run Reconstructed \| PASS \|/);
@@ -337,7 +340,7 @@ test('the PQ protocol, the validation summary and the execution records carry th
 
   const failedOutput = path.join(dir, 'qualification-failed'), empty2 = path.join(dir, 'command-center-empty');
   fs.mkdirSync(empty2);
-  await importBenchmarkEvidence(failedOutput, { runDir: deviationRun(dir, () => {}, 'run-2'), commandCenterRoot: empty2 });
+  await importBenchmarkEvidence(failedOutput, { runDir: deviationRun(dir, () => {}, 'run-2'), commandCenterRoot: empty2, pilotImport: false });
   generateSummary(failedOutput, failedOutput);
   const failedSummary = fs.readFileSync(path.join(failedOutput, '12-validation-summary.md'), 'utf8');
   assert.match(failedSummary, /\| PQT-001 \| [^|]+ \| FAIL \(RECONSTRUCTION_FAILED\) \|/);
@@ -359,4 +362,102 @@ test('every PQT case has its catalogued check, PQT-006 alone manual, and no case
   assert.doesNotMatch(JSON.stringify(derive()), DASH);
   assert.doesNotMatch(JSON.stringify(derivePqtResults({ runDir: '/r', timestamp: 't', reconstructionError: 'x', summarySha256: null, metricsSha256: null })), DASH);
   assert.equal(DEVIATION_MACHINE_CLASSES.length, 10);
+});
+
+/** A pilot run directory whose summary passes every case: a sealed key set and one evidence file inside it. `edit` changes
+ * the summary (and may write files) before it is derived; the derivation reads the run's files as the import does. */
+function pilotRows(t: { after(callback: () => void): void }, edit: (pilot: Record<string, any>, write: (relative: string, bytes: string) => { path: string; sha256: string }) => void = () => {},
+  publicData?: PublicDataAdmission): EvidenceResult[] {
+  const run = temporaryDirectory(t, 'accura-pilot-codes-');
+  const write = (relative: string, bytes: string) => {
+    fs.mkdirSync(path.dirname(path.join(run, relative)), { recursive: true });
+    fs.writeFileSync(path.join(run, relative), bytes);
+    return { path: relative, sha256: createHash('sha256').update(bytes).digest('hex') };
+  };
+  const manifest = write('keys/manifest.json', JSON.stringify({ keySetId: 'keys-1', study: PILOT_STUDY, criticalInstancesDeclared: 320,
+    coverage: { held: [] }, adjudication: { countersignatures: [] } }));
+  const seal = write('keys/seal.json', JSON.stringify({ status: 'COMPLETE', keySetId: 'keys-1', manifestSha256: `sha256:${manifest.sha256}`, sealedAt: '2026-11-01T00:00:00Z' }));
+  const evidence = write('evidence/result.json', '{"result":true}\n');
+  const counts: Record<string, Record<string, unknown>> = {
+    security: { probes: 6, refusedAsExpected: 6, unexpectedAcceptances: 0 },
+    'backup-restore': { backupTaken: true, restoredIsolated: true, sourceDigest: 'a'.repeat(64), restoredDigest: 'a'.repeat(64), recoveryPointSeconds: 0, recoveryTimeSeconds: 42 },
+    'signature-linking': { signatures: 12, linked: 12, digestRecomputedEqual: 12, unlinked: 0, mismatched: 0 },
+    'access-census': { accessEvents: 40, accountChangeEvents: 11, accountsDeclared: 11, accountsFound: 11, accountsUndeclared: 0, windowStart: '2026-11-01T00:00:00Z' },
+  };
+  const pilot: Record<string, any> = {
+    runKind: 'R1', startedAt: '2026-11-02T00:00:00Z', classification: { kind: 'synthetic-engineering' },
+    keySet: { keySetId: 'keys-1', manifestSha256: manifest.sha256, sealedAt: '2026-11-01T00:00:00Z', criticalInstancesDeclared: 320, manifest, seal },
+    cases: PILOT_PQ_CASES.filter(item => /^A\d+$/.test(item.acceptanceCase)).map(item => ({ case: item.acceptanceCase, requirement: item.requirement,
+      verdict: 'pass', coverage: 'complete', scoredInstances: 20, criticalInstances: 16, criticalFailures: 0, keyBasis: 'mechanical', evidence: [evidence] })),
+    controls: PILOT_CONTROLS.map(control => ({ control, requirement: PILOT_PQ_CASES.find(item => item.acceptanceCase === control)!.requirement,
+      systems: PILOT_CONTROL_SYSTEMS.map(system => ({ system, counts: { ...counts[control] }, evidence: [evidence] })) })),
+    nonClaims: PILOT_NON_CLAIMS.map(({ claim, status, decision }) => ({ claim, status, decision })),
+  };
+  edit(pilot, write);
+  return derivePilotResults({ runDir: run, timestamp: '2026-11-02T01:00:00Z', summary: { pilot }, summarySha256: null, metricsSha256: null, publicData });
+}
+
+test('every outcome code a pilot case records is named in that case\'s check text (design review 2026-11-08, Minor 16)', t => {
+  // The codes each case records, collected from the derivation itself over runs that between them reach every code.
+  const recorded = new Map<string, Set<string>>();
+  const collect = (rows: EvidenceResult[]) => {
+    for (const row of rows) if (row.outcomeCode) recorded.set(row.testCaseId, new Set([...(recorded.get(row.testCaseId) ?? []), row.outcomeCode]));
+    return rows;
+  };
+  const caseOf = (pilot: Record<string, any>, acceptance: string) => pilot.cases.find((item: any) => item.case === acceptance);
+  const controlOf = (pilot: Record<string, any>, control: string) => pilot.controls.find((item: any) => item.control === control);
+  const systemOf = (pilot: Record<string, any>, control: string, system: string) => controlOf(pilot, control).systems.find((item: any) => item.system === system);
+  const absent = { path: 'evidence/absent.json', sha256: 'e'.repeat(64) }, outside = { path: '../outside.json', sha256: 'e'.repeat(64) };
+  assert.ok(collect(pilotRows(t)).every(row => row.passed), 'the base run passes every case');
+  collect(derivePilotResults({ runDir: '.', timestamp: '2026-11-02T01:00:00Z', reconstructionError: 'no entry', summarySha256: null, metricsSha256: null }));
+  collect(pilotRows(t, pilot => { pilot.runKind = 'R9'; }));
+  collect(pilotRows(t, (pilot, write) => {
+    pilot.cases = pilot.cases.filter((item: any) => item.case !== 'A1');
+    caseOf(pilot, 'A2').verdict = 'not-run';
+    caseOf(pilot, 'A3').requirement = 'URS-001';
+    caseOf(pilot, 'A4').verdict = 'fail';
+    caseOf(pilot, 'A5').verdict = 'inconclusive';
+    caseOf(pilot, 'A6').verdict = 'maybe';
+    caseOf(pilot, 'A7').evidence = [absent];
+    caseOf(pilot, 'A8').evidence = [outside];
+    caseOf(pilot, 'A9').evidence = [{ ...write('evidence/other.json', '{}'), sha256: 'e'.repeat(64) }];
+    controlOf(pilot, 'security').requirement = 'URS-001';
+    systemOf(pilot, 'backup-restore', 'edc').evidence = [absent];
+    systemOf(pilot, 'signature-linking', 'cc').evidence = [outside];
+    systemOf(pilot, 'access-census', 'bw').evidence = [{ ...caseOf(pilot, 'A10').evidence[0], sha256: 'e'.repeat(64) }];
+  }));
+  collect(pilotRows(t, pilot => { pilot.keySet.manifest = { path: 'keys/absent.json', sha256: pilot.keySet.manifestSha256 }; }));
+  collect(pilotRows(t, pilot => { pilot.keySet.manifestSha256 = 'd'.repeat(64); pilot.keySet.manifest = { ...pilot.keySet.manifest, sha256: 'd'.repeat(64) }; }));
+  const resealed = (pilot: Record<string, any>, write: (relative: string, bytes: string) => { path: string; sha256: string }, held: string[], sealedAt: string) => {
+    const manifest = write('keys/manifest.json', JSON.stringify({ keySetId: 'keys-1', study: PILOT_STUDY, criticalInstancesDeclared: 320,
+      coverage: { held: held.map(id => ({ case: id })) }, adjudication: { countersignatures: [] } }));
+    const seal = write('keys/seal.json', JSON.stringify({ status: 'COMPLETE', keySetId: 'keys-1', manifestSha256: `sha256:${manifest.sha256}`, sealedAt }));
+    Object.assign(pilot.keySet, { manifestSha256: manifest.sha256, sealedAt, manifest, seal });
+  };
+  collect(pilotRows(t, (pilot, write) => resealed(pilot, write, [], '2026-11-03T00:00:00Z')));
+  collect(pilotRows(t, (pilot, write) => resealed(pilot, write, ['A10'], '2026-11-01T00:00:00Z')));
+  const declared = { kind: 'declared-public-data', basisRef: 'bases/basis.json', basisSha256: 'b'.repeat(64) };
+  collect(pilotRows(t, pilot => { pilot.classification = declared; }));
+  const r2 = (pilot: Record<string, any>) => {
+    Object.assign(pilot, { runKind: 'R2', classification: declared, nonClaims: pilot.nonClaims.filter((item: any) => item.claim !== 'governed-lane') });
+  };
+  collect(pilotRows(t, r2));
+  collect(pilotRows(t, r2, { admitted: true, claimed: true, basisRef: declared.basisRef, basisSha256: declared.basisSha256, summarySha256: 'c'.repeat(64),
+    filedBy: 'Test QA Owner', filedAt: '2026-10-31T00:00:00Z', bytes: Buffer.from('{}') }));
+  collect(pilotRows(t, pilot => {
+    Object.assign(systemOf(pilot, 'security', 'edc').counts, { refusedAsExpected: 5, unexpectedAcceptances: 1 });
+    Object.assign(systemOf(pilot, 'backup-restore', 'csl').counts, { restoredDigest: 'b'.repeat(64) });
+    Object.assign(systemOf(pilot, 'signature-linking', 'cc').counts, { linked: 11, unlinked: 1, digestRecomputedEqual: 11 });
+    Object.assign(systemOf(pilot, 'access-census', 'bw').counts, { accountsUndeclared: 1 });
+  }));
+  collect(pilotRows(t, pilot => {
+    pilot.controls = pilot.controls.filter((item: any) => item.control !== 'security');
+    controlOf(pilot, 'backup-restore').systems.pop();
+    systemOf(pilot, 'signature-linking', 'edc').counts.signatures = 'twelve';
+  }));
+
+  const everyCode = new Set([...recorded.values()].flatMap(codes => [...codes]));
+  assert.deepEqual(Object.values(PILOT_OUTCOME_CODES).filter(code => !everyCode.has(code)), [], 'each code of the table is recorded by some case');
+  const unnamed = [...recorded].flatMap(([id, codes]) => [...codes].filter(code => !runnerCaseCheck(id).check.includes(code)).map(code => `${id} ${code}`));
+  assert.deepEqual(unnamed, [], 'a case records a code its check text does not name');
 });
